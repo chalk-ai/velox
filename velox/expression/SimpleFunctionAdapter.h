@@ -283,7 +283,7 @@ class SimpleFunctionAdapter : public VectorFunction {
         return_type_traits::typeKind) {
       using type =
           typename VectorExec::template resolver<arg_at<POSITION>>::in_type;
-      if (args[POSITION]->isFlatEncoding() && args[POSITION].unique() &&
+      if (args[POSITION]->isFlatEncoding() && args[POSITION].use_count() == 1 &&
           args[POSITION]->asUnchecked<FlatVector<type>>()->isWritable()) {
         // Re-use arg for result. We rely on the fact that for each row
         // we read arguments before computing and writing out the
