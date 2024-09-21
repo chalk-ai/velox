@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include "velox/type/Type.h"
 #include "velox/type/Variant.h"
 
@@ -56,11 +57,19 @@ class ITypedExpr : public ISerializable {
   virtual size_t localHash() const = 0;
 
   size_t hash() const {
-    size_t hash = bits::hashMix(type_->hashKind(), localHash());
-    for (int32_t i = 0; i < inputs_.size(); ++i) {
-      hash = bits::hashMix(hash, inputs_[i]->hash());
+    if (hash_ == 0) {
+      size_t hash = bits::hashMix(type_->hashKind(), localHash());
+      for (int32_t i = 0; i < inputs_.size(); ++i) {
+        hash = bits::hashMix(hash, inputs_[i]->hash());
+      }
+      if (hash == 0) [[unlikely]] {
+        // We use 0 to represent "the hash has not yet been computed", so marking values that somehow
+        // hash to 0 as having a hash of 1 instead
+        hash = 1;
+      }
+      hash_ = hash;
     }
-    return hash;
+    return hash_;
   }
 
   /// Returns true if other is recursively equal to 'this'. We do not
@@ -104,6 +113,7 @@ class ITypedExpr : public ISerializable {
   }
 
   TypePtr type_;
+  mutable std::atomic_size_t hash_{0};
   std::vector<TypedExprPtr> inputs_;
 };
 
