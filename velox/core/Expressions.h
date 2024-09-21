@@ -88,7 +88,7 @@ class ConstantTypedExpr : public ITypedExpr {
 
     return bits::hashMix(
         kBaseHash,
-        hasValueVector() ? 0  : value_.hash());
+        hasValueVector() ? reinterpret_cast<uintptr_t>(this)  : value_.hash());
   }
 
   bool hasValueVector() const {
