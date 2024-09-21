@@ -28,10 +28,10 @@ using TypedExprPtr = std::shared_ptr<const ITypedExpr>;
 /// Strongly-typed expression, e.g. literal, function call, etc.
 class ITypedExpr : public ISerializable {
  public:
-  explicit ITypedExpr(TypePtr type) : type_{std::move(type)}, hash_{std::make_unique<std::atomic_size_t>(0)}, inputs_{} {}
+  explicit ITypedExpr(TypePtr type) : type_{std::move(type)}, hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{} {}
 
   ITypedExpr(TypePtr type, std::vector<TypedExprPtr> inputs)
-      : type_{std::move(type)},  hash_{std::make_unique<std::atomic_size_t>(0)}, inputs_{std::move(inputs)} {}
+      : type_{std::move(type)},  hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{std::move(inputs)} {}
 
   const TypePtr& type() const {
     return type_;
@@ -113,7 +113,7 @@ class ITypedExpr : public ISerializable {
   }
 
   TypePtr type_;
-  std::unique_ptr<std::atomic_size_t> hash_;
+  std::shared_ptr<std::atomic_size_t> hash_;
   std::vector<TypedExprPtr> inputs_;
 };
 
