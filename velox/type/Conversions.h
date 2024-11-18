@@ -35,16 +35,22 @@ namespace facebook::velox::util {
 struct PrestoCastPolicy {
   static constexpr bool truncate = false;
   static constexpr bool legacyCast = false;
+  // Throws if we encounter unicode when converting to int
+  // See issue : https://github.com/facebookincubator/velox/issues/10803
+  // Remove when unicode support is added.
+  static constexpr bool throwOnUnicode = true;
 };
 
 struct SparkCastPolicy {
   static constexpr bool truncate = true;
   static constexpr bool legacyCast = false;
+  static constexpr bool throwOnUnicode = false;
 };
 
 struct LegacyCastPolicy {
   static constexpr bool truncate = false;
   static constexpr bool legacyCast = true;
+  static constexpr bool throwOnUnicode = false;
 };
 
 template <TypeKind KIND, typename = void, typename TPolicy = PrestoCastPolicy>
@@ -225,6 +231,11 @@ struct Converter<TypeKind::BOOLEAN, void, TPolicy> {
   }
 };
 
+/// Presto compatible trim of whitespace. This also trims
+/// control characters from both front and back and returns
+/// a StringView of the trimmed string.
+StringView trimWhiteSpace(const char* data, size_t length);
+
 /// To TINYINT, SMALLINT, INTEGER, BIGINT, and HUGEINT converter.
 template <TypeKind KIND, typename TPolicy>
 struct Converter<
@@ -312,7 +323,8 @@ struct Converter<
     if constexpr (TPolicy::truncate) {
       return convertStringToInt(v);
     } else {
-      return detail::callFollyTo<T>(v);
+      auto trimmed = trimWhiteSpace(v.data(), v.size());
+      return detail::callFollyTo<T>(trimmed);
     }
   }
 
@@ -320,7 +332,8 @@ struct Converter<
     if constexpr (TPolicy::truncate) {
       return convertStringToInt(folly::StringPiece(v));
     } else {
-      return detail::callFollyTo<T>(folly::StringPiece(v));
+      auto trimmed = trimWhiteSpace(v.data(), v.size());
+      return detail::callFollyTo<T>(trimmed);
     }
   }
 
@@ -328,7 +341,8 @@ struct Converter<
     if constexpr (TPolicy::truncate) {
       return convertStringToInt(v);
     } else {
-      return detail::callFollyTo<T>(v);
+      auto trimmed = trimWhiteSpace(v.data(), v.length());
+      return detail::callFollyTo<T>(trimmed);
     }
   }
 

@@ -147,7 +147,6 @@ class AsyncDataCacheTest : public ::testing::TestWithParam<TestParam> {
     options.useMmapAllocator = true;
     options.allocatorCapacity = maxBytes;
     options.arbitratorCapacity = maxBytes;
-    options.arbitratorReservedCapacity = 0;
     options.trackDefaultUsage = true;
     manager_ = std::make_unique<memory::MemoryManager>(options);
     allocator_ = static_cast<memory::MmapAllocator*>(manager_->allocator());
@@ -1438,7 +1437,7 @@ TEST_P(AsyncDataCacheTest, ssdWriteOptions) {
       {0.8, 0.95, 4UL << 20, false},
       {0.8, 0.3, 32UL << 20, false},
       {0.8, 0.3, 4UL << 20, true},
-      {0.0, 0.95, 0, true}};
+      {0.0, 0.8, 0, true}};
 
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());

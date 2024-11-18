@@ -40,7 +40,8 @@ class HiveConnectorTestBase : public OperatorTestBase {
   void SetUp() override;
   void TearDown() override;
 
-  void resetHiveConnector(const std::shared_ptr<const Config>& config);
+  void resetHiveConnector(
+      const std::shared_ptr<const config::ConfigBase>& config);
 
   void writeToFile(const std::string& filePath, RowVectorPtr vector);
 
@@ -172,6 +173,7 @@ class HiveConnectorTestBase : public OperatorTestBase {
   /// table.
   /// @param locationHandle Location handle for the table write.
   /// @param compressionKind compression algorithm to use for table write.
+  /// @param serdeParameters Table writer configuration parameters.
   static std::shared_ptr<connector::hive::HiveInsertTableHandle>
   makeHiveInsertTableHandle(
       const std::vector<std::string>& tableColumnNames,
@@ -181,7 +183,10 @@ class HiveConnectorTestBase : public OperatorTestBase {
       std::shared_ptr<connector::hive::LocationHandle> locationHandle,
       const dwio::common::FileFormat tableStorageFormat =
           dwio::common::FileFormat::DWRF,
-      const std::optional<common::CompressionKind> compressionKind = {});
+      const std::optional<common::CompressionKind> compressionKind = {},
+      const std::unordered_map<std::string, std::string>& serdeParameters = {},
+      const std::shared_ptr<dwio::common::WriterOptions>& writerOptions =
+          nullptr);
 
   static std::shared_ptr<connector::hive::HiveInsertTableHandle>
   makeHiveInsertTableHandle(
@@ -191,7 +196,9 @@ class HiveConnectorTestBase : public OperatorTestBase {
       std::shared_ptr<connector::hive::LocationHandle> locationHandle,
       const dwio::common::FileFormat tableStorageFormat =
           dwio::common::FileFormat::DWRF,
-      const std::optional<common::CompressionKind> compressionKind = {});
+      const std::optional<common::CompressionKind> compressionKind = {},
+      const std::shared_ptr<dwio::common::WriterOptions>& writerOptions =
+          nullptr);
 
   static std::shared_ptr<connector::hive::HiveColumnHandle> regularColumn(
       const std::string& name,
@@ -218,8 +225,10 @@ class HiveConnectorTestBase : public OperatorTestBase {
 
 class HiveConnectorSplitBuilder {
  public:
-  HiveConnectorSplitBuilder(std::string filePath)
-      : filePath_{std::move(filePath)} {}
+  explicit HiveConnectorSplitBuilder(std::string filePath)
+      : filePath_{std::move(filePath)} {
+    infoColumns_["$path"] = filePath_;
+  }
 
   HiveConnectorSplitBuilder& start(uint64_t start) {
     start_ = start;
@@ -257,6 +266,7 @@ class HiveConnectorSplitBuilder {
 
   HiveConnectorSplitBuilder& tableBucketNumber(int32_t bucket) {
     tableBucketNumber_ = bucket;
+    infoColumns_["$bucket"] = std::to_string(bucket);
     return *this;
   }
 
@@ -289,7 +299,7 @@ class HiveConnectorSplitBuilder {
     static const std::unordered_map<std::string, std::string> serdeParameters;
     return std::make_shared<connector::hive::HiveConnectorSplit>(
         connectorId_,
-        filePath_.find("/") == 0 ? "file:" + filePath_ : filePath_,
+        filePath_,
         fileFormat_,
         start_,
         length_,

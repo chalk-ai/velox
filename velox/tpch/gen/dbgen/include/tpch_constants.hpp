@@ -2,6 +2,8 @@
 
 #pragma once
 
+namespace facebook::velox::tpch::dbgen {
+
 const int TPCH_QUERIES_COUNT = 22;
 const uint8_t TPCH_QUERIES_q01[] = {
     83,  69,  76,  69,  67,  84,  10,  32,  32,  32,  32,  108, 95,  114, 101,
@@ -60701,3 +60703,5 @@ const char* TPCH_ANSWERS_SF1[] = {
     (const char*)TPCH_ANSWERS_SF1_q17, (const char*)TPCH_ANSWERS_SF1_q18,
     (const char*)TPCH_ANSWERS_SF1_q19, (const char*)TPCH_ANSWERS_SF1_q20,
     (const char*)TPCH_ANSWERS_SF1_q21, (const char*)TPCH_ANSWERS_SF1_q22};
+
+} // namespace facebook::velox::tpch::dbgen

@@ -39,8 +39,7 @@
 #include "velox/vector/VectorEncoding.h"
 #include "velox/vector/VectorUtil.h"
 
-namespace facebook {
-namespace velox {
+namespace facebook::velox {
 
 template <typename T>
 class SimpleVector;
@@ -147,6 +146,28 @@ class BaseVector {
   }
 
   template <typename T>
+  T* asChecked() {
+    auto* casted = as<T>();
+    VELOX_CHECK_NOT_NULL(
+        casted,
+        "Wrong type cast expected {}, but got {}",
+        typeid(T).name(),
+        typeid(*this).name());
+    return casted;
+  }
+
+  template <typename T>
+  const T* asChecked() const {
+    auto* casted = as<T>();
+    VELOX_CHECK_NOT_NULL(
+        casted,
+        "Wrong type cast expected {}, but got {}",
+        typeid(T).name(),
+        typeid(*this).name());
+    return casted;
+  }
+
+  template <typename T>
   const FlatVector<T>* asFlatVector() const {
     return dynamic_cast<const FlatVector<T>*>(this);
   }
@@ -184,6 +205,10 @@ class BaseVector {
 
   const TypePtr& type() const {
     return type_;
+  }
+
+  bool typeUsesCustomComparison() const {
+    return typeUsesCustomComparison_;
   }
 
   /// Changes vector type. The new type can have a different
@@ -590,7 +615,7 @@ class BaseVector {
   /// unique.
   template <typename T>
   static bool isVectorWritable(const std::shared_ptr<T>& vector) {
-    if (!vector.unique()) {
+    if (vector.use_count() != 1) {
       return false;
     }
 
@@ -806,9 +831,7 @@ class BaseVector {
   }
 
   void clearContainingLazyAndWrapped() {
-    if (containsLazyAndIsWrapped_) {
-      containsLazyAndIsWrapped_ = false;
-    }
+    containsLazyAndIsWrapped_ = false;
   }
 
   bool memoDisabled() const {
@@ -884,24 +907,18 @@ class BaseVector {
     ensureNullsCapacity(length_, true);
   }
 
-  // Slice a buffer with specific type.
-  //
-  // For boolean type and if the offset is not multiple of 8, return a shifted
-  // copy; otherwise return a BufferView into the original buffer (with shared
-  // ownership of original buffer).
-  static BufferPtr sliceBuffer(
-      const Type&,
-      const BufferPtr&,
-      vector_size_t offset,
-      vector_size_t length,
-      memory::MemoryPool*);
-
   BufferPtr sliceNulls(vector_size_t offset, vector_size_t length) const {
-    return sliceBuffer(*BOOLEAN(), nulls_, offset, length, pool_);
+    return nulls_ ? Buffer::slice<bool>(nulls_, offset, length, pool_) : nulls_;
   }
 
   TypePtr type_;
   const TypeKind typeKind_;
+  // Whether `type_` is a type that provides custom comparison operations.
+  // We use this instead of calling type_->providesCustomCompare() because
+  // having a constant field helps the compiler to pull this condition up in
+  // loops, and `type_` itself is non-constant (though it can only be modified
+  // logically, so this property is safe to store).
+  const bool typeUsesCustomComparison_;
   const VectorEncoding::Simple encoding_;
   BufferPtr nulls_;
   // Caches raw pointer to 'nulls->as<uint64_t>().
@@ -1010,8 +1027,7 @@ std::string printIndices(
     const BufferPtr& indices,
     vector_size_t maxIndicesToPrint = 10);
 
-} // namespace velox
-} // namespace facebook
+} // namespace facebook::velox
 
 namespace folly {
 
