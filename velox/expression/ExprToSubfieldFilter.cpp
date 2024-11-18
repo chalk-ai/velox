@@ -115,8 +115,7 @@ toInt64List(const VectorPtr& vector, vector_size_t start, vector_size_t size) {
 static std::shared_ptr<ExprToSubfieldFilterParser> defaultParser =
     std::make_shared<PrestoExprToSubfieldFilterParser>();
 
-}
-
+} // namespace
 
 std::function<std::shared_ptr<ExprToSubfieldFilterParser>()>
     ExprToSubfieldFilterParser::parserFactory_ = [] { return defaultParser; };
@@ -161,7 +160,6 @@ bool ExprToSubfieldFilterParser::toSubfield(
   subfield = common::Subfield(std::move(path));
   return true;
 }
-
 
 std::unique_ptr<common::Filter> ExprToSubfieldFilterParser::makeNotEqualFilter(
     const core::TypedExprPtr& valueExpr,
