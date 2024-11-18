@@ -1278,7 +1278,7 @@ void MemoryPoolImpl::leakCheckDbg() {
   std::unordered_map<std::string, AllocationStats> sizeAggregatedRecords;
   for (const auto& itr : debugAllocRecords_) {
     const auto& allocationRecord = itr.second;
-    const auto stackStr = allocationRecord.callStack.toString();
+    const auto stackStr = allocationRecord.callStack;
     if (sizeAggregatedRecords.count(stackStr) == 0) {
       sizeAggregatedRecords[stackStr] = AllocationStats();
     }
