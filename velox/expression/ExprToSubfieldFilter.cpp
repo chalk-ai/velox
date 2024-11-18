@@ -112,38 +112,6 @@ toInt64List(const VectorPtr& vector, vector_size_t start, vector_size_t size) {
   return values;
 }
 
-std::unique_ptr<common::Filter> makeLessThanFilter(
-    const core::TypedExprPtr& upperExpr,
-    core::ExpressionEvaluator* evaluator) {
-  auto upper = toConstant(upperExpr, evaluator);
-  if (!upper) {
-    return nullptr;
-  }
-  switch (upper->typeKind()) {
-    case TypeKind::TINYINT:
-      return lessThan(singleValue<int8_t>(upper));
-    case TypeKind::SMALLINT:
-      return lessThan(singleValue<int16_t>(upper));
-    case TypeKind::INTEGER:
-      return lessThan(singleValue<int32_t>(upper));
-    case TypeKind::BIGINT:
-      return lessThan(singleValue<int64_t>(upper));
-#ifdef FOLLY_HAVE_INT128_T
-    case TypeKind::HUGEINT:
-      return lessThanHugeint(singleValue<int128_t>(upper));
-#endif
-    case TypeKind::DOUBLE:
-      return lessThanDouble(singleValue<double>(upper));
-    case TypeKind::REAL:
-      return lessThanFloat(singleValue<float>(upper));
-    case TypeKind::VARCHAR:
-      return lessThan(singleValue<StringView>(upper));
-    case TypeKind::TIMESTAMP:
-      return lessThan(singleValue<Timestamp>(upper));
-    default:
-      return nullptr;
-}
-    }
 static std::shared_ptr<ExprToSubfieldFilterParser> defaultParser =
     std::make_shared<PrestoExprToSubfieldFilterParser>();
 
