@@ -15,7 +15,6 @@
  */
 #pragma once
 
-#include <functional>
 #include <iomanip>
 #include "velox/common/base/Exceptions.h"
 #include "velox/core/ITypedExpr.h"
@@ -58,26 +57,19 @@ class ConstantTypedExpr : public ITypedExpr {
   // variant::null() value is supported.
   ConstantTypedExpr(TypePtr type, variant value)
       : ITypedExpr{std::move(type)}, value_{std::move(value)} {}
-
-
-  // Create a constant expression that represents represents the result of some function
-  // The function will be called with the memory pool, and it is expected to produce a vector within said memory pool
-  ConstantTypedExpr(TypePtr type, std::function<VectorPtr(facebook::velox::memory::MemoryPool* pool)> generator):  ITypedExpr(std::move(type)), valueGenerator_(std::move(generator)) {
-
-  }
-
-
   // Creates constant expression of scalar or complex type. The value comes from
   // index zero.
-  explicit ConstantTypedExpr(const VectorPtr& value): ConstantTypedExpr(value->type(), [value](facebook::velox::memory::MemoryPool* pool){
-   return value;
-
-  })  {}
+  ConstantTypedExpr(const VectorPtr& value)
+      : ITypedExpr{value->type()},
+        valueVector_{
+            value->isConstantEncoding()
+                ? value
+                : BaseVector::wrapInConstant(1, 0, value)} {}
 
 
   std::string toString() const override {
     if (hasValueVector()) {
-      return fmt::format("Constant of type {}", type()->toString());
+      return valueVector_->toString(0);
     }
     return value_.toJson(type());
   }
@@ -92,7 +84,7 @@ class ConstantTypedExpr : public ITypedExpr {
   }
 
   bool hasValueVector() const {
-    return valueGenerator_ != nullptr;
+    return valueVector_ != nullptr;
   }
 
   /// Returns scalar value as variant if hasValueVector() is false.
@@ -102,16 +94,13 @@ class ConstantTypedExpr : public ITypedExpr {
 
   /// Return constant value vector if hasValueVector() is true. Returns null
   /// otherwise.
-  // const VectorPtr& valueVector() const {
-  //   return valueVector_;
-  // }
+  const VectorPtr& valueVector() const {
+    return valueVector_;
+  }
 
   VectorPtr toConstantVector(memory::MemoryPool* pool) const {
-    if (valueGenerator_) {
-      auto value = valueGenerator_(pool);
-      return value->isConstantEncoding()
-                ? value
-                : BaseVector::wrapInConstant(1, 0, value);
+    if (valueVector_) {
+      return valueVector_;
     }
     if (value_.isNull()) {
       return BaseVector::createNullConstant(type(), 1, pool);
@@ -128,7 +117,7 @@ class ConstantTypedExpr : public ITypedExpr {
       const std::unordered_map<std::string, TypedExprPtr>& /*mapping*/)
       const override {
     if (hasValueVector()) {
-      return std::make_shared<ConstantTypedExpr>(type(), valueGenerator_);
+      return std::make_shared<ConstantTypedExpr>(valueVector_);
     } else {
       return std::make_shared<ConstantTypedExpr>(type(), value_);
     }
@@ -149,8 +138,7 @@ class ConstantTypedExpr : public ITypedExpr {
     }
 
     if (this->hasValueVector()) {
-      return false;
-      // return this->valueGenerator_ == casted->valueGenerator_;
+      return this->valueVector_->equalValueAt(casted->valueVector_.get(), 0, 0);
     }
 
     return this->value_ == casted->value_;
@@ -170,8 +158,7 @@ class ConstantTypedExpr : public ITypedExpr {
 
  private:
   const variant value_;
-  // const VectorPtr valueVector_;
-  const std::function<facebook::velox::VectorPtr(facebook::velox::memory::MemoryPool* pool)> valueGenerator_;
+  const VectorPtr valueVector_;
 };
 
 using ConstantTypedExprPtr = std::shared_ptr<const ConstantTypedExpr>;

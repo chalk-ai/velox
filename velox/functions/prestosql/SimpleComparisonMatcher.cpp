@@ -158,12 +158,11 @@ class ComparisonConstantMatcher : public Matcher {
   static std::optional<int64_t> asConstant(const core::ITypedExpr* expr) {
     if (auto constant = dynamic_cast<const core::ConstantTypedExpr*>(expr)) {
       if (constant->hasValueVector()) {
-        return std::nullopt;
-        // auto constantVector =
-        //     constant->valueVector()->as<SimpleVector<int64_t>>();
-        // if (!constantVector->isNullAt(0)) {
-        //   return constantVector->valueAt(0);
-        // }
+        auto constantVector =
+            constant->valueVector()->as<SimpleVector<int64_t>>();
+        if (!constantVector->isNullAt(0)) {
+          return constantVector->valueAt(0);
+        }
       } else {
         if (!constant->value().isNull()) {
           if (constant->value().kind() == TypeKind::BIGINT) {
