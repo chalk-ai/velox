@@ -30,22 +30,6 @@
 
 namespace facebook::velox::crypto {
 
-static inline std::string to_string(__uint128_t x) {
-  if (x == 0) {
-    return "0";
-  }
-  std::string ans;
-  bool negative = x < 0;
-  while (x != 0) {
-    ans += '0' + abs(static_cast<int>(x % 10));
-    x /= 10;
-  }
-  if (negative) {
-    ans += '-';
-  }
-  reverse(ans.begin(), ans.end());
-  return ans;
-}
 /*
  * Note: this code is harmless on little-endian machines.
 */
@@ -276,7 +260,7 @@ static inline std::string to_string(__uint128_t x) {
         val = static_cast<__uint128_t>(val << 4) | ((digest[i] >> 4) & 0xf);
         val = static_cast<__uint128_t>(val << 4) | (digest[i] & 0xf);
       }
-      auto dec = to_string(static_cast<__uint128_t>(val));
+      auto dec = folly::to<std::string>(static_cast<__uint128_t>(val));
       return dec;
     }
 

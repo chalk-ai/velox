@@ -31,9 +31,7 @@ void registerArrayNGramsFunctions(const std::string& prefix) {
   registerArrayNGramsFunctions<int16_t>(prefix);
   registerArrayNGramsFunctions<int32_t>(prefix);
   registerArrayNGramsFunctions<int64_t>(prefix);
-#ifdef FOLLY_HAVE_INT128_T
   registerArrayNGramsFunctions<int128_t>(prefix);
-#endif
   registerArrayNGramsFunctions<float>(prefix);
   registerArrayNGramsFunctions<double>(prefix);
   registerArrayNGramsFunctions<bool>(prefix);
