@@ -94,18 +94,4 @@ string to_string(facebook::velox::int128_t x) {
   reverse(ans.begin(), ans.end());
   return ans;
 }
-
-string to_string(facebook::velox::uint128_t x) {
-  if (x == 0) {
-    return "0";
-  }
-  string ans;
-  while (x != 0) {
-    ans += '0' + abs(static_cast<int>(x % 10));
-    x /= 10;
-  }
-  reverse(ans.begin(), ans.end());
-  return ans;
-}
-
 } // namespace std
