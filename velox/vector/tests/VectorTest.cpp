@@ -107,7 +107,7 @@ struct NonPOD {
 
 int NonPOD::alive = 0;
 
-class VectorTest : public testing::Test, public test::VectorTestBase {
+class VectorTest : public testing::Test, public velox::test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance({});
@@ -164,7 +164,6 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     BufferPtr nulls;
     if (withNulls) {
       nulls = allocateNulls(numRows, pool());
-      int32_t childCounter = 0;
       auto rawNulls = nulls->asMutable<uint64_t>();
       for (int32_t i = 0; i < numRows; ++i) {
         bits::setNull(rawNulls, i, i % 8 == 0);
@@ -879,7 +878,7 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
 
     RowVectorPtr resultRow;
     VectorStreamGroup::read(
-        evenInput.get(), pool(), sourceRowType, nullptr, &resultRow);
+        evenInput.get(), pool(), sourceRowType, nullptr, &resultRow, nullptr);
     VectorPtr result = resultRow->childAt(0);
     switch (source->encoding()) {
       case VectorEncoding::Simple::FLAT:
@@ -909,7 +908,7 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     auto oddInput = prepareInput(oddString);
 
     VectorStreamGroup::read(
-        oddInput.get(), pool(), sourceRowType, nullptr, &resultRow);
+        oddInput.get(), pool(), sourceRowType, nullptr, &resultRow, nullptr);
     result = resultRow->childAt(0);
     for (int32_t i = 0; i < oddIndices.size(); ++i) {
       EXPECT_TRUE(result->equalValueAt(source.get(), i, oddIndices[i].begin))
@@ -3899,6 +3898,62 @@ TEST_F(VectorTest, testOverSizedArray) {
   auto array = makeArrayVector(offsets, flat);
   auto constArray = BaseVector::wrapInConstant(21474830, 0, array);
   EXPECT_THROW(BaseVector::flattenVector(constArray), VeloxUserError);
+}
+
+TEST_F(VectorTest, testFlatteningOfRedundantDictionary) {
+  // Verify that BaseVector::wrapInDictionary() API flattens the output if
+  // 'flattenIfRedundant' is set to true and the wrapped vector has a size less
+  // than 1/8 the size of the base.
+  auto vectorSize = 100;
+  auto flat =
+      makeFlatVector<int32_t>(vectorSize, [](auto /*row*/) { return 1; });
+  {
+    auto dictionarySize = vectorSize / 10;
+    auto indices = makeIndices(dictionarySize, [](auto i) { return i; });
+    auto wrapped =
+        BaseVector::wrapInDictionary(nullptr, indices, dictionarySize, flat);
+    EXPECT_EQ(wrapped->encoding(), VectorEncoding::Simple::DICTIONARY);
+
+    wrapped = BaseVector::wrapInDictionary(
+        nullptr, indices, dictionarySize, flat, true /*flattenIfRedundant*/);
+    EXPECT_EQ(wrapped->encoding(), VectorEncoding::Simple::FLAT);
+  }
+
+  {
+    auto dictionarySize = vectorSize / 3;
+    auto indices = makeIndices(dictionarySize, [](auto i) { return i; });
+    auto wrapped =
+        BaseVector::wrapInDictionary(nullptr, indices, dictionarySize, flat);
+    EXPECT_EQ(wrapped->encoding(), VectorEncoding::Simple::DICTIONARY);
+
+    wrapped = BaseVector::wrapInDictionary(
+        nullptr, indices, dictionarySize, flat, true /*flattenIfRedundant*/);
+    EXPECT_EQ(wrapped->encoding(), VectorEncoding::Simple::DICTIONARY);
+  }
+}
+
+TEST_F(
+    VectorTest,
+    verifyOuterDictionaryLayersInitalizedWhenLoggingLazyLoadedVector) {
+  // Tester function verifies proper behavior when outer dictionary layers of a
+  // lazy vector are not properly initalized and user calls toString. Expected
+  // behavior should be a runtime error noting user to properly load vector
+  // prior to invoking toString.
+  auto doubleVector = makeFlatVector<double>({1.0, 2.0, 3.0});
+  auto doubleInDictionary = BaseVector::wrapInDictionary(
+      nullptr, makeIndices({0, 1, 2}), 3, doubleVector);
+  auto doubleInNestedDictionary = BaseVector::wrapInDictionary(
+      nullptr, makeIndices({0, 1, 2}), 3, doubleInDictionary);
+  auto doubleInLazyDictionary =
+      VectorFuzzer::wrapInLazyVector(doubleInNestedDictionary);
+
+  auto rowVector = makeRowVector({doubleVector, doubleInLazyDictionary});
+
+  // Log vector; in doing so, we should trigger our VELOX_CHECK error as
+  // dictionary is not properly initialized.
+  for (vector_size_t i = 0; i < rowVector->size(); ++i) {
+    EXPECT_THROW(rowVector->toString(i), VeloxRuntimeError);
+  }
 }
 
 TEST_F(VectorTest, hasOverlappingRanges) {

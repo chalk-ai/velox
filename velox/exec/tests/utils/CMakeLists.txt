@@ -21,7 +21,6 @@ add_library(
   velox_exec_test_lib
   AssertQueryBuilder.cpp
   ArbitratorTestUtil.cpp
-  Cursor.cpp
   HiveConnectorTestBase.cpp
   LocalExchangeSource.cpp
   OperatorTestBase.cpp
@@ -36,7 +35,9 @@ add_library(
 target_link_libraries(
   velox_exec_test_lib
   velox_vector_test_lib
+  velox_vector_fuzzer
   velox_temp_path
+  velox_cursor
   velox_core
   velox_exception
   velox_expression
@@ -45,6 +46,8 @@ target_link_libraries(
   velox_dwio_common
   velox_dwio_dwrf_reader
   velox_dwio_dwrf_writer
+  velox_dwio_parquet_writer
+  velox_dwio_parquet_reader
   velox_dwio_common_test_utils
   velox_file_test_utils
   velox_type_fbhive
@@ -52,4 +55,23 @@ target_link_libraries(
   velox_tpch_connector
   velox_presto_serializer
   velox_functions_prestosql
+  velox_flag_definitions
   velox_aggregates)
+
+if(${VELOX_BUILD_RUNNER})
+  add_library(velox_exec_runner_test_util DistributedPlanBuilder.cpp
+                                          LocalRunnerTestBase.cpp)
+
+  target_link_libraries(
+    velox_exec_runner_test_util
+    velox_temp_path
+    velox_exec_test_lib
+    velox_exec
+    velox_file_test_utils
+    velox_hive_connector
+    velox_tpch_connector
+    velox_dwio_parquet_reader
+    velox_dwio_parquet_writer
+    velox_local_runner)
+
+endif()

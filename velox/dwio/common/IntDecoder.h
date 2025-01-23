@@ -46,7 +46,7 @@ class IntDecoder {
         numBytes_(numBytes),
         bigEndian_(bigEndian) {}
 
-  /// Constructs for use in Parquet /Alphawhere the buffer is always preloaded.
+  /// Constructs for use in Parquet where the buffer is always preloaded.
   IntDecoder(const char* start, const char* end)
       : bufferStart_(start), bufferEnd_(end), useVInts_(false), numBytes_(0) {}
 
@@ -441,6 +441,9 @@ inline T IntDecoder<isSigned>::readInt() {
     return readLittleEndianFromBigEndian<T>();
   } else {
     if constexpr (std::is_same_v<T, int128_t>) {
+      if (numBytes_ == 8) {
+        return readLongLE();
+      }
       if (numBytes_ == 12) {
         VELOX_DCHECK(!useVInts_, "Int96 should not be VInt encoded.");
         return readInt96();

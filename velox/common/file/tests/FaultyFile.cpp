@@ -18,19 +18,6 @@
 
 namespace facebook::velox::tests::utils {
 
-std::string FaultFileOperation::typeString(Type type) {
-  switch (type) {
-    case Type::kReadv:
-      return "READV";
-    case Type::kRead:
-      return "READ";
-    default:
-      VELOX_UNSUPPORTED(
-          "Unknown file operation type: {}", static_cast<int>(type));
-      break;
-  }
-}
-
 FaultyReadFile::FaultyReadFile(
     const std::string& path,
     std::shared_ptr<ReadFile> delegatedFile,
@@ -99,7 +86,7 @@ FaultyWriteFile::FaultyWriteFile(
 
 void FaultyWriteFile::append(std::string_view data) {
   if (injectionHook_ != nullptr) {
-    FaultFileWriteOperation op(path_, data);
+    FaultFileAppendOperation op(path_, data);
     injectionHook_(&op);
     if (!op.delegate) {
       return;
@@ -116,6 +103,13 @@ void FaultyWriteFile::write(
     const std::vector<iovec>& iovecs,
     int64_t offset,
     int64_t length) {
+  if (injectionHook_ != nullptr) {
+    FaultFileWriteOperation op(path_, iovecs, offset, length);
+    injectionHook_(&op);
+    if (!op.delegate) {
+      return;
+    }
+  }
   delegatedFile_->write(iovecs, offset, length);
 }
 
@@ -139,5 +133,13 @@ std::unordered_map<std::string, std::string> FaultyWriteFile::getAttributes()
 
 void FaultyWriteFile::close() {
   delegatedFile_->close();
+}
+
+uint64_t FaultyWriteFile::size() const {
+  return delegatedFile_->size();
+}
+
+const std::string FaultyWriteFile::getName() const {
+  return delegatedFile_->getName();
 }
 } // namespace facebook::velox::tests::utils
