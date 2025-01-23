@@ -500,18 +500,18 @@ FOLLY_ALWAYS_INLINE std::string prepareRegexpReplaceReplacement(
       RE2::UNANCHORED,
       groupName,
       2)) {
-    auto groupIter = re.NamedCapturingGroups().find(groupName[1].as_string());
+    auto groupIter = re.NamedCapturingGroups().find(std::string(groupName[1]));
     if (groupIter == re.NamedCapturingGroups().end()) {
       VELOX_USER_FAIL(
           "Invalid replacement sequence: unknown group {{ {} }}.",
-          groupName[1].as_string());
+          std::string(groupName[1]));
     }
 
     RE2::GlobalReplace(
         &newReplacement,
-        fmt::format(R"(\${{{}}})", groupName[1].as_string()),
+        fmt::format(R"(\${{{}}})", std::string(groupName[1])),
         fmt::format("${}", groupIter->second));
-  }
+      }
 
   // Convert references to numbered capturing groups from $g to \g.
   static const RE2 kConvertRegex(R"(\$(\d+))");
