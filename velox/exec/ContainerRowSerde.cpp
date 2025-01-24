@@ -133,6 +133,22 @@ void serializeArray(
     const ContainerRowSerdeOptions& options) {
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
+
+  if (elements.type()->isArray()) {
+    auto children = elements.type()->asArray().children();
+    if (children.size() == 1) {
+      // atm I expect the array to have exactly one child type, which seems correct
+      if (children.at(0)->isFixedWidth()) {
+        // theoretically i think we can blindly copy all fixed width children?
+        auto start = offset;
+        auto end = size * children.at(0)->cppSizeInBytes();
+        auto rawValues = elements.as<uint64_t>();
+        out.appendBits(rawValues, start, end);
+        return;
+      }
+    }
+  }
+
   for (auto i = 0; i < size; ++i) {
     if (!elements.isNullAt(i + offset)) {
       serializeSwitch(elements, i + offset, out, options);
