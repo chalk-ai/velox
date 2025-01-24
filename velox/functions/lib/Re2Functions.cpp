@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "velox/functions/lib/Re2Functions.h"
-#include <absl/strings/string_view.h>
 #include "velox/functions/lib/string/StringImpl.h"
 #include "velox/vector/FunctionVector.h"
 
@@ -1800,13 +1799,13 @@ std::vector<std::string> PatternMetadata::parseSubstrings(
   // Not support substrings-search with '_' for best performance.
   static const re2::RE2 fullPattern(R"((%+[^%_#\\]+)+%+)");
   static const re2::RE2 subPattern(R"((?:%+)([^%_#\\]+))");
-  absl::string_view full(pattern.data(), pattern.size());
+  re2::StringPiece full(pattern);
   re2::StringPiece cur;
   std::vector<std::string> substrings;
   if (RE2::FullMatch(full, fullPattern)) {
     while (RE2::PartialMatch(full, subPattern, &cur)) {
-      substrings.push_back(std::string(cur));
-      full = absl::string_view(cur.end(), full.cend() - cur.cend());
+      substrings.push_back(cur.as_string());
+      full.set(cur.end(), full.end() - cur.end());
     }
   }
   return substrings;
