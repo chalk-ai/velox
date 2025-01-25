@@ -138,7 +138,7 @@ void serializeArray(
     auto children = elements.type()->asArray().children();
     if (children.size() == 1) {
       // atm I expect the array to have exactly one child type, which seems correct
-      if (children.at(0)->isFixedWidth() && elements.type().get()->isReal()) {
+      if (children.at(0)->isFixedWidth() && children.at(0)->isReal()) {
         auto* loadedVec = elements.loadedVector();
         auto* arrayVec = loadedVec->as<ArrayVector>();
         // theoretically i think we can blindly copy all fixed width children?
