@@ -141,17 +141,16 @@ void serializeArray(
       if (children.at(0)->isFixedWidth() && children.at(0)->isReal()) {
         auto* loadedVec = elements.loadedVector();
         auto* arrayVec = loadedVec->as<ArrayVector>();
-        // theoretically i think we can blindly copy all fixed width children?
-        auto start = offset;
-        auto end = size * children.at(0)->cppSizeInBytes();
 
+        // theoretically i think we can blindly copy all fixed width children?
         auto childVecPtr = arrayVec->elements();
         auto* childLoaded = childVecPtr->loadedVector();
 
-        auto* flatChild = childLoaded->as<FlatVector<float>>();
-        const T* childRawValues = flatChild->rawValues();
-        const uint64_t* childRawBytes = reinterpret_cast<uint64_t*>(childRawValues);
-        out.appendBits(childRawBytes, start, end);
+        const auto* flatChild = childLoaded->as<FlatVector<float>>();
+        const auto* childRawValues = flatChild->rawValues();
+        const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+        std::string_view sv_data(childRawBytes);
+        out.appendStringView(sv_data);
         return;
       }
     }
