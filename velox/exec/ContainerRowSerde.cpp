@@ -134,16 +134,24 @@ void serializeArray(
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
 
-  if (elements.type()->isArray()) {
+  if (elements.type()->isArray() && elements.isFlatEncoding()) {
     auto children = elements.type()->asArray().children();
     if (children.size() == 1) {
       // atm I expect the array to have exactly one child type, which seems correct
-      if (children.at(0)->isFixedWidth()) {
+      if (children.at(0)->isFixedWidth() && elements.type().get()->isReal()) {
+        auto* loadedVec = elements.loadedVector();
+        auto* arrayVec = loadedVec->as<ArrayVector>();
         // theoretically i think we can blindly copy all fixed width children?
         auto start = offset;
         auto end = size * children.at(0)->cppSizeInBytes();
-        auto rawValues = elements.as<uint64_t>();
-        out.appendBits(rawValues, start, end);
+
+        auto childVecPtr = arrayVec->elements();
+        auto* childLoaded = childVecPtr->loadedVector();
+
+        auto* flatChild = childLoaded->as<FlatVector<float>>();
+        const T* childRawValues = flatChild->rawValues();
+        const uint64_t* childRawBytes = reinterpret_cast<uint64_t*>(childRawValues);
+        out.appendBits(childRawBytes, start, end);
         return;
       }
     }
