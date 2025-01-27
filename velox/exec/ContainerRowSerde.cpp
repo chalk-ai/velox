@@ -125,6 +125,26 @@ void writeNulls(
   }
 }
 
+void serializeArrayFixedWidthOptimized(const BaseVector& elements,
+    vector_size_t offset,
+    vector_size_t size,
+    ByteOutputStream& out,
+    const ContainerRowSerdeOptions& options) {
+  auto* loadedVec = elements.loadedVector();
+  auto* arrayVec = loadedVec->as<ArrayVector>();
+
+  // theoretically i think we can blindly copy all fixed width children?
+  auto childVecPtr = arrayVec->elements();
+  auto* childLoaded = childVecPtr->loadedVector();
+
+  const auto* flatChild = childLoaded->as<FlatVector<float>>();
+  const auto* childRawValues = flatChild->rawValues();
+  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+  std::string_view sv_data(childRawBytes);
+  out.appendStringView(sv_data);
+  return;
+}
+
 void serializeArray(
     const BaseVector& elements,
     vector_size_t offset,
@@ -135,22 +155,10 @@ void serializeArray(
   writeNulls(elements, offset, size, out);
 
   if (elements.type()->isArray() && elements.isFlatEncoding()) {
-    auto children = elements.type()->asArray().children();
-    if (children.size() == 1) {
+    if (auto children = elements.type()->asArray().children(); children.size() == 1) {
       // atm I expect the array to have exactly one child type, which seems correct
       if (children.at(0)->isFixedWidth() && children.at(0)->isReal()) {
-        auto* loadedVec = elements.loadedVector();
-        auto* arrayVec = loadedVec->as<ArrayVector>();
-
-        // theoretically i think we can blindly copy all fixed width children?
-        auto childVecPtr = arrayVec->elements();
-        auto* childLoaded = childVecPtr->loadedVector();
-
-        const auto* flatChild = childLoaded->as<FlatVector<float>>();
-        const auto* childRawValues = flatChild->rawValues();
-        const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
-        std::string_view sv_data(childRawBytes);
-        out.appendStringView(sv_data);
+        serializeArrayFixedWidthOptimized(elements, offset, size, out, options);
         return;
       }
     }
