@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <iostream>
+
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
@@ -27,9 +29,9 @@ void serializeArrayFixedWidthOptimized(
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
   auto* childLoaded = elements.loadedVector();
-  const auto* flatChild = childLoaded->as<FlatVector<char>>();
-  const auto* childRawBytes = flatChild->rawValues();
-  //const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+  const auto* flatChild = childLoaded->as<FlatVector<float>>();
+  const auto* childRawValues = flatChild->rawValues();
+  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
   auto read_size = size * elements.type()->cppSizeInBytes();
   std::string_view sv_data(childRawBytes, read_size);
   out.appendStringView(sv_data);
@@ -127,15 +129,21 @@ void writeNulls(
     folly::Range<const vector_size_t*> indices,
     ByteOutputStream& out) {
   auto size = indices.size();
-  for (auto i = 0; i < size; i += 64) {
-    uint64_t flags = 0;
-    auto end = i + 64 < size ? 64 : size - i;
-    for (auto bit = 0; bit < end; ++bit) {
-      if (values.isNullAt(indices[i + bit])) {
-        bits::setBit(&flags, bit, true);
+  if (elements.isFlatEncoding() && elements.type()->isFixedWidth() && elements.type()->isReal()) {
+    std::cerr << "Bit fast path" << std::endl;
+    auto* nulls = values.rawNulls();
+    out.appendBits(nulls, 0, size);
+  } else {
+    for (auto i = 0; i < size; i += 64) {
+      uint64_t flags = 0;
+      auto end = i + 64 < size ? 64 : size - i;
+      for (auto bit = 0; bit < end; ++bit) {
+        if (values.isNullAt(indices[i + bit])) {
+          bits::setBit(&flags, bit, true);
+        }
       }
+      out.appendOne<uint64_t>(flags);
     }
-    out.appendOne<uint64_t>(flags);
   }
 }
 
