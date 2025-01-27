@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#include <iostream>
-
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
@@ -28,13 +26,11 @@ void serializeArrayFixedWidthOptimized(
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
-  std::cerr << "Running serializeArrayFixedWidthOptimized" << std::endl;
   auto* childLoaded = elements.loadedVector();
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
   const auto* childRawValues = flatChild->rawValues();
   const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
   auto read_size = childLoaded->size() * elements.type()->cppSizeInBytes();
-  std::cerr << "Num elements:" << childLoaded->size() << " cpp size " << elements.type()->cppSizeInBytes() << std::endl;
   std::string_view sv_data(childRawBytes, read_size);
   out.appendStringView(sv_data);
 }
@@ -149,7 +145,6 @@ void serializeArray(
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
-  std::cerr << "Running serializeArray, type: " << elements.type()->toString() << std::endl;
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
 
