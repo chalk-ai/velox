@@ -29,19 +29,12 @@ void serializeArrayFixedWidthOptimized(
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
   std::cerr << "Running serializeArrayFixedWidthOptimized" << std::endl;
-  auto* loadedVec = elements.loadedVector();
-  auto* arrayVec = loadedVec->as<ArrayVector>();
-
-  // theoretically i think we can blindly copy all fixed width children?
-  auto childVecPtr = arrayVec->elements();
-  auto* childLoaded = childVecPtr->loadedVector();
-
+  auto* childLoaded = elements.loadedVector();
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
   const auto* childRawValues = flatChild->rawValues();
   const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
   std::string_view sv_data(childRawBytes);
   out.appendStringView(sv_data);
-  return;
 }
 
 namespace {
