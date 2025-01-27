@@ -30,7 +30,7 @@ void serializeArrayFixedWidthOptimized(
     const ContainerRowSerdeOptions& options) {
   auto* childLoaded = elements.loadedVector();
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
-  const auto* childRawValues = flatChild->rawValues();
+  const auto* childRawValues = flatChild->rawValues() + offset;
   const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
   auto read_size = size * elements.type()->cppSizeInBytes();
   std::string_view sv_data(childRawBytes, read_size);
@@ -112,10 +112,16 @@ void writeNulls(
     vector_size_t offset,
     vector_size_t size,
     ByteOutputStream& out) {
-    if (values.isFlatEncoding() && (offset % values.type()->cppSizeInBytes() == 0)) {
-      std::cerr << "Bit fast path, offset " << offset << " size:" << size << std::endl;
-      auto* nulls = values.rawNulls();
-      std::string_view sv_data(reinterpret_cast<const char*>(nulls), (size - offset) * sizeof(uint64_t));
+    if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) {
+      // ceil divide the number of bits (e.g. the actualSize of the array) by the
+      // number of bits in a uint64_t, and then compute the number of bytes
+      constexpr size_t bitsInUint64_t = sizeof(uint64_t) * CHAR_BIT;
+      const size_t numberOfUintsForAllBits = (size + bitsInUint64_t - 1) / bitsInUint64_t;
+      const size_t numberOfBytes = numberOfUintsForAllBits * sizeof(uint64_t);
+
+      auto* nulls = values.rawNulls() + (offset / bitsInUint64_t);
+      std::string_view sv_data(reinterpret_cast<const char*>(nulls), numberOfBytes);
+
       out.appendStringView(sv_data);
     } else {
       for (auto i = 0; i < size; i += 64) {
