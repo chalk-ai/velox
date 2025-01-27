@@ -33,7 +33,9 @@ void serializeArrayFixedWidthOptimized(
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
   const auto* childRawValues = flatChild->rawValues();
   const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
-  std::string_view sv_data(childRawBytes);
+  auto read_size = childLoaded->size() * elements.type()->cppSizeInBytes();
+  std::cerr << "Num elements:" << childLoaded->size() << " cpp size " << elements.type()->cppSizeInBytes() << std::endl;
+  std::string_view sv_data(childRawBytes, read_size);
   out.appendStringView(sv_data);
 }
 
