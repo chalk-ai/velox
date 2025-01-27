@@ -115,7 +115,8 @@ void writeNulls(
     if (values.isFlatEncoding() && (offset % values.type()->cppSizeInBytes() == 0)) {
       std::cerr << "Bit fast path, offset " << offset << " size:" << size << std::endl;
       auto* nulls = values.rawNulls();
-      out.appendBits(nulls, offset, size);
+      std::string_view sv_data(reinterpret_cast<const char*>(nulls), (size - offset) * sizeof(uint64_t));
+      out.appendStringView(sv_data);
     } else {
       for (auto i = 0; i < size; i += 64) {
         uint64_t flags = 0;
