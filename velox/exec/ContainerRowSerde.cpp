@@ -22,6 +22,26 @@
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::exec {
+void serializeArrayFixedWidthOptimized(const BaseVector& elements,
+    vector_size_t offset,
+    vector_size_t size,
+    ByteOutputStream& out,
+    const ContainerRowSerdeOptions& options) {
+  std::cerr << "Running serializeArrayFixedWidthOptimized" << std::endl;
+  auto* loadedVec = elements.loadedVector();
+  auto* arrayVec = loadedVec->as<ArrayVector>();
+
+  // theoretically i think we can blindly copy all fixed width children?
+  auto childVecPtr = arrayVec->elements();
+  auto* childLoaded = childVecPtr->loadedVector();
+
+  const auto* flatChild = childLoaded->as<FlatVector<float>>();
+  const auto* childRawValues = flatChild->rawValues();
+  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+  std::string_view sv_data(childRawBytes);
+  out.appendStringView(sv_data);
+  return;
+}
 
 namespace {
 
@@ -125,27 +145,6 @@ void writeNulls(
     }
     out.appendOne<uint64_t>(flags);
   }
-}
-
-void serializeArrayFixedWidthOptimized(const BaseVector& elements,
-    vector_size_t offset,
-    vector_size_t size,
-    ByteOutputStream& out,
-    const ContainerRowSerdeOptions& options) {
-  std::cerr << "Running serializeArrayFixedWidthOptimized" << std::endl;
-  auto* loadedVec = elements.loadedVector();
-  auto* arrayVec = loadedVec->as<ArrayVector>();
-
-  // theoretically i think we can blindly copy all fixed width children?
-  auto childVecPtr = arrayVec->elements();
-  auto* childLoaded = childVecPtr->loadedVector();
-
-  const auto* flatChild = childLoaded->as<FlatVector<float>>();
-  const auto* childRawValues = flatChild->rawValues();
-  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
-  std::string_view sv_data(childRawBytes);
-  out.appendStringView(sv_data);
-  return;
 }
 
 void serializeArray(
