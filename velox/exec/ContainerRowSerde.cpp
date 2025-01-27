@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <iostream>
+
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
@@ -130,6 +132,7 @@ void serializeArrayFixedWidthOptimized(const BaseVector& elements,
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
+  std::cerr << "Running serializeArrayFixedWidthOptimized" << std::endl;
   auto* loadedVec = elements.loadedVector();
   auto* arrayVec = loadedVec->as<ArrayVector>();
 
