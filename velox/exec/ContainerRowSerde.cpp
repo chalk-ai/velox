@@ -27,9 +27,9 @@ void serializeArrayFixedWidthOptimized(
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
   auto* childLoaded = elements.loadedVector();
-  const auto* flatChild = childLoaded->as<FlatVector<float>>();
-  const auto* childRawValues = flatChild->rawValues();
-  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+  const auto* flatChild = childLoaded->as<FlatVector<char>>();
+  const auto* childRawBytes = flatChild->rawValues();
+  //const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
   auto read_size = size * elements.type()->cppSizeInBytes();
   std::string_view sv_data(childRawBytes, read_size);
   out.appendStringView(sv_data);
@@ -148,7 +148,7 @@ void serializeArray(
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
 
-  if (elements.type()->isFixedWidth() && elements.type()->isReal()) {
+  if (elements.isFlatEncoding() && elements.type()->isFixedWidth() && elements.type()->isReal()) {
     serializeArrayFixedWidthOptimized(elements, offset, size, out, options);
     return;
   }
