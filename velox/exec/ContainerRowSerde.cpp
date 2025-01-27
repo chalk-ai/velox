@@ -113,7 +113,7 @@ void writeNulls(
     vector_size_t size,
     ByteOutputStream& out) {
     if (values.isFlatEncoding() && (offset % values.type()->cppSizeInBytes() == 0)) {
-      std::cerr << "Bit fast path" << std::endl;
+      std::cerr << "Bit fast path, offset " << offset << " size:" << size << std::endl;
       auto* nulls = values.rawNulls();
       out.appendBits(nulls, offset, size);
     } else {
