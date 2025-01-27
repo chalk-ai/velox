@@ -153,11 +153,14 @@ void serializeArray(
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
+  std::cerr << "Running serializeArray, type: " << elements.type() << std::endl;
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
 
   if (elements.type()->isArray() && elements.isFlatEncoding()) {
-    if (auto children = elements.type()->asArray().children(); children.size() == 1) {
+    auto children = elements.type()->asArray().children();
+    std::cerr << "serializeArray, child type: " << children.at(0) << std::endl;
+    if (children.size() == 1) {
       // atm I expect the array to have exactly one child type, which seems correct
       if (children.at(0)->isFixedWidth() && children.at(0)->isReal()) {
         serializeArrayFixedWidthOptimized(elements, offset, size, out, options);
