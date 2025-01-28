@@ -114,7 +114,7 @@ void writeNulls(
     for (auto i = 0; i < size; ++i) {
       out.appendOne<uint64_t>(0);
     }
-  } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) {
+  } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
     // ceil divide the number of bits (e.g. the actualSize of the array) by the
     // number of bits in a uint64_t, and then compute the number of bytes
     constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
@@ -167,7 +167,9 @@ void serializeArray(
   out.appendOne<int32_t>(size);
   writeNulls(elements, offset, size, out);
 
-  if (elements.isFlatEncoding() && elements.type()->isFixedWidth() && elements.type()->isReal()) {
+  if (elements.isFlatEncoding() && elements.type()->isReal() &&
+    (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0) &&
+    elements.type()->isReal()) [[unlikely]] {
     serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
   }
