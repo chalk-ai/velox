@@ -15,6 +15,8 @@
  */
 
 #include <iostream>
+#include <cstdint>
+#include <type_traits>
 
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
@@ -115,12 +117,16 @@ bool writeNulls(
     vector_size_t size,
     ByteOutputStream& out) {
   constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
+  static_assert(
+      std::is_same_v<decltype(std::declval<BaseVector>().rawNulls()), uint64_t*>,
+      "Error: 'rawNulls' must be of type uint64_t*"
+  );
   if (values.rawNulls() == nullptr) {
     for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
       out.appendOne<uint64_t>(0);
     }
     return false;
-  } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
+  } else if (values.isFlatEncoding() && values.type()->isReal() && offset % BITS_IN_UINT64_T == 0 && size % BITS_IN_UINT64_T == 0) [[unlikely]] {
     auto firstWord = offset / BITS_IN_UINT64_T;
     auto* nulls = values.rawNulls() + firstWord;
     uint64_t allValid = 0;
@@ -174,8 +180,7 @@ void serializeArray(
   out.appendOne<int32_t>(size);
   auto hadNull = writeNulls(elements, offset, size, out);
 
-  if (!hadNull && elements.isFlatEncoding() && elements.type()->isReal() &&
-    elements.type()->isReal()) [[unlikely]] {
+  if (!hadNull && elements.isFlatEncoding() && elements.type()->isReal()) [[unlikely]] {
     serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
   }
