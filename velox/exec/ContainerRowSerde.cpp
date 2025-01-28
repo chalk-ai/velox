@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <iostream>
+
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
@@ -26,6 +28,7 @@ void serializeFloatArrayOptimized(
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
+  std::cerr << "Array fast path" << std::endl;
   auto* childLoaded = elements.loadedVector();
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
   const auto* childRawValues = flatChild->rawValues() + offset;
@@ -117,6 +120,7 @@ bool writeNulls(
     }
     return false;
   } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
+    std::cerr << "Null fastpath" << std::endl;
     // ceil divide the number of bits (e.g. the actualSize of the array) by the
     // number of bits in a uint64_t, and then compute the number of bytes
     auto firstWord = offset / BITS_IN_UINT64_T;               // which 64-bit word offset starts in
