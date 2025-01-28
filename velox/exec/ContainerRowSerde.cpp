@@ -14,15 +14,13 @@
  * limitations under the License.
  */
 
-#include <iostream>
-
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::exec {
-void serializeArrayFixedWidthOptimized(
+void serializeFloatArrayOptimized(
     const BaseVector& elements,
     vector_size_t offset,
     vector_size_t size,
@@ -170,7 +168,7 @@ void serializeArray(
   writeNulls(elements, offset, size, out);
 
   if (elements.isFlatEncoding() && elements.type()->isFixedWidth() && elements.type()->isReal()) {
-    serializeArrayFixedWidthOptimized(elements, offset, size, out, options);
+    serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
   }
 
