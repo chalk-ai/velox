@@ -28,7 +28,6 @@ void serializeFloatArrayOptimized(
     vector_size_t size,
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
-  std::cerr << "Array fast path" << std::endl;
   auto* childLoaded = elements.loadedVector();
   const auto* flatChild = childLoaded->as<FlatVector<float>>();
   const auto* childRawValues = flatChild->rawValues() + offset;
@@ -117,13 +116,11 @@ bool writeNulls(
     ByteOutputStream& out) {
   constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
   if (values.rawNulls() == nullptr) {
-    std::cerr << "Empty null fastpath" << std::endl;
     for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
       out.appendOne<uint64_t>(0);
     }
     return false;
   } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
-    std::cerr << "Null fastpath" << std::endl;
     auto firstWord = offset / BITS_IN_UINT64_T;
     auto* nulls = values.rawNulls() + firstWord;
     uint64_t allValid = 0;
@@ -135,7 +132,6 @@ bool writeNulls(
     // a bit should be set if any nulls exist
     return allValid != 0;
   } else {
-    std::cerr << "Null slowpath" << std::endl;
     bool hadNull = false;
     for (auto i = 0; i < size; i += 64) {
       uint64_t flags = 0;
@@ -183,7 +179,7 @@ void serializeArray(
     serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
   }
-  std::cerr << "Array slowpath" << std::endl;
+
   for (auto i = 0; i < size; ++i) {
     if (!elements.isNullAt(i + offset)) {
       serializeSwitch(elements, i + offset, out, options);
