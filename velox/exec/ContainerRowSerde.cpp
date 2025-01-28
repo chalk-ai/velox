@@ -105,7 +105,7 @@ void serializeOne<TypeKind::ROW>(
   }
 }
 
-void writeNulls(
+bool writeNulls(
     const BaseVector& values,
     vector_size_t offset,
     vector_size_t size,
@@ -115,6 +115,7 @@ void writeNulls(
     for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
       out.appendOne<uint64_t>(0);
     }
+    return false;
   } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
     // ceil divide the number of bits (e.g. the actualSize of the array) by the
     // number of bits in a uint64_t, and then compute the number of bytes
@@ -124,20 +125,28 @@ void writeNulls(
     size_t numBytes = numWords * sizeof(uint64_t);
 
     auto* nulls = values.rawNulls() + firstWord;
+    uint64_t hadNull = false;
+    for (int i = 0; i < numWords; ++i) {
+      hadNull |= nulls[i];
+    }
     std::string_view sv_data(reinterpret_cast<const char*>(nulls), numBytes);
 
     out.appendStringView(sv_data);
+    return hadNull != 0;
   } else {
+    bool hadNull = false;
     for (auto i = 0; i < size; i += 64) {
       uint64_t flags = 0;
       auto end = i + 64 < size ? 64 : size - i;
       for (auto bit = 0; bit < end; ++bit) {
         if (values.isNullAt(offset + i + bit)) {
           bits::setBit(&flags, bit, true);
+          hadNull = true;
         }
       }
       out.appendOne<uint64_t>(flags);
     }
+    return hadNull;
   }
 }
 
@@ -165,9 +174,9 @@ void serializeArray(
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
   out.appendOne<int32_t>(size);
-  writeNulls(elements, offset, size, out);
+  auto hadNull = writeNulls(elements, offset, size, out);
 
-  if (elements.isFlatEncoding() && elements.type()->isReal() &&
+  if (!hadNull && elements.isFlatEncoding() && elements.type()->isReal() &&
     (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0) &&
     elements.type()->isReal()) [[unlikely]] {
     serializeFloatArrayOptimized(elements, offset, size, out, options);
