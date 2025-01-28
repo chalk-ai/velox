@@ -111,7 +111,7 @@ void writeNulls(
     vector_size_t size,
     ByteOutputStream& out) {
   if (values.rawNulls() == nullptr) {
-    for (auto i = 0; i < size; ++i) {
+    for (auto i = 0; i < size; i += sizeof(uint64_t)) {
       out.appendOne<uint64_t>(0);
     }
   } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
