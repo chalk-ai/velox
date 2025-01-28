@@ -135,6 +135,7 @@ bool writeNulls(
     // a bit should be set if any nulls exist
     return allValid != 0;
   } else {
+    std::cerr << "Null slowpath" << std::endl;
     bool hadNull = false;
     for (auto i = 0; i < size; i += 64) {
       uint64_t flags = 0;
@@ -182,7 +183,7 @@ void serializeArray(
     serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
   }
-
+  std::cerr << "Array slowpath" << std::endl;
   for (auto i = 0; i < size; ++i) {
     if (!elements.isNullAt(i + offset)) {
       serializeSwitch(elements, i + offset, out, options);
