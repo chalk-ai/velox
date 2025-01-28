@@ -115,16 +115,14 @@ void writeNulls(
     if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) {
       // ceil divide the number of bits (e.g. the actualSize of the array) by the
       // number of bits in a uint64_t, and then compute the number of bytes
-      constexpr size_t bitsInUint64_t = sizeof(uint64_t) * CHAR_BIT;
-      const size_t numberOfUintsForAllBits = (size + bitsInUint64_t - 1) / bitsInUint64_t;
-      const size_t numberOfBytes = numberOfUintsForAllBits * sizeof(uint64_t);
+      constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
+      auto firstWord = offset / BITS_IN_UINT64_T;               // which 64-bit word offset starts in
+      auto lastWord  = (offset + size - 1) / BITS_IN_UINT64_T;  // which 64-bit word offset+size-1 ends in
+      size_t numWords = lastWord - firstWord + 1;               // how many 64-bit words cover [offset .. offset+size-1]
+      size_t numBytes = numWords * sizeof(uint64_t);
 
-      // since the size becomes bits, but the storage is uint64_t, we need to compute
-      // an adjusted offset into the rawNulls array
-      const auto converted_offset =  ((offset + bitsInUint64_t - 1) / bitsInUint64_t);
-      std::cerr << "Num bytes:" << numberOfBytes << " number of uints: " << numberOfUintsForAllBits << " offset: " <<converted_offset << std::endl;
-      auto* nulls = values.rawNulls() + converted_offset;
-      std::string_view sv_data(reinterpret_cast<const char*>(nulls), numberOfBytes);
+      auto* nulls = values.rawNulls() + firstWord;
+      std::string_view sv_data(reinterpret_cast<const char*>(nulls), numBytes);
 
       out.appendStringView(sv_data);
     } else {
