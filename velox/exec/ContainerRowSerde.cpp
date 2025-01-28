@@ -118,7 +118,7 @@ bool writeNulls(
     ByteOutputStream& out) {
   constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
   static_assert(
-      std::is_same_v<decltype(std::declval<BaseVector>().rawNulls()), uint64_t*>,
+      std::is_same_v<decltype(std::declval<BaseVector>().rawNulls()), const uint64_t*>,
       "Error: 'rawNulls' must be of type uint64_t*"
   );
   if (values.rawNulls() == nullptr) {
