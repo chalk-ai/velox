@@ -119,8 +119,11 @@ void writeNulls(
       const size_t numberOfUintsForAllBits = (size + bitsInUint64_t - 1) / bitsInUint64_t;
       const size_t numberOfBytes = numberOfUintsForAllBits * sizeof(uint64_t);
 
-      std::cerr << "Num bytes " << numberOfBytes << " number of uints" << numberOfUintsForAllBits << std::endl;
-      auto* nulls = values.rawNulls() + numberOfUintsForAllBits;
+      // since the size becomes bits, but the storage is uint64_t, we need to compute
+      // an adjusted offset into the rawNulls array
+      const auto converted_offset =  ((offset + bitsInUint64_t - 1) / bitsInUint64_t);
+      std::cerr << "Num bytes:" << numberOfBytes << " number of uints: " << numberOfUintsForAllBits << " offset: " <<converted_offset << std::endl;
+      auto* nulls = values.rawNulls() + converted_offset;
       std::string_view sv_data(reinterpret_cast<const char*>(nulls), numberOfBytes);
 
       out.appendStringView(sv_data);
