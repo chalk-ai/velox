@@ -110,14 +110,14 @@ void writeNulls(
     vector_size_t offset,
     vector_size_t size,
     ByteOutputStream& out) {
+  constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
   if (values.rawNulls() == nullptr) {
-    for (auto i = 0; i < size; i += sizeof(uint64_t)) {
+    for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
       out.appendOne<uint64_t>(0);
     }
   } else if (values.isFlatEncoding() && values.type()->isReal() && (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0)) [[unlikely]] {
     // ceil divide the number of bits (e.g. the actualSize of the array) by the
     // number of bits in a uint64_t, and then compute the number of bytes
-    constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
     auto firstWord = offset / BITS_IN_UINT64_T;               // which 64-bit word offset starts in
     auto lastWord  = (offset + size - 1) / BITS_IN_UINT64_T;  // which 64-bit word offset+size-1 ends in
     size_t numWords = lastWord - firstWord + 1;               // how many 64-bit words cover [offset .. offset+size-1]
