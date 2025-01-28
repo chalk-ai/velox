@@ -117,6 +117,7 @@ bool writeNulls(
     ByteOutputStream& out) {
   constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
   if (values.rawNulls() == nullptr) {
+    std::cerr << "Empty null fastpath" << std::endl;
     for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
       out.appendOne<uint64_t>(0);
     }
@@ -177,7 +178,6 @@ void serializeArray(
   auto hadNull = writeNulls(elements, offset, size, out);
 
   if (!hadNull && elements.isFlatEncoding() && elements.type()->isReal() &&
-    (offset % sizeof(uint64_t) == 0) && (size % sizeof(uint64_t) == 0) &&
     elements.type()->isReal()) [[unlikely]] {
     serializeFloatArrayOptimized(elements, offset, size, out, options);
     return;
