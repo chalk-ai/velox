@@ -14,12 +14,30 @@
  * limitations under the License.
  */
 
+#include <iostream>
+#include <cstdint>
+#include <type_traits>
+
 #include "velox/exec/ContainerRowSerde.h"
 #include "velox/type/FloatingPointUtil.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::exec {
+void serializeFloatArrayOptimized(
+    const BaseVector& elements,
+    vector_size_t offset,
+    vector_size_t size,
+    ByteOutputStream& out,
+    const ContainerRowSerdeOptions& options) {
+  auto* childLoaded = elements.loadedVector();
+  const auto* flatChild = childLoaded->as<FlatVector<float>>();
+  const auto* childRawValues = flatChild->rawValues() + offset;
+  const auto* childRawBytes = reinterpret_cast<const char*>(childRawValues);
+  auto read_size = size * elements.type()->cppSizeInBytes();
+  std::string_view sv_data(childRawBytes, read_size);
+  out.appendStringView(sv_data);
+}
 
 namespace {
 
@@ -91,20 +109,48 @@ void serializeOne<TypeKind::ROW>(
   }
 }
 
-void writeNulls(
+
+
+bool writeNulls(
     const BaseVector& values,
     vector_size_t offset,
     vector_size_t size,
     ByteOutputStream& out) {
-  for (auto i = 0; i < size; i += 64) {
-    uint64_t flags = 0;
-    auto end = i + 64 < size ? 64 : size - i;
-    for (auto bit = 0; bit < end; ++bit) {
-      if (values.isNullAt(offset + i + bit)) {
-        bits::setBit(&flags, bit, true);
-      }
+  constexpr size_t BITS_IN_UINT64_T = sizeof(uint64_t) * CHAR_BIT;
+  static_assert(
+      std::is_same_v<decltype(std::declval<BaseVector>().rawNulls()), const uint64_t*>,
+      "Error: 'rawNulls' must be of type uint64_t*"
+  );
+  if (values.rawNulls() == nullptr) {
+    for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
+      out.appendOne<uint64_t>(0);
     }
-    out.appendOne<uint64_t>(flags);
+    return false;
+  } else if (values.isFlatEncoding() && values.type()->isReal() && offset % BITS_IN_UINT64_T == 0 && size % BITS_IN_UINT64_T == 0) [[unlikely]] {
+    auto firstWord = offset / BITS_IN_UINT64_T;
+    auto* nulls = values.rawNulls() + firstWord;
+    uint64_t allValid = 0;
+    for (auto i = 0; i < size; i += BITS_IN_UINT64_T) {
+      auto negatedMask = ~nulls[i];
+      allValid |= negatedMask;
+      out.appendOne<uint64_t>(negatedMask);
+    }
+    // a bit should be set if any nulls exist
+    return allValid != 0;
+  } else {
+    bool hadNull = false;
+    for (auto i = 0; i < size; i += 64) {
+      uint64_t flags = 0;
+      auto end = i + 64 < size ? 64 : size - i;
+      for (auto bit = 0; bit < end; ++bit) {
+        if (values.isNullAt(offset + i + bit)) {
+          bits::setBit(&flags, bit, true);
+          hadNull = true;
+        }
+      }
+      out.appendOne<uint64_t>(flags);
+    }
+    return hadNull;
   }
 }
 
@@ -132,7 +178,13 @@ void serializeArray(
     ByteOutputStream& out,
     const ContainerRowSerdeOptions& options) {
   out.appendOne<int32_t>(size);
-  writeNulls(elements, offset, size, out);
+  auto hadNull = writeNulls(elements, offset, size, out);
+
+  if (!hadNull && elements.isFlatEncoding() && elements.type()->isReal()) [[unlikely]] {
+    serializeFloatArrayOptimized(elements, offset, size, out, options);
+    return;
+  }
+
   for (auto i = 0; i < size; ++i) {
     if (!elements.isNullAt(i + offset)) {
       serializeSwitch(elements, i + offset, out, options);
