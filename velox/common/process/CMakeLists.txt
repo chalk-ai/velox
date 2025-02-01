@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+add_subdirectory(backward-cpp)
+find_package(Backward)
+
 velox_add_library(
   velox_process
   ProcessBase.cpp
@@ -23,7 +26,7 @@ velox_add_library(
 
 velox_link_libraries(
   velox_process
-  PUBLIC velox_file velox_flag_definitions Folly::folly
+  PUBLIC velox_file velox_flag_definitions Folly::folly  Backward::Interface
   PRIVATE fmt::fmt gflags::gflags glog::glog)
 
 if(${VELOX_BUILD_TESTING})

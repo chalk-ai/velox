@@ -312,14 +312,9 @@ std::string StackTrace::log(
   return tracefn;
 }
 
-#if VELOX_HAS_SYMBOLIZER
 namespace {
-inline std::string translateFrameImpl(void* addressPtr) {
-  // TODO: lineNumbers has been disabled since 2009.
-  using namespace folly::symbolizer;
-
+inline std::string translateFrameImpl(Trace* addressPtr) {
   auto* trace = reinterpret_cast<Trace*>(addressPtr);
-  TraceResolver resolver;
   resolver.
   Symbolizer symbolizer(LocationInfoMode::DISABLED);
   SymbolizedFrame frame;
@@ -330,16 +325,10 @@ inline std::string translateFrameImpl(void* addressPtr) {
   return printer.str();
 }
 } // namespace
-#endif
 
-std::string StackTrace::translateFrame(void* addressPtr, bool /*lineNumbers*/) {
-#if VELOX_HAS_SYMBOLIZER
+std::string AppleStackTrace::translateFrame(void* addressPtr, bool /*lineNumbers*/) {
   return folly::fibers::runInMainContext(
       [addressPtr]() { return translateFrameImpl(addressPtr); });
-#else
-  static_cast<void>(addressPtr);
-  return std::string{};
-#endif
 }
 
 std::string StackTrace::demangle(const char* mangled) {

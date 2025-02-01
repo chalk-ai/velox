@@ -88,8 +88,26 @@ class StackTraceImpl {
 
 #ifdef __APPLE__
 
-class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
+#include "velox/common/process/backward.h"
 
+class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
+  explicit AppleStackTrace(int32_t skipFrames = 0) : StackTraceImpl(skipFrames) {}
+
+  virtual ~AppleStackTrace() override {}
+
+  AppleStackTrace(const AppleStackTrace& other);
+  AppleStackTrace& operator=(const AppleStackTrace& other);
+
+  std::string translateFrame(void* framePtr, bool lineNumbers) const override;
+  std::string demangle(const char* mangled) const override;
+  const std::string& toString() const override;
+  const std::vector<std::string>& toStrVector() const override;
+  std::string log(const char* errorType, std::string* out) const override;
+
+protected:
+  void create(int32_t skipFrames) override;
+private:
+  TraceResolver resolver_;
 };
 
 using StackTrace = AppleStackTrace;
