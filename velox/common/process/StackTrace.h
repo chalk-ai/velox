@@ -26,17 +26,18 @@ namespace facebook::velox::process {
 ///////////////////////////////////////////////////////////////////////////////
 
 // TODO: Deprecate in favor of folly::symbolizer.
-class StackTrace {
+template <typename StackTrace>
+class StackTraceImpl {
  public:
   /**
    * Translate a frame pointer to file name and line number pair.
    */
-  static std::string translateFrame(void* framePtr, bool lineNumbers = true);
+  virtual std::string translateFrame(void* framePtr, bool lineNumbers = true) const = 0;
 
   /**
    * Demangle a function name.
    */
-  static std::string demangle(const char* mangled);
+  virtual std::string demangle(const char* mangled) const = 0;
 
  public:
   /**
@@ -44,20 +45,22 @@ class StackTrace {
    * frames for StackTrace::StackTrace.  If you want those, you can pass
    * '-2' to skipFrames.
    */
-  explicit StackTrace(int32_t skipFrames = 0);
+  explicit StackTraceImpl(int32_t skipFrames = 0) : skip_frames_(skipFrames) {}
+  virtual ~StackTraceImpl() {}
 
-  StackTrace(const StackTrace& other);
-  StackTrace& operator=(const StackTrace& other);
+  StackTraceImpl(const StackTraceImpl& other) {
+    skip_frames_ = other.skip_frames_;
+  }
 
   /**
    * Generate an output of the written stack trace.
    */
-  const std::string& toString() const;
+  virtual const std::string& toString() const = 0;
 
   /**
    * Generate a vector that for each position has the title of the frame.
    */
-  const std::vector<std::string>& toStrVector() const;
+  virtual const std::vector<std::string>& toStrVector() const = 0;
 
   /**
    * Return the raw stack pointers.
@@ -71,21 +74,56 @@ class StackTrace {
    * also store translated stack trace into the variable.
    * Returns the name of the generated file.
    */
-  std::string log(const char* errorType, std::string* out = nullptr) const;
+  virtual std::string log(const char* errorType, std::string* out = nullptr) const = 0;
 
- private:
+ protected:
   /**
    * Record bt pointers.
    */
-  void create(int32_t skipFrames);
+  virtual void create(int32_t skipFrames) = 0;
+
+  int32_t skip_frames_;
+  std::vector<void*> bt_pointers_;
+};
+
+#ifdef __APPLE__
+
+class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
+
+};
+
+using StackTrace = AppleStackTrace;
+
+#else
+
+class LinuxStackTrace : public StackTraceImpl<LinuxStackTrace> {
+ public:
+  explicit LinuxStackTrace(int32_t skipFrames = 0) : StackTraceImpl(skipFrames) {}
+
+  virtual ~LinuxStackTrace() override {}
+
+  LinuxStackTrace(const LinuxStackTrace& other);
+  LinuxStackTrace& operator=(const LinuxStackTrace& other);
+
+  std::string translateFrame(void* framePtr, bool lineNumbers) const override;
+  std::string demangle(const char* mangled) const override;
+  const std::string& toString() const override;
+  const std::vector<std::string>& toStrVector() const override;
+  std::string log(const char* errorType, std::string* out) const override;
+
+ protected:
+  void create(int32_t skipFrames) override;
 
  private:
-  std::vector<void*> bt_pointers_;
-  mutable folly::once_flag bt_vector_flag_;
-  mutable std::vector<std::string> bt_vector_;
-  mutable folly::once_flag bt_flag_;
-  mutable std::string bt_;
+ mutable folly::once_flag bt_vector_flag_;
+ mutable std::vector<std::string> bt_vector_;
+ mutable folly::once_flag bt_flag_;
+ mutable std::string bt_;
 };
+
+using StackTrace = LinuxStackTrace;
+
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 } // namespace facebook::velox::process
