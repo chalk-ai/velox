@@ -65,9 +65,7 @@ class StackTraceImpl {
   /**
    * Return the raw stack pointers.
    */
-  const std::vector<void*>& getStack() const {
-    return bt_pointers_;
-  }
+  virtual const std::vector<void*>& getStack() const = 0;
 
   /**
    * Log stacktrace into a file under /tmp. If "out" is not null,
@@ -83,15 +81,14 @@ class StackTraceImpl {
   virtual void create(int32_t skipFrames) = 0;
 
   int32_t skip_frames_;
-  std::vector<void*> bt_pointers_;
 };
 
 #ifdef __APPLE__
 
-#include "velox/common/process/backward.h"
+#include <backward.h>
 
 class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
-  explicit AppleStackTrace(int32_t skipFrames = 0) : StackTraceImpl(skipFrames) {}
+  explicit AppleStackTrace(int32_t skipFrames = 0);
 
   virtual ~AppleStackTrace() override {}
 
@@ -102,12 +99,19 @@ class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
   std::string demangle(const char* mangled) const override;
   const std::string& toString() const override;
   const std::vector<std::string>& toStrVector() const override;
+  const std::vector<void*>& getStack() const override;
   std::string log(const char* errorType, std::string* out) const override;
 
 protected:
   void create(int32_t skipFrames) override;
+  void init_resolver() const;
+
 private:
-  TraceResolver resolver_;
+  backward::StackTrace st_;
+  mutable folly::once_flag resolver_flag_;
+  mutable backward::TraceResolver resolver_;
+  mutable folly::once_flag bt_vector_flag_;
+  mutable std::vector<std::string> bt_vector_;
 };
 
 using StackTrace = AppleStackTrace;
@@ -115,9 +119,8 @@ using StackTrace = AppleStackTrace;
 #else
 
 class LinuxStackTrace : public StackTraceImpl<LinuxStackTrace> {
- public:
-  explicit LinuxStackTrace(int32_t skipFrames = 0) : StackTraceImpl(skipFrames) {}
-
+public:
+  explicit AppleStackTrace(int32_t skipFrames = 0);
   virtual ~LinuxStackTrace() override {}
 
   LinuxStackTrace(const LinuxStackTrace& other);
@@ -127,16 +130,18 @@ class LinuxStackTrace : public StackTraceImpl<LinuxStackTrace> {
   std::string demangle(const char* mangled) const override;
   const std::string& toString() const override;
   const std::vector<std::string>& toStrVector() const override;
+  const std::vector<void*>& getStack() const override;
   std::string log(const char* errorType, std::string* out) const override;
 
- protected:
+protected:
   void create(int32_t skipFrames) override;
 
- private:
- mutable folly::once_flag bt_vector_flag_;
- mutable std::vector<std::string> bt_vector_;
- mutable folly::once_flag bt_flag_;
- mutable std::string bt_;
+private:
+  mutable folly::once_flag bt_vector_flag_;
+  mutable std::vector<std::string> bt_vector_;
+  mutable folly::once_flag bt_flag_;
+  mutable std::string bt_;
+  std::vector<void*> bt_pointers_;
 };
 
 using StackTrace = LinuxStackTrace;

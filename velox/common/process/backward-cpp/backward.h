@@ -738,6 +738,7 @@ public:
   size_t thread_id() const { return _thread_id; }
 
   void skip_n_firsts(size_t n) { _skip = n; }
+  size_t skip_n_firsts() const { return _skip; }
 
 protected:
   void load_thread_info() {
@@ -766,8 +767,6 @@ protected:
 
   void set_error_addr(void *error_addr) { _error_addr = error_addr; }
   void *error_addr() const { return _error_addr; }
-
-  size_t skip_n_firsts() const { return _skip; }
 
 private:
   size_t _thread_id;
@@ -1239,7 +1238,6 @@ public:
 
   virtual ResolvedTrace resolve(ResolvedTrace t) { return t; }
 
-protected:
   std::string demangle(const char *funcname) {
     return _demangler.demangle(funcname);
   }
