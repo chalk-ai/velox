@@ -120,7 +120,7 @@ using StackTrace = AppleStackTrace;
 
 class LinuxStackTrace : public StackTraceImpl<LinuxStackTrace> {
 public:
-  explicit AppleStackTrace(int32_t skipFrames = 0);
+  explicit LinuxStackTrace(int32_t skipFrames = 0);
   virtual ~LinuxStackTrace() override {}
 
   LinuxStackTrace(const LinuxStackTrace& other);
