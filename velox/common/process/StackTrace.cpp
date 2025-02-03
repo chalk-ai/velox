@@ -107,6 +107,10 @@ const std::vector<std::string>& LinuxStackTrace::toStrVector() const {
   return bt_vector_;
 }
 
+const std::vector<void*>& LinuxStackTrace::getStack() const {
+  return bt_pointers_;
+}
+
 const std::string& LinuxStackTrace::toString() const {
   folly::call_once(bt_flag_, [&] {
     const auto& vec = toStrVector();
@@ -232,6 +236,10 @@ void AppleStackTrace::create(int32_t skipFrames) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // reporting functions
+
+const std::vector<void*>& getStack() const {
+  return st_.getStackTracePointers();
+}
 
 const std::vector<std::string>& AppleStackTrace::toStrVector() const {
   folly::call_once(bt_vector_flag_, [&] {

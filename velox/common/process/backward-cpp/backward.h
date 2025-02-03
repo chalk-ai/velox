@@ -795,6 +795,10 @@ public:
     return nullptr;
   }
 
+  const std::vector<void *> getStackTracePointers() const {
+    return _stacktr
+  }
+
 protected:
   std::vector<void *> _stacktrace;
 };
