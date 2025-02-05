@@ -85,7 +85,7 @@ class StackTraceImpl {
 
 #ifdef __APPLE__
 
-#include <backward.h>
+#include <backward_velox.h>
 
 class AppleStackTrace : public StackTraceImpl<AppleStackTrace> {
   explicit AppleStackTrace(int32_t skipFrames = 0);

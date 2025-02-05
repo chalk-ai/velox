@@ -1,5 +1,5 @@
 #
-# BackwardMacros.cmake
+# BackwardVeloxMacros.cmake
 # Copyright 2013 Google Inc. All Rights Reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,7 +32,7 @@ set(STACK_WALKING_LIBUNWIND FALSE CACHE BOOL
         "Use libunwind for stack walking")
 
 set(STACK_DETAILS_AUTO_DETECT TRUE CACHE BOOL
-        "Auto detect backward's stack details dependencies")
+        "Auto detect backward_velox's stack details dependencies")
 
 set(STACK_DETAILS_BACKTRACE_SYMBOL FALSE CACHE BOOL
         "Use backtrace from (e)glibc for symbols resolution")
@@ -68,7 +68,7 @@ if (STACK_WALKING_LIBUNWIND)
         find_package_handle_standard_args(libunwind DEFAULT_MSG
                 LIBUNWIND_LIBRARY LIBUNWIND_INCLUDE_DIR)
         mark_as_advanced(LIBUNWIND_INCLUDE_DIR LIBUNWIND_LIBRARY)
-        list(APPEND _BACKWARD_LIBRARIES ${LIBUNWIND_LIBRARY})
+        list(APPEND _BACKWARD_VELOX_LIBRARIES ${LIBUNWIND_LIBRARY})
     endif()
 
     # Disable other unwinders if libunwind is found
@@ -133,25 +133,25 @@ if (${STACK_DETAILS_AUTO_DETECT})
             LIBDL_INCLUDE_DIR LIBDL_LIBRARY)
 
     if (LIBDW_FOUND)
-        LIST(APPEND _BACKWARD_INCLUDE_DIRS ${LIBDW_INCLUDE_DIRS})
-        LIST(APPEND _BACKWARD_LIBRARIES ${LIBDW_LIBRARIES})
+        LIST(APPEND _BACKWARD_VELOX_INCLUDE_DIRS ${LIBDW_INCLUDE_DIRS})
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES ${LIBDW_LIBRARIES})
         set(STACK_DETAILS_DW TRUE)
         set(STACK_DETAILS_BFD FALSE)
         set(STACK_DETAILS_DWARF FALSE)
         set(STACK_DETAILS_BACKTRACE_SYMBOL FALSE)
     elseif(LIBBFD_FOUND)
-        LIST(APPEND _BACKWARD_INCLUDE_DIRS ${LIBBFD_INCLUDE_DIRS})
-        LIST(APPEND _BACKWARD_LIBRARIES ${LIBBFD_LIBRARIES})
+        LIST(APPEND _BACKWARD_VELOX_INCLUDE_DIRS ${LIBBFD_INCLUDE_DIRS})
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES ${LIBBFD_LIBRARIES})
 
         # If we attempt to link against static bfd, make sure to link its dependencies, too
         get_filename_component(bfd_lib_ext "${LIBBFD_LIBRARY}" EXT)
         if (bfd_lib_ext STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}")
             find_library(LIBSFRAME_LIBRARY NAMES sframe)
             if (LIBSFRAME_LIBRARY)
-                list(APPEND _BACKWARD_LIBRARIES ${LIBSFRAME_LIBRARY})
+                list(APPEND _BACKWARD_VELOX_LIBRARIES ${LIBSFRAME_LIBRARY})
             endif()
 
-            list(APPEND _BACKWARD_LIBRARIES iberty z)
+            list(APPEND _BACKWARD_VELOX_LIBRARIES iberty z)
         endif()
 
         set(STACK_DETAILS_DW FALSE)
@@ -159,8 +159,8 @@ if (${STACK_DETAILS_AUTO_DETECT})
         set(STACK_DETAILS_DWARF FALSE)
         set(STACK_DETAILS_BACKTRACE_SYMBOL FALSE)
     elseif(LIBDWARF_FOUND)
-        LIST(APPEND _BACKWARD_INCLUDE_DIRS ${LIBDWARF_INCLUDE_DIRS})
-        LIST(APPEND _BACKWARD_LIBRARIES ${LIBDWARF_LIBRARIES})
+        LIST(APPEND _BACKWARD_VELOX_INCLUDE_DIRS ${LIBDWARF_INCLUDE_DIRS})
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES ${LIBDWARF_LIBRARIES})
 
         set(STACK_DETAILS_DW FALSE)
         set(STACK_DETAILS_BFD FALSE)
@@ -174,35 +174,35 @@ if (${STACK_DETAILS_AUTO_DETECT})
     endif()
 else()
     if (STACK_DETAILS_DW)
-        LIST(APPEND _BACKWARD_LIBRARIES dw)
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES dw)
     endif()
 
     if (STACK_DETAILS_BFD)
-        LIST(APPEND _BACKWARD_LIBRARIES bfd dl)
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES bfd dl)
     endif()
 
     if (STACK_DETAILS_DWARF)
-        LIST(APPEND _BACKWARD_LIBRARIES dwarf elf)
+        LIST(APPEND _BACKWARD_VELOX_LIBRARIES dwarf elf)
     endif()
 endif()
 
 macro(map_definitions var_prefix define_prefix)
     foreach(def ${ARGN})
         if (${${var_prefix}${def}})
-            LIST(APPEND _BACKWARD_DEFINITIONS "${define_prefix}${def}=1")
+            LIST(APPEND _BACKWARD_VELOX_DEFINITIONS "${define_prefix}${def}=1")
         else()
-            LIST(APPEND _BACKWARD_DEFINITIONS "${define_prefix}${def}=0")
+            LIST(APPEND _BACKWARD_VELOX_DEFINITIONS "${define_prefix}${def}=0")
         endif()
     endforeach()
 endmacro()
 
-if (NOT _BACKWARD_DEFINITIONS)
-    map_definitions("STACK_WALKING_" "BACKWARD_HAS_" UNWIND LIBUNWIND BACKTRACE)
-    map_definitions("STACK_DETAILS_" "BACKWARD_HAS_" BACKTRACE_SYMBOL DW BFD DWARF)
+if (NOT _BACKWARD_VELOX_DEFINITIONS)
+    map_definitions("STACK_WALKING_" "BACKWARD_VELOX_HAS_" UNWIND LIBUNWIND BACKTRACE)
+    map_definitions("STACK_DETAILS_" "BACKWARD_VELOX_HAS_" BACKTRACE_SYMBOL DW BFD DWARF)
 endif()
 
 if(WIN32)
-    list(APPEND _BACKWARD_LIBRARIES dbghelp psapi)
+    list(APPEND _BACKWARD_VELOX_LIBRARIES dbghelp psapi)
     if(MINGW)
         include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag(-gcodeview SUPPORT_WINDOWS_DEBUG_INFO)
@@ -211,51 +211,51 @@ if(WIN32)
             add_compile_options(-gcodeview)
         else()
             set(MINGW_MSVCR_LIBRARY "msvcr90$<$<CONFIG:DEBUG>:d>" CACHE STRING "Mingw MSVC runtime import library")
-            list(APPEND _BACKWARD_LIBRARIES ${MINGW_MSVCR_LIBRARY})
+            list(APPEND _BACKWARD_VELOX_LIBRARIES ${MINGW_MSVCR_LIBRARY})
         endif()
     endif()
 endif()
 
-set(BACKWARD_INCLUDE_DIR
+set(BACKWARD_VELOX_INCLUDE_DIR
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-set(BACKWARD_HAS_EXTERNAL_LIBRARIES FALSE)
-set(FIND_PACKAGE_REQUIRED_VARS BACKWARD_INCLUDE_DIR)
-if(DEFINED _BACKWARD_LIBRARIES)
-    set(BACKWARD_HAS_EXTERNAL_LIBRARIES TRUE)
-    list(APPEND FIND_PACKAGE_REQUIRED_VARS _BACKWARD_LIBRARIES)
+set(BACKWARD_VELOX_HAS_EXTERNAL_LIBRARIES FALSE)
+set(FIND_PACKAGE_REQUIRED_VARS BACKWARD_VELOX_INCLUDE_DIR)
+if(DEFINED _BACKWARD_VELOX_LIBRARIES)
+    set(BACKWARD_VELOX_HAS_EXTERNAL_LIBRARIES TRUE)
+    list(APPEND FIND_PACKAGE_REQUIRED_VARS _BACKWARD_VELOX_LIBRARIES)
 endif()
 
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(Backward
+find_package_handle_standard_args(BackwardVelox
         REQUIRED_VARS ${FIND_PACKAGE_REQUIRED_VARS}
 )
-list(APPEND _BACKWARD_INCLUDE_DIRS ${BACKWARD_INCLUDE_DIR})
+list(APPEND _BACKWARD_VELOX_INCLUDE_DIRS ${BACKWARD_VELOX_INCLUDE_DIR})
 
-# add_backward, optional bool argument; if passed and true, backward will be included as a system header
-macro(add_backward target)
-    message(DEPRECATION "The add_backward() macro is deprecated, use target_link_libraries() to link to "
-            "one of the exported targets: Backward::Interface, Backward::Object, or Backward::Backward."
+# add_backward_velox, optional bool argument; if passed and true, backward_velox will be included as a system header
+macro(add_backward_velox target)
+    message(DEPRECATION "The add_backward_velox() macro is deprecated, use target_link_libraries() to link to "
+            "one of the exported targets: BackwardVelox::Interface, BackwardVelox::Object, or BackwardVelox::BackwardVelox."
     )
     if ("${ARGN}")
-        target_include_directories(${target} SYSTEM PRIVATE ${BACKWARD_INCLUDE_DIRS})
+        target_include_directories(${target} SYSTEM PRIVATE ${BACKWARD_VELOX_INCLUDE_DIRS})
     else()
-        target_include_directories(${target} PRIVATE ${BACKWARD_INCLUDE_DIRS})
+        target_include_directories(${target} PRIVATE ${BACKWARD_VELOX_INCLUDE_DIRS})
     endif()
-    set_property(TARGET ${target} APPEND PROPERTY COMPILE_DEFINITIONS ${BACKWARD_DEFINITIONS})
-    set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARIES ${BACKWARD_LIBRARIES})
+    set_property(TARGET ${target} APPEND PROPERTY COMPILE_DEFINITIONS ${BACKWARD_VELOX_DEFINITIONS})
+    set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARIES ${BACKWARD_VELOX_LIBRARIES})
 endmacro()
 
-set(BACKWARD_INCLUDE_DIRS ${_BACKWARD_INCLUDE_DIRS} CACHE INTERNAL "BACKWARD_INCLUDE_DIRS")
-set(BACKWARD_DEFINITIONS ${_BACKWARD_DEFINITIONS} CACHE INTERNAL "BACKWARD_DEFINITIONS")
-set(BACKWARD_LIBRARIES ${_BACKWARD_LIBRARIES} CACHE INTERNAL "BACKWARD_LIBRARIES")
-mark_as_advanced(BACKWARD_INCLUDE_DIRS BACKWARD_DEFINITIONS BACKWARD_LIBRARIES)
+set(BACKWARD_VELOX_INCLUDE_DIRS ${_BACKWARD_VELOX_INCLUDE_DIRS} CACHE INTERNAL "BACKWARD_VELOX_INCLUDE_DIRS")
+set(BACKWARD_VELOX_DEFINITIONS ${_BACKWARD_VELOX_DEFINITIONS} CACHE INTERNAL "BACKWARD_VELOX_DEFINITIONS")
+set(BACKWARD_VELOX_LIBRARIES ${_BACKWARD_VELOX_LIBRARIES} CACHE INTERNAL "BACKWARD_VELOX_LIBRARIES")
+mark_as_advanced(BACKWARD_VELOX_INCLUDE_DIRS BACKWARD_VELOX_DEFINITIONS BACKWARD_VELOX_LIBRARIES)
 
-# Expand each definition in BACKWARD_DEFINITIONS to its own cmake var and export
+# Expand each definition in BACKWARD_VELOX_DEFINITIONS to its own cmake var and export
 # to outer scope
-foreach(var ${BACKWARD_DEFINITIONS})
+foreach(var ${BACKWARD_VELOX_DEFINITIONS})
     string(REPLACE "=" ";" var_as_list ${var})
     list(GET var_as_list 0 var_name)
     list(GET var_as_list 1 var_value)
@@ -265,6 +265,6 @@ endforeach()
 
 # if this file is used from the install tree by find_package(), include the
 # file CMake-generated file where the targets are defined
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/BackwardTargets.cmake)
-    include(${CMAKE_CURRENT_LIST_DIR}/BackwardTargets.cmake)
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/BackwardVeloxTargets.cmake)
+    include(${CMAKE_CURRENT_LIST_DIR}/BackwardVeloxTargets.cmake)
 endif()

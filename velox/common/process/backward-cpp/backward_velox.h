@@ -1,5 +1,5 @@
 /*
- * backward.hpp
+ * backward_velox.hpp
  * Copyright 2013 Google Inc. All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,49 +28,49 @@
 #error "It's not going to compile without a C++ compiler..."
 #endif
 
-#if defined(BACKWARD_CXX11)
-#elif defined(BACKWARD_CXX98)
+#if defined(BACKWARD_VELOX_CXX11)
+#elif defined(BACKWARD_VELOX_CXX98)
 #else
 #if __cplusplus >= 201103L || (defined(_MSC_VER) && _MSC_VER >= 1800)
-#define BACKWARD_CXX11
-#define BACKWARD_ATLEAST_CXX11
-#define BACKWARD_ATLEAST_CXX98
+#define BACKWARD_VELOX_CXX11
+#define BACKWARD_VELOX_ATLEAST_CXX11
+#define BACKWARD_VELOX_ATLEAST_CXX98
 #if __cplusplus >= 201703L || (defined(_MSVC_LANG) && _MSVC_LANG >= 201703L)
-#define BACKWARD_ATLEAST_CXX17
+#define BACKWARD_VELOX_ATLEAST_CXX17
 #endif
 #else
-#define BACKWARD_CXX98
-#define BACKWARD_ATLEAST_CXX98
+#define BACKWARD_VELOX_CXX98
+#define BACKWARD_VELOX_ATLEAST_CXX98
 #endif
 #endif
 
 // You can define one of the following (or leave it to the auto-detection):
 //
-// #define BACKWARD_SYSTEM_LINUX
+// #define BACKWARD_VELOX_SYSTEM_LINUX
 //	- specialization for linux
 //
-// #define BACKWARD_SYSTEM_DARWIN
+// #define BACKWARD_VELOX_SYSTEM_DARWIN
 //	- specialization for Mac OS X 10.5 and later.
 //
-// #define BACKWARD_SYSTEM_WINDOWS
+// #define BACKWARD_VELOX_SYSTEM_WINDOWS
 //  - specialization for Windows (Clang 9 and MSVC2017)
 //
-// #define BACKWARD_SYSTEM_UNKNOWN
+// #define BACKWARD_VELOX_SYSTEM_UNKNOWN
 //	- placebo implementation, does nothing.
 //
-#if defined(BACKWARD_SYSTEM_LINUX)
-#elif defined(BACKWARD_SYSTEM_DARWIN)
-#elif defined(BACKWARD_SYSTEM_UNKNOWN)
-#elif defined(BACKWARD_SYSTEM_WINDOWS)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX)
+#elif defined(BACKWARD_VELOX_SYSTEM_DARWIN)
+#elif defined(BACKWARD_VELOX_SYSTEM_UNKNOWN)
+#elif defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
 #else
 #if defined(__linux) || defined(__linux__)
-#define BACKWARD_SYSTEM_LINUX
+#define BACKWARD_VELOX_SYSTEM_LINUX
 #elif defined(__APPLE__)
-#define BACKWARD_SYSTEM_DARWIN
+#define BACKWARD_VELOX_SYSTEM_DARWIN
 #elif defined(_WIN32)
-#define BACKWARD_SYSTEM_WINDOWS
+#define BACKWARD_VELOX_SYSTEM_WINDOWS
 #else
-#define BACKWARD_SYSTEM_UNKNOWN
+#define BACKWARD_VELOX_SYSTEM_UNKNOWN
 #endif
 #endif
 
@@ -93,50 +93,50 @@
 #include <exception>
 #include <iterator>
 
-#if defined(BACKWARD_SYSTEM_LINUX)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX)
 
 // On linux, backtrace can back-trace or "walk" the stack using the following
 // libraries:
 //
-// #define BACKWARD_HAS_UNWIND 1
+// #define BACKWARD_VELOX_HAS_UNWIND 1
 //  - unwind comes from libgcc, but I saw an equivalent inside clang itself.
 //  - with unwind, the stacktrace is as accurate as it can possibly be, since
 //  this is used by the C++ runtime in gcc/clang for stack unwinding on
 //  exception.
 //  - normally libgcc is already linked to your program by default.
 //
-// #define BACKWARD_HAS_LIBUNWIND 1
+// #define BACKWARD_VELOX_HAS_LIBUNWIND 1
 //  - libunwind provides, in some cases, a more accurate stacktrace as it knows
 //  to decode signal handler frames and lets us edit the context registers when
 //  unwinding, allowing stack traces over bad function references.
 //
-// #define BACKWARD_HAS_BACKTRACE == 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE == 1
 //  - backtrace seems to be a little bit more portable than libunwind, but on
 //  linux, it uses unwind anyway, but abstract away a tiny information that is
 //  sadly really important in order to get perfectly accurate stack traces.
 //  - backtrace is part of the (e)glib library.
 //
 // The default is:
-// #define BACKWARD_HAS_UNWIND == 1
+// #define BACKWARD_VELOX_HAS_UNWIND == 1
 //
 // Note that only one of the define should be set to 1 at a time.
 //
-#if BACKWARD_HAS_UNWIND == 1
-#elif BACKWARD_HAS_LIBUNWIND == 1
-#elif BACKWARD_HAS_BACKTRACE == 1
+#if BACKWARD_VELOX_HAS_UNWIND == 1
+#elif BACKWARD_VELOX_HAS_LIBUNWIND == 1
+#elif BACKWARD_VELOX_HAS_BACKTRACE == 1
 #else
-#undef BACKWARD_HAS_UNWIND
-#define BACKWARD_HAS_UNWIND 1
-#undef BACKWARD_HAS_LIBUNWIND
-#define BACKWARD_HAS_LIBUNWIND 0
-#undef BACKWARD_HAS_BACKTRACE
-#define BACKWARD_HAS_BACKTRACE 0
+#undef BACKWARD_VELOX_HAS_UNWIND
+#define BACKWARD_VELOX_HAS_UNWIND 1
+#undef BACKWARD_VELOX_HAS_LIBUNWIND
+#define BACKWARD_VELOX_HAS_LIBUNWIND 0
+#undef BACKWARD_VELOX_HAS_BACKTRACE
+#define BACKWARD_VELOX_HAS_BACKTRACE 0
 #endif
 
-// On linux, backward can extract detailed information about a stack trace
+// On linux, backward_velox can extract detailed information about a stack trace
 // using one of the following libraries:
 //
-// #define BACKWARD_HAS_DW 1
+// #define BACKWARD_VELOX_HAS_DW 1
 //  - libdw gives you the most juicy details out of your stack traces:
 //    - object filename
 //    - function name
@@ -144,12 +144,12 @@
 //    - line and column numbers
 //    - source code snippet (assuming the file is accessible)
 //    - variable names (if not optimized out)
-//    - variable values (not supported by backward-cpp)
+//    - variable values (not supported by backward_velox-cpp)
 //  - You need to link with the lib "dw":
 //    - apt-get install libdw-dev
 //    - g++/clang++ -ldw ...
 //
-// #define BACKWARD_HAS_BFD 1
+// #define BACKWARD_VELOX_HAS_BFD 1
 //  - With libbfd, you get a fair amount of details:
 //    - object filename
 //    - function name
@@ -160,7 +160,7 @@
 //    - apt-get install binutils-dev
 //    - g++/clang++ -lbfd ...
 //
-// #define BACKWARD_HAS_DWARF 1
+// #define BACKWARD_VELOX_HAS_DWARF 1
 //  - libdwarf gives you the most juicy details out of your stack traces:
 //    - object filename
 //    - function name
@@ -168,35 +168,35 @@
 //    - line and column numbers
 //    - source code snippet (assuming the file is accessible)
 //    - variable names (if not optimized out)
-//    - variable values (not supported by backward-cpp)
+//    - variable values (not supported by backward_velox-cpp)
 //  - You need to link with the lib "dwarf":
 //    - apt-get install libdwarf-dev
 //    - g++/clang++ -ldwarf ...
 //
-// #define BACKWARD_HAS_BACKTRACE_SYMBOL 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL 1
 //  - backtrace provides minimal details for a stack trace:
 //    - object filename
 //    - function name
 //  - backtrace is part of the (e)glib library.
 //
 // The default is:
-// #define BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 //
 // Note that only one of the define should be set to 1 at a time.
 //
-#if BACKWARD_HAS_DW == 1
-#elif BACKWARD_HAS_BFD == 1
-#elif BACKWARD_HAS_DWARF == 1
-#elif BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#if BACKWARD_VELOX_HAS_DW == 1
+#elif BACKWARD_VELOX_HAS_BFD == 1
+#elif BACKWARD_VELOX_HAS_DWARF == 1
+#elif BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 #else
-#undef BACKWARD_HAS_DW
-#define BACKWARD_HAS_DW 0
-#undef BACKWARD_HAS_BFD
-#define BACKWARD_HAS_BFD 0
-#undef BACKWARD_HAS_DWARF
-#define BACKWARD_HAS_DWARF 0
-#undef BACKWARD_HAS_BACKTRACE_SYMBOL
-#define BACKWARD_HAS_BACKTRACE_SYMBOL 1
+#undef BACKWARD_VELOX_HAS_DW
+#define BACKWARD_VELOX_HAS_DW 0
+#undef BACKWARD_VELOX_HAS_BFD
+#define BACKWARD_VELOX_HAS_BFD 0
+#undef BACKWARD_VELOX_HAS_DWARF
+#define BACKWARD_VELOX_HAS_DWARF 0
+#undef BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL
+#define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL 1
 #endif
 
 #include <cxxabi.h>
@@ -229,7 +229,7 @@
 #include <dlfcn.h>
 #endif
 
-#if BACKWARD_HAS_BFD == 1
+#if BACKWARD_VELOX_HAS_BFD == 1
 //              NOTE: defining PACKAGE{,_VERSION} is required before including
 //                    bfd.h on some platforms, see also:
 //                    https://sourceware.org/bugzilla/show_bug.cgi?id=14243
@@ -242,13 +242,13 @@
 #include <bfd.h>
 #endif
 
-#if BACKWARD_HAS_DW == 1
+#if BACKWARD_VELOX_HAS_DW == 1
 #include <dwarf.h>
 #include <elfutils/libdw.h>
 #include <elfutils/libdwfl.h>
 #endif
 
-#if BACKWARD_HAS_DWARF == 1
+#if BACKWARD_VELOX_HAS_DWARF == 1
 #include <algorithm>
 #include <dwarf.h>
 #include <libdwarf.h>
@@ -256,66 +256,66 @@
 #include <map>
 #endif
 
-#if (BACKWARD_HAS_BACKTRACE == 1) || (BACKWARD_HAS_BACKTRACE_SYMBOL == 1)
+#if (BACKWARD_VELOX_HAS_BACKTRACE == 1) || (BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1)
 // then we shall rely on backtrace
 #include <execinfo.h>
 #endif
 
-#endif // defined(BACKWARD_SYSTEM_LINUX)
+#endif // defined(BACKWARD_VELOX_SYSTEM_LINUX)
 
-#if defined(BACKWARD_SYSTEM_DARWIN)
+#if defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 // On Darwin, backtrace can back-trace or "walk" the stack using the following
 // libraries:
 //
-// #define BACKWARD_HAS_UNWIND 1
+// #define BACKWARD_VELOX_HAS_UNWIND 1
 //  - unwind comes from libgcc, but I saw an equivalent inside clang itself.
 //  - with unwind, the stacktrace is as accurate as it can possibly be, since
 //  this is used by the C++ runtime in gcc/clang for stack unwinding on
 //  exception.
 //  - normally libgcc is already linked to your program by default.
 //
-// #define BACKWARD_HAS_LIBUNWIND 1
+// #define BACKWARD_VELOX_HAS_LIBUNWIND 1
 //  - libunwind comes from clang, which implements an API compatible version.
 //  - libunwind provides, in some cases, a more accurate stacktrace as it knows
 //  to decode signal handler frames and lets us edit the context registers when
 //  unwinding, allowing stack traces over bad function references.
 //
-// #define BACKWARD_HAS_BACKTRACE == 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE == 1
 //  - backtrace is available by default, though it does not produce as much
 //  information as another library might.
 //
 // The default is:
-// #define BACKWARD_HAS_UNWIND == 1
+// #define BACKWARD_VELOX_HAS_UNWIND == 1
 //
 // Note that only one of the define should be set to 1 at a time.
 //
-#if BACKWARD_HAS_UNWIND == 1
-#elif BACKWARD_HAS_BACKTRACE == 1
-#elif BACKWARD_HAS_LIBUNWIND == 1
+#if BACKWARD_VELOX_HAS_UNWIND == 1
+#elif BACKWARD_VELOX_HAS_BACKTRACE == 1
+#elif BACKWARD_VELOX_HAS_LIBUNWIND == 1
 #else
-#undef BACKWARD_HAS_UNWIND
-#define BACKWARD_HAS_UNWIND 1
-#undef BACKWARD_HAS_BACKTRACE
-#define BACKWARD_HAS_BACKTRACE 0
-#undef BACKWARD_HAS_LIBUNWIND
-#define BACKWARD_HAS_LIBUNWIND 0
+#undef BACKWARD_VELOX_HAS_UNWIND
+#define BACKWARD_VELOX_HAS_UNWIND 1
+#undef BACKWARD_VELOX_HAS_BACKTRACE
+#define BACKWARD_VELOX_HAS_BACKTRACE 0
+#undef BACKWARD_VELOX_HAS_LIBUNWIND
+#define BACKWARD_VELOX_HAS_LIBUNWIND 0
 #endif
 
-// On Darwin, backward can extract detailed information about a stack trace
+// On Darwin, backward_velox can extract detailed information about a stack trace
 // using one of the following libraries:
 //
-// #define BACKWARD_HAS_BACKTRACE_SYMBOL 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL 1
 //  - backtrace provides minimal details for a stack trace:
 //    - object filename
 //    - function name
 //
 // The default is:
-// #define BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+// #define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 //
-#if BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#if BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 #else
-#undef BACKWARD_HAS_BACKTRACE_SYMBOL
-#define BACKWARD_HAS_BACKTRACE_SYMBOL 1
+#undef BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL
+#define BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL 1
 #endif
 
 #include <cxxabi.h>
@@ -325,12 +325,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#if (BACKWARD_HAS_BACKTRACE == 1) || (BACKWARD_HAS_BACKTRACE_SYMBOL == 1)
+#if (BACKWARD_VELOX_HAS_BACKTRACE == 1) || (BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1)
 #include <execinfo.h>
 #endif
-#endif // defined(BACKWARD_SYSTEM_DARWIN)
+#endif // defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 
-#if defined(BACKWARD_SYSTEM_WINDOWS)
+#if defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
 
 #include <condition_variable>
 #include <mutex>
@@ -372,17 +372,17 @@ typedef int ssize_t;
 #pragma pack(pop, before_imagehlp)
 
 // TODO maybe these should be undefined somewhere else?
-#undef BACKWARD_HAS_UNWIND
-#undef BACKWARD_HAS_BACKTRACE
-#if BACKWARD_HAS_PDB_SYMBOL == 1
+#undef BACKWARD_VELOX_HAS_UNWIND
+#undef BACKWARD_VELOX_HAS_BACKTRACE
+#if BACKWARD_VELOX_HAS_PDB_SYMBOL == 1
 #else
-#undef BACKWARD_HAS_PDB_SYMBOL
-#define BACKWARD_HAS_PDB_SYMBOL 1
+#undef BACKWARD_VELOX_HAS_PDB_SYMBOL
+#define BACKWARD_VELOX_HAS_PDB_SYMBOL 1
 #endif
 
 #endif
 
-#if BACKWARD_HAS_UNWIND == 1
+#if BACKWARD_VELOX_HAS_UNWIND == 1
 
 #include <unwind.h>
 // while gcc's unwind.h defines something like that:
@@ -404,29 +404,29 @@ typedef int ssize_t;
 extern "C" uintptr_t _Unwind_GetIPInfo(_Unwind_Context *, int *);
 #endif
 
-#endif // BACKWARD_HAS_UNWIND == 1
+#endif // BACKWARD_VELOX_HAS_UNWIND == 1
 
-#if BACKWARD_HAS_LIBUNWIND == 1
+#if BACKWARD_VELOX_HAS_LIBUNWIND == 1
 #define UNW_LOCAL_ONLY
 #include <libunwind.h>
-#endif // BACKWARD_HAS_LIBUNWIND == 1
+#endif // BACKWARD_VELOX_HAS_LIBUNWIND == 1
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
 #include <unordered_map>
 #include <utility> // for std::swap
-namespace backward {
+namespace backward_velox {
 namespace details {
 template <typename K, typename V> struct hashtable {
   typedef std::unordered_map<K, V> type;
 };
 using std::move;
 } // namespace details
-} // namespace backward
-#else // NOT BACKWARD_ATLEAST_CXX11
+} // namespace backward_velox
+#else // NOT BACKWARD_VELOX_ATLEAST_CXX11
 #define nullptr NULL
 #define override
 #include <map>
-namespace backward {
+namespace backward_velox {
 namespace details {
 template <typename K, typename V> struct hashtable {
   typedef std::map<K, V> type;
@@ -434,20 +434,20 @@ template <typename K, typename V> struct hashtable {
 template <typename T> const T &move(const T &v) { return v; }
 template <typename T> T &move(T &v) { return v; }
 } // namespace details
-} // namespace backward
-#endif // BACKWARD_ATLEAST_CXX11
+} // namespace backward_velox
+#endif // BACKWARD_VELOX_ATLEAST_CXX11
 
-namespace backward {
+namespace backward_velox {
 namespace details {
-#if defined(BACKWARD_SYSTEM_WINDOWS)
-const char kBackwardPathDelimiter[] = ";";
+#if defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
+const char kBackwardVeloxPathDelimiter[] = ";";
 #else
-const char kBackwardPathDelimiter[] = ":";
+const char kBackwardVeloxPathDelimiter[] = ":";
 #endif
 } // namespace details
-} // namespace backward
+} // namespace backward_velox
 
-namespace backward {
+namespace backward_velox {
 
 namespace system_tag {
 struct linux_tag; // seems that I cannot call that "linux" because the name
@@ -456,13 +456,13 @@ struct darwin_tag;
 struct windows_tag;
 struct unknown_tag;
 
-#if defined(BACKWARD_SYSTEM_LINUX)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX)
 typedef linux_tag current_tag;
-#elif defined(BACKWARD_SYSTEM_DARWIN)
+#elif defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 typedef darwin_tag current_tag;
-#elif defined(BACKWARD_SYSTEM_WINDOWS)
+#elif defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
 typedef windows_tag current_tag;
-#elif defined(BACKWARD_SYSTEM_UNKNOWN)
+#elif defined(BACKWARD_VELOX_SYSTEM_UNKNOWN)
 typedef unknown_tag current_tag;
 #else
 #error "May I please get my system defines?"
@@ -470,34 +470,34 @@ typedef unknown_tag current_tag;
 } // namespace system_tag
 
 namespace trace_resolver_tag {
-#if defined(BACKWARD_SYSTEM_LINUX)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX)
 struct libdw;
 struct libbfd;
 struct libdwarf;
 struct backtrace_symbol;
 
-#if BACKWARD_HAS_DW == 1
+#if BACKWARD_VELOX_HAS_DW == 1
 typedef libdw current;
-#elif BACKWARD_HAS_BFD == 1
+#elif BACKWARD_VELOX_HAS_BFD == 1
 typedef libbfd current;
-#elif BACKWARD_HAS_DWARF == 1
+#elif BACKWARD_VELOX_HAS_DWARF == 1
 typedef libdwarf current;
-#elif BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#elif BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 typedef backtrace_symbol current;
 #else
 #error "You shall not pass, until you know what you want."
 #endif
-#elif defined(BACKWARD_SYSTEM_DARWIN)
+#elif defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 struct backtrace_symbol;
 
-#if BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#if BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 typedef backtrace_symbol current;
 #else
 #error "You shall not pass, until you know what you want."
 #endif
-#elif defined(BACKWARD_SYSTEM_WINDOWS)
+#elif defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
 struct pdb_symbol;
-#if BACKWARD_HAS_PDB_SYMBOL == 1
+#if BACKWARD_VELOX_HAS_PDB_SYMBOL == 1
 typedef pdb_symbol current;
 #else
 #error "You shall not pass, until you know what you want."
@@ -527,7 +527,7 @@ class handle {
   T _val;
   bool _empty;
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
   handle(const handle &) = delete;
   handle &operator=(const handle &) = delete;
 #endif
@@ -545,7 +545,7 @@ public:
       _empty = true;
   }
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
   handle(handle &&from) : _empty(true) { swap(from); }
   handle &operator=(handle &&from) {
     swap(from);
@@ -612,7 +612,7 @@ template <typename TAG> struct demangler_impl {
   static std::string demangle(const char *funcname) { return funcname; }
 };
 
-#if defined(BACKWARD_SYSTEM_LINUX) || defined(BACKWARD_SYSTEM_DARWIN)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX) || defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 
 template <> struct demangler_impl<system_tag::current_tag> {
   demangler_impl() : _demangle_buffer_length(0) {}
@@ -633,7 +633,7 @@ private:
   size_t _demangle_buffer_length;
 };
 
-#endif // BACKWARD_SYSTEM_LINUX || BACKWARD_SYSTEM_DARWIN
+#endif // BACKWARD_VELOX_SYSTEM_LINUX || BACKWARD_VELOX_SYSTEM_DARWIN
 
 struct demangler : public demangler_impl<system_tag::current_tag> {};
 
@@ -649,8 +649,8 @@ inline std::vector<std::string> split_source_prefixes(const std::string &s) {
   std::vector<std::string> out;
   size_t last = 0;
   size_t next = 0;
-  size_t delimiter_size = sizeof(kBackwardPathDelimiter) - 1;
-  while ((next = s.find(kBackwardPathDelimiter, last)) != std::string::npos) {
+  size_t delimiter_size = sizeof(kBackwardVeloxPathDelimiter) - 1;
+  while ((next = s.find(kBackwardVeloxPathDelimiter, last)) != std::string::npos) {
     out.push_back(s.substr(last, next - last));
     last = next + delimiter_size;
   }
@@ -742,7 +742,7 @@ public:
 
 protected:
   void load_thread_info() {
-#ifdef BACKWARD_SYSTEM_LINUX
+#ifdef BACKWARD_VELOX_SYSTEM_LINUX
 #ifndef __ANDROID__
     _thread_id = static_cast<size_t>(syscall(SYS_gettid));
 #else
@@ -753,7 +753,7 @@ protected:
       // I like to keep little secret sometimes.
       _thread_id = 0;
     }
-#elif defined(BACKWARD_SYSTEM_DARWIN)
+#elif defined(BACKWARD_VELOX_SYSTEM_DARWIN)
     _thread_id = reinterpret_cast<size_t>(pthread_self());
     if (pthread_main_np() == 1) {
       // If the thread is the main one, let's hide that.
@@ -803,7 +803,7 @@ protected:
   std::vector<void *> _stacktrace;
 };
 
-#if BACKWARD_HAS_UNWIND == 1
+#if BACKWARD_VELOX_HAS_UNWIND == 1
 
 namespace details {
 
@@ -908,7 +908,7 @@ private:
   };
 };
 
-#elif BACKWARD_HAS_LIBUNWIND == 1
+#elif BACKWARD_VELOX_HAS_LIBUNWIND == 1
 
 template <>
 class StackTraceImpl<system_tag::current_tag> : public StackTraceImplHolder {
@@ -1085,7 +1085,7 @@ public:
   }
 };
 
-#elif defined(BACKWARD_HAS_BACKTRACE)
+#elif defined(BACKWARD_VELOX_HAS_BACKTRACE)
 
 template <>
 class StackTraceImpl<system_tag::current_tag> : public StackTraceImplHolder {
@@ -1123,7 +1123,7 @@ public:
   }
 };
 
-#elif defined(BACKWARD_SYSTEM_WINDOWS)
+#elif defined(BACKWARD_VELOX_SYSTEM_WINDOWS)
 
 template <>
 class StackTraceImpl<system_tag::current_tag> : public StackTraceImplHolder {
@@ -1252,14 +1252,14 @@ private:
 
 template <typename TAG> class TraceResolverImpl;
 
-#ifdef BACKWARD_SYSTEM_UNKNOWN
+#ifdef BACKWARD_VELOX_SYSTEM_UNKNOWN
 
 template <> class TraceResolverImpl<system_tag::unknown_tag>
     : public TraceResolverImplBase {};
 
 #endif
 
-#ifdef BACKWARD_SYSTEM_LINUX
+#ifdef BACKWARD_VELOX_SYSTEM_LINUX
 
 class TraceResolverLinuxBase : public TraceResolverImplBase {
 public:
@@ -1323,7 +1323,7 @@ private:
 
 template <typename STACKTRACE_TAG> class TraceResolverLinuxImpl;
 
-#if BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#if BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 
 template <>
 class TraceResolverLinuxImpl<trace_resolver_tag::backtrace_symbol>
@@ -1363,9 +1363,9 @@ private:
   details::handle<char **> _symbols;
 };
 
-#endif // BACKWARD_HAS_BACKTRACE_SYMBOL == 1
+#endif // BACKWARD_VELOX_HAS_BACKTRACE_SYMBOL == 1
 
-#if BACKWARD_HAS_BFD == 1
+#if BACKWARD_VELOX_HAS_BFD == 1
 
 template <>
 class TraceResolverLinuxImpl<trace_resolver_tag::libbfd>
@@ -1455,7 +1455,7 @@ public:
         find_symbol_details(fobj, trace.addr, symbol_info.dli_fbase);
     details_selected = &details_call_site;
 
-#if BACKWARD_HAS_UNWIND == 0
+#if BACKWARD_VELOX_HAS_UNWIND == 0
     // ...this is why we also try to resolve the symbol that is right
     // before the return address. If we are lucky enough, we will get the
     // line of the function that was called. But if the code is optimized,
@@ -1480,7 +1480,7 @@ public:
       details_call_site =
           find_symbol_details(fobj, trace.addr, symbol_info.dli_fbase);
     }
-#endif // BACKWARD_HAS_UNWIND
+#endif // BACKWARD_VELOX_HAS_UNWIND
 
     if (details_selected->found) {
       if (details_selected->filename) {
@@ -1773,9 +1773,9 @@ private:
     return strcmp(a, b) == 0;
   }
 };
-#endif // BACKWARD_HAS_BFD == 1
+#endif // BACKWARD_VELOX_HAS_BFD == 1
 
-#if BACKWARD_HAS_DW == 1
+#if BACKWARD_VELOX_HAS_DW == 1
 
 template <>
 class TraceResolverLinuxImpl<trace_resolver_tag::libdw>
@@ -1869,8 +1869,8 @@ public:
     }
 #endif
 
-//#define BACKWARD_I_DO_NOT_RECOMMEND_TO_ENABLE_THIS_HORRIBLE_PIECE_OF_CODE
-#ifdef BACKWARD_I_DO_NOT_RECOMMEND_TO_ENABLE_THIS_HORRIBLE_PIECE_OF_CODE
+//#define BACKWARD_VELOX_I_DO_NOT_RECOMMEND_TO_ENABLE_THIS_HORRIBLE_PIECE_OF_CODE
+#ifdef BACKWARD_VELOX_I_DO_NOT_RECOMMEND_TO_ENABLE_THIS_HORRIBLE_PIECE_OF_CODE
     if (!cudie) {
       // If it's still not enough, lets dive deeper in the shit, and try
       // to save the world again: for every compilation unit, we will
@@ -2100,9 +2100,9 @@ private:
     return dwarf_filesrc(files, file_idx, 0, 0);
   }
 };
-#endif // BACKWARD_HAS_DW == 1
+#endif // BACKWARD_VELOX_HAS_DW == 1
 
-#if BACKWARD_HAS_DWARF == 1
+#if BACKWARD_VELOX_HAS_DWARF == 1
 
 template <>
 class TraceResolverLinuxImpl<trace_resolver_tag::libdwarf>
@@ -3474,15 +3474,15 @@ private:
     return NULL;
   }
 };
-#endif // BACKWARD_HAS_DWARF == 1
+#endif // BACKWARD_VELOX_HAS_DWARF == 1
 
 template <>
 class TraceResolverImpl<system_tag::linux_tag>
     : public TraceResolverLinuxImpl<trace_resolver_tag::current> {};
 
-#endif // BACKWARD_SYSTEM_LINUX
+#endif // BACKWARD_VELOX_SYSTEM_LINUX
 
-#ifdef BACKWARD_SYSTEM_DARWIN
+#ifdef BACKWARD_VELOX_SYSTEM_DARWIN
 
 template <typename STACKTRACE_TAG> class TraceResolverDarwinImpl;
 
@@ -3564,9 +3564,9 @@ template <>
 class TraceResolverImpl<system_tag::darwin_tag>
     : public TraceResolverDarwinImpl<trace_resolver_tag::current> {};
 
-#endif // BACKWARD_SYSTEM_DARWIN
+#endif // BACKWARD_VELOX_SYSTEM_DARWIN
 
-#ifdef BACKWARD_SYSTEM_WINDOWS
+#ifdef BACKWARD_VELOX_SYSTEM_WINDOWS
 
 // Load all symbol info
 // Based on:
@@ -3704,7 +3704,7 @@ public:
 
   SourceFile() {}
   SourceFile(const std::string &path) {
-    // 1. If BACKWARD_CXX_SOURCE_PREFIXES is set then assume it contains
+    // 1. If BACKWARD_VELOX_CXX_SOURCE_PREFIXES is set then assume it contains
     //    a colon-separated list of path prefixes.  Try prepending each
     //    to the given path until a valid file is found.
     const std::vector<std::string> &prefixes = get_paths_from_env_variable();
@@ -3793,7 +3793,7 @@ public:
 
   void swap(SourceFile &b) { _file.swap(b._file); }
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
   SourceFile(SourceFile &&from) : _file(nullptr) { swap(from); }
   SourceFile &operator=(SourceFile &&from) {
     swap(from);
@@ -3811,7 +3811,7 @@ public:
   }
 #endif
 
-  // Allow adding to paths gotten from BACKWARD_CXX_SOURCE_PREFIXES after loading the
+  // Allow adding to paths gotten from BACKWARD_VELOX_CXX_SOURCE_PREFIXES after loading the
   // library; this can be useful when the library is loaded when the locations are unknown
   // Warning: Because this edits the static paths variable, it is *not* intrinsiclly thread safe
   static void add_paths_to_env_variable_impl(const std::string & to_add) {
@@ -3824,7 +3824,7 @@ private:
 
   static std::vector<std::string> get_paths_from_env_variable_impl() {
     std::vector<std::string> paths;
-    const char *prefixes_str = std::getenv("BACKWARD_CXX_SOURCE_PREFIXES");
+    const char *prefixes_str = std::getenv("BACKWARD_VELOX_CXX_SOURCE_PREFIXES");
     if (prefixes_str && prefixes_str[0]) {
       paths = details::split_source_prefixes(prefixes_str);
     }
@@ -3840,7 +3840,7 @@ private:
     return get_mutable_paths_from_env_variable();
   }
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
   SourceFile(const SourceFile &) = delete;
   SourceFile &operator=(const SourceFile &) = delete;
 #endif
@@ -3925,7 +3925,7 @@ public:
         fwrite(s, sizeof *s, static_cast<size_t>(count), sink));
   }
 
-#ifdef BACKWARD_ATLEAST_CXX11
+#ifdef BACKWARD_VELOX_ATLEAST_CXX11
 public:
   cfile_streambuf(const cfile_streambuf &) = delete;
   cfile_streambuf &operator=(const cfile_streambuf &) = delete;
@@ -3940,7 +3940,7 @@ private:
   std::vector<char> buffer;
 };
 
-#ifdef BACKWARD_SYSTEM_LINUX
+#ifdef BACKWARD_VELOX_SYSTEM_LINUX
 
 namespace Color {
 enum type { yellow = 33, purple = 35, reset = 39 };
@@ -3981,7 +3981,7 @@ private:
   bool _enabled;
 };
 
-#else // ndef BACKWARD_SYSTEM_LINUX
+#else // ndef BACKWARD_VELOX_SYSTEM_LINUX
 
 namespace Color {
 enum type { yellow = 0, purple = 0, reset = 0 };
@@ -3995,7 +3995,7 @@ public:
   void set_color(Color::type) {}
 };
 
-#endif // BACKWARD_SYSTEM_LINUX
+#endif // BACKWARD_VELOX_SYSTEM_LINUX
 
 class Printer {
 public:
@@ -4162,7 +4162,7 @@ private:
 
 /*************** SIGNALS HANDLING ***************/
 
-#if defined(BACKWARD_SYSTEM_LINUX) || defined(BACKWARD_SYSTEM_DARWIN)
+#if defined(BACKWARD_VELOX_SYSTEM_LINUX) || defined(BACKWARD_VELOX_SYSTEM_DARWIN)
 
 class SignalHandling {
 public:
@@ -4180,7 +4180,7 @@ public:
       SIGTRAP, // Trace/breakpoint trap
       SIGXCPU, // CPU time limit exceeded (4.2BSD)
       SIGXFSZ, // File size limit exceeded (4.2BSD)
-#if defined(BACKWARD_SYSTEM_DARWIN)
+#if defined(BACKWARD_VELOX_SYSTEM_DARWIN)
       SIGEMT, // emulation instruction executed
 #endif
     };
@@ -4306,16 +4306,16 @@ private:
   }
 };
 
-#endif // BACKWARD_SYSTEM_LINUX || BACKWARD_SYSTEM_DARWIN
+#endif // BACKWARD_VELOX_SYSTEM_LINUX || BACKWARD_VELOX_SYSTEM_DARWIN
 
-#ifdef BACKWARD_SYSTEM_WINDOWS
+#ifdef BACKWARD_VELOX_SYSTEM_WINDOWS
 
 class SignalHandling {
 public:
   SignalHandling(const std::vector<int> & = std::vector<int>())
       : reporter_thread_([]() {
           /* We handle crashes in a utility thread:
-            backward structures and some Windows functions called here
+            backward_velox structures and some Windows functions called here
             need stack space, which we do not have when we encounter a
             stack overflow.
             To support reporting stack traces during a stack overflow,
@@ -4341,7 +4341,7 @@ public:
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 
     std::set_terminate(&terminator);
-#ifndef BACKWARD_ATLEAST_CXX17
+#ifndef BACKWARD_VELOX_ATLEAST_CXX17
     std::set_unexpected(&terminator);
 #endif
     _set_purecall_handler(&terminator);
@@ -4480,9 +4480,9 @@ private:
   }
 };
 
-#endif // BACKWARD_SYSTEM_WINDOWS
+#endif // BACKWARD_VELOX_SYSTEM_WINDOWS
 
-#ifdef BACKWARD_SYSTEM_UNKNOWN
+#ifdef BACKWARD_VELOX_SYSTEM_UNKNOWN
 
 class SignalHandling {
 public:
@@ -4491,8 +4491,8 @@ public:
   bool loaded() { return false; }
 };
 
-#endif // BACKWARD_SYSTEM_UNKNOWN
+#endif // BACKWARD_VELOX_SYSTEM_UNKNOWN
 
-} // namespace backward
+} // namespace backward_velox
 
 #endif /* H_GUARD */

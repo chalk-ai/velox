@@ -17,26 +17,26 @@
 
 // - apt-get install libdw-dev ...
 // - g++/clang++ -ldw ...
-// #define BACKWARD_HAS_DW 1
+// #define BACKWARD_VELOX_HAS_DW 1
 
 // - apt-get install binutils-dev ...
 // - g++/clang++ -lbfd ...
-// #define BACKWARD_HAS_BFD 1
+// #define BACKWARD_VELOX_HAS_BFD 1
 
 // - apt-get install libdwarf-dev ...
 // - g++/clang++ -ldwarf ...
-// #define BACKWARD_HAS_DWARF 1
+// #define BACKWARD_VELOX_HAS_DWARF 1
 
 // Regardless of the library you choose to read the debug information,
 // for potentially more detailed stack traces you can use libunwind
 // - apt-get install libunwind-dev
 // - g++/clang++ -lunwind
-// #define BACKWARD_HAS_LIBUNWIND 1
+// #define BACKWARD_VELOX_HAS_LIBUNWIND 1
 
-#include "backward.hpp"
+#include "backward_velox.hpp"
 
-namespace backward {
+namespace backward_velox {
 
-backward::SignalHandling sh;
+backward_velox::SignalHandling sh;
 
-} // namespace backward
+} // namespace backward_velox
