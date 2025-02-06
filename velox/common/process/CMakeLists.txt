@@ -11,10 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-if(APPLE)
-add_subdirectory(backward-cpp)
-find_package(BackwardVelox)
-endif()
 
 velox_add_library(
   velox_process
@@ -28,7 +24,15 @@ velox_add_library(
 velox_link_libraries(
   velox_process
   PUBLIC velox_file velox_flag_definitions Folly::folly
-  PRIVATE fmt::fmt gflags::gflags glog::glog BackwardVelox::Interface)
+  PRIVATE fmt::fmt gflags::gflags glog::glog)
+
+if(APPLE)
+  add_subdirectory(backward-cpp)
+  find_package(BackwardVelox)
+  velox_link_libraries(
+          velox_process
+          PRIVATE BackwardVelox::Interface)
+endif()
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)
