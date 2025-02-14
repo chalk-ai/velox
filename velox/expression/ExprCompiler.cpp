@@ -15,9 +15,12 @@
  */
 
 #include "velox/expression/ExprCompiler.h"
+#include <common/base/Exceptions.h>
 #include <core/ITypedExpr.h>
 #include <folly/Synchronized.h>
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
+#include <mutex>
 #include <utility>
 #include "velox/expression/CastExpr.h"
 #include "velox/expression/CoalesceExpr.h"
@@ -58,9 +61,7 @@ struct ITypedExprComparer {
 // Map for deduplicating ITypedExpr trees.
 using ExprDedupMap = folly::F14FastMap<
     const ITypedExpr*,
-    std::shared_ptr<Expr>,
-    ITypedExprHasher,
-    ITypedExprComparer>;
+    std::shared_ptr<Expr>>;
 
 /// Represents a lexical scope. A top level scope corresponds to a top
 /// level Expr and is shared among the Exprs of the ExprSet. Each
@@ -364,12 +365,42 @@ std::vector<VectorPtr> getConstantInputs(const std::vector<ExprPtr>& exprs) {
 }
 
 core::TypedExprPtr rewriteExpression(const core::TypedExprPtr& expr) {
-  for (auto& rewrite : expressionRewrites()) {
-    if (auto rewritten = rewrite(expr)) {
-      return rewritten;
+  // raw pointer map to rewrite results
+  static folly::Synchronized<folly::F14FastMap<const ITypedExpr*, core::TypedExprPtr>> rewrite_map;
+  // set of raw pointers to deduplicate exprs
+  static folly::Synchronized<folly::F14FastSet<const ITypedExpr*, ITypedExprHasher, ITypedExprComparer>, std::mutex> dedup_set;
+  // fast path: raw pointer is in the set
+  {
+    auto rw_map = rewrite_map.rlock();
+    auto it = rw_map->find(expr.get());
+    if (it != rw_map->end()) {
+      return it->second;
     }
   }
-  return expr;
+  // next, see if eqivalent expr has been seen
+  auto dd_set = dedup_set.lock();
+  auto dd_it = dd_set->insert(expr.get());
+  // eqivalent expr seen
+  if (!dd_it.second) {
+    auto rw_map = rewrite_map.wlock();
+    auto it = rw_map->find(*dd_it.first);
+    VELOX_CHECK(it != rw_map->end(), "The deduplicated expression should have an entry in the rewrite map");
+    // add my pointer as an alias to the other expr
+    rw_map->insert_or_assign(expr.get(), it->second);
+    return it->second;
+  }
+  // need to populate rewrite map
+  core::TypedExprPtr rewritten = nullptr;
+  for (auto& rewrite : expressionRewrites()) {
+    if ((rewritten = rewrite(expr))) {
+      break;
+    }
+  }
+  if (rewritten == nullptr) {
+    rewritten = expr;
+  }
+  rewrite_map.wlock()->insert_or_assign(expr.get(), rewritten);
+  return rewritten; 
 }
 
 ExprPtr compileRewrittenExpression(
@@ -542,9 +573,6 @@ ExprPtr compileExpression(
     const std::unordered_set<std::string>& flatteningCandidates,
     bool enableConstantFolding) {
   auto rewritten = rewriteExpression(expr);
-  if (rewritten.get() != expr.get()) {
-    scope->rewrittenExpressions.push_back(rewritten);
-  }
   return compileRewrittenExpression(
       rewritten == nullptr ? expr : rewritten,
       scope,
