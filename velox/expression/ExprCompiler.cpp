@@ -15,6 +15,10 @@
  */
 
 #include "velox/expression/ExprCompiler.h"
+#include <core/ITypedExpr.h>
+#include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
+#include <utility>
 #include "velox/expression/CastExpr.h"
 #include "velox/expression/CoalesceExpr.h"
 #include "velox/expression/ConjunctExpr.h"
@@ -86,7 +90,9 @@ struct Scope {
   std::vector<TypedExprPtr> rewrittenExpressions;
 
   Scope(std::vector<std::string>&& _locals, Scope* _parent, ExprSet* _exprSet)
-      : locals(_locals), parent(_parent), exprSet(_exprSet) {}
+      : locals(_locals), parent(_parent), exprSet(_exprSet), visited() {
+        visited.reserve(1000);
+      }
 
   void addCapture(FieldReference* reference, const ITypedExpr* fieldAccess) {
     capture.emplace_back(reference->field());
@@ -548,20 +554,41 @@ ExprPtr compileExpression(
       enableConstantFolding);
 }
 
+
+void collectCallNamesRec(
+  const TypedExprPtr& expr,
+  std::unordered_set<std::string>& names) {
+    if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
+      names.insert(call->name());
+    }
+  
+    for (const auto& input : expr->inputs()) {
+      collectCallNamesRec(input, names);
+    }
+}
+
 /// Walk expression tree and collect names of functions used in CallTypedExpr
 /// into provided 'names' set.
 void collectCallNames(
     const TypedExprPtr& expr,
     std::unordered_set<std::string>& names) {
-  if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
-    names.insert(call->name());
+  static folly::Synchronized<folly::F14FastMap<const core::ITypedExpr*,std::unordered_set<std::string>>> memo;
+  {
+    auto guard = memo.rlock();
+    auto it = guard->find(expr.get());
+    if (it != guard->end()) {
+      names.insert(it->second.begin(), it->second.end());
+      return;
+    }
   }
-
-  for (const auto& input : expr->inputs()) {
-    collectCallNames(input, names);
+  std::unordered_set<std::string> new_names;
+  collectCallNamesRec(expr, new_names);
+  names.insert(new_names.begin(), new_names.end());
+  {
+    auto guard = memo.wlock();
+    guard->insert_or_assign(expr.get(), std::move(new_names));
   }
 }
-
 /// Walk expression trees and collection function calls that support flattening.
 std::unordered_set<std::string> collectFlatteningCandidates(
     const std::vector<TypedExprPtr>& exprs) {
