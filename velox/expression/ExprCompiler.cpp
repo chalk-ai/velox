@@ -47,12 +47,20 @@ const char* const kAnd = "and";
 const char* const kOr = "or";
 
 struct ITypedExprHasher {
+  size_t operator()(const core::TypedExprPtr& expr) const {
+    return operator()(expr.get());
+  }
+
   size_t operator()(const ITypedExpr* expr) const {
     return expr->hash();
   }
 };
 
 struct ITypedExprComparer {
+  bool operator()(const core::TypedExprPtr& lhs, const core::TypedExprPtr& rhs) const {
+    return operator()(lhs.get(), rhs.get());
+  }
+
   bool operator()(const ITypedExpr* lhs, const ITypedExpr* rhs) const {
     return *lhs == *rhs;
   }
@@ -366,27 +374,27 @@ std::vector<VectorPtr> getConstantInputs(const std::vector<ExprPtr>& exprs) {
 
 core::TypedExprPtr rewriteExpression(const core::TypedExprPtr& expr) {
   // raw pointer map to rewrite results
-  static folly::Synchronized<folly::F14FastMap<const ITypedExpr*, core::TypedExprPtr>> rewrite_map;
+  static folly::Synchronized<folly::F14FastMap<core::TypedExprPtr, core::TypedExprPtr>> rewrite_map;
   // set of raw pointers to deduplicate exprs
-  static folly::Synchronized<folly::F14FastSet<const ITypedExpr*, ITypedExprHasher, ITypedExprComparer>, std::mutex> dedup_set;
+  static folly::Synchronized<folly::F14FastSet<core::TypedExprPtr, ITypedExprHasher, ITypedExprComparer>, std::mutex> dedup_set;
   // fast path: raw pointer is in the set
   {
     auto rw_map = rewrite_map.rlock();
-    auto it = rw_map->find(expr.get());
+    auto it = rw_map->find(expr);
     if (it != rw_map->end()) {
       return it->second;
     }
   }
   // next, see if eqivalent expr has been seen
   auto dd_set = dedup_set.lock();
-  auto dd_it = dd_set->insert(expr.get());
+  auto dd_it = dd_set->insert(expr);
   // eqivalent expr seen
   if (!dd_it.second) {
     auto rw_map = rewrite_map.wlock();
     auto it = rw_map->find(*dd_it.first);
     VELOX_CHECK(it != rw_map->end(), "The deduplicated expression should have an entry in the rewrite map");
     // add my pointer as an alias to the other expr
-    rw_map->insert_or_assign(expr.get(), it->second);
+    rw_map->insert_or_assign(expr, it->second);
     return it->second;
   }
   // need to populate rewrite map
@@ -399,7 +407,7 @@ core::TypedExprPtr rewriteExpression(const core::TypedExprPtr& expr) {
   if (rewritten == nullptr) {
     rewritten = expr;
   }
-  rewrite_map.wlock()->insert_or_assign(expr.get(), rewritten);
+  rewrite_map.wlock()->insert_or_assign(expr, rewritten);
   return rewritten; 
 }
 
@@ -600,10 +608,10 @@ void collectCallNamesRec(
 void collectCallNames(
     const TypedExprPtr& expr,
     std::unordered_set<std::string>& names) {
-  static folly::Synchronized<folly::F14FastMap<const core::ITypedExpr*,std::unordered_set<std::string>>> memo;
+  static folly::Synchronized<folly::F14FastMap<core::TypedExprPtr ,std::unordered_set<std::string>>> memo;
   {
     auto guard = memo.rlock();
-    auto it = guard->find(expr.get());
+    auto it = guard->find(expr);
     if (it != guard->end()) {
       names.insert(it->second.begin(), it->second.end());
       return;
@@ -614,7 +622,7 @@ void collectCallNames(
   names.insert(new_names.begin(), new_names.end());
   {
     auto guard = memo.wlock();
-    guard->insert_or_assign(expr.get(), std::move(new_names));
+    guard->insert_or_assign(expr, std::move(new_names));
   }
 }
 /// Walk expression trees and collection function calls that support flattening.
