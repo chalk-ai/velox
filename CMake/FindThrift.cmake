@@ -142,7 +142,8 @@ find_package_handle_standard_args(
   VERSION_VAR Thrift_VERSION
   HANDLE_COMPONENTS)
 
-if(Thrift_FOUND)
+# prevent multiple includes of thrift
+if(NOT TARGET thrift::thrift AND Thrift_FOUND)
   if(ARROW_THRIFT_USE_SHARED)
     add_library(thrift::thrift SHARED IMPORTED)
   else()
