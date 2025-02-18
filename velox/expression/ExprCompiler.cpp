@@ -15,6 +15,13 @@
  */
 
 #include "velox/expression/ExprCompiler.h"
+#include <common/base/Exceptions.h>
+#include <core/ITypedExpr.h>
+#include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
+#include <mutex>
+#include <utility>
 #include "velox/expression/CastExpr.h"
 #include "velox/expression/CoalesceExpr.h"
 #include "velox/expression/ConjunctExpr.h"
@@ -40,12 +47,20 @@ const char* const kAnd = "and";
 const char* const kOr = "or";
 
 struct ITypedExprHasher {
+  size_t operator()(const core::TypedExprPtr& expr) const {
+    return operator()(expr.get());
+  }
+
   size_t operator()(const ITypedExpr* expr) const {
     return expr->hash();
   }
 };
 
 struct ITypedExprComparer {
+  bool operator()(const core::TypedExprPtr& lhs, const core::TypedExprPtr& rhs) const {
+    return operator()(lhs.get(), rhs.get());
+  }
+
   bool operator()(const ITypedExpr* lhs, const ITypedExpr* rhs) const {
     return *lhs == *rhs;
   }
@@ -54,9 +69,7 @@ struct ITypedExprComparer {
 // Map for deduplicating ITypedExpr trees.
 using ExprDedupMap = folly::F14FastMap<
     const ITypedExpr*,
-    std::shared_ptr<Expr>,
-    ITypedExprHasher,
-    ITypedExprComparer>;
+    std::shared_ptr<Expr>>;
 
 /// Represents a lexical scope. A top level scope corresponds to a top
 /// level Expr and is shared among the Exprs of the ExprSet. Each
@@ -86,7 +99,9 @@ struct Scope {
   std::vector<TypedExprPtr> rewrittenExpressions;
 
   Scope(std::vector<std::string>&& _locals, Scope* _parent, ExprSet* _exprSet)
-      : locals(_locals), parent(_parent), exprSet(_exprSet) {}
+      : locals(_locals), parent(_parent), exprSet(_exprSet), visited() {
+        visited.reserve(1000);
+      }
 
   void addCapture(FieldReference* reference, const ITypedExpr* fieldAccess) {
     capture.emplace_back(reference->field());
@@ -358,12 +373,42 @@ std::vector<VectorPtr> getConstantInputs(const std::vector<ExprPtr>& exprs) {
 }
 
 core::TypedExprPtr rewriteExpression(const core::TypedExprPtr& expr) {
-  for (auto& rewrite : expressionRewrites()) {
-    if (auto rewritten = rewrite(expr)) {
-      return rewritten;
+  // raw pointer map to rewrite results
+  static folly::Synchronized<folly::F14FastMap<core::TypedExprPtr, core::TypedExprPtr>> rewrite_map;
+  // set of raw pointers to deduplicate exprs
+  static folly::Synchronized<folly::F14FastSet<core::TypedExprPtr, ITypedExprHasher, ITypedExprComparer>, std::mutex> dedup_set;
+  // fast path: raw pointer is in the set
+  {
+    auto rw_map = rewrite_map.rlock();
+    auto it = rw_map->find(expr);
+    if (it != rw_map->end()) {
+      return it->second;
     }
   }
-  return expr;
+  // next, see if eqivalent expr has been seen
+  auto dd_set = dedup_set.lock();
+  auto dd_it = dd_set->insert(expr);
+  // eqivalent expr seen
+  if (!dd_it.second) {
+    auto rw_map = rewrite_map.wlock();
+    auto it = rw_map->find(*dd_it.first);
+    VELOX_CHECK(it != rw_map->end(), "The deduplicated expression should have an entry in the rewrite map");
+    // add my pointer as an alias to the other expr
+    rw_map->insert_or_assign(expr, it->second);
+    return it->second;
+  }
+  // need to populate rewrite map
+  core::TypedExprPtr rewritten = nullptr;
+  for (auto& rewrite : expressionRewrites()) {
+    if ((rewritten = rewrite(expr))) {
+      break;
+    }
+  }
+  if (rewritten == nullptr) {
+    rewritten = expr;
+  }
+  rewrite_map.wlock()->insert_or_assign(expr, rewritten);
+  return rewritten; 
 }
 
 ExprPtr compileRewrittenExpression(
@@ -536,9 +581,6 @@ ExprPtr compileExpression(
     const std::unordered_set<std::string>& flatteningCandidates,
     bool enableConstantFolding) {
   auto rewritten = rewriteExpression(expr);
-  if (rewritten.get() != expr.get()) {
-    scope->rewrittenExpressions.push_back(rewritten);
-  }
   return compileRewrittenExpression(
       rewritten == nullptr ? expr : rewritten,
       scope,
@@ -548,20 +590,41 @@ ExprPtr compileExpression(
       enableConstantFolding);
 }
 
+
+void collectCallNamesRec(
+  const TypedExprPtr& expr,
+  std::unordered_set<std::string>& names) {
+    if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
+      names.insert(call->name());
+    }
+  
+    for (const auto& input : expr->inputs()) {
+      collectCallNamesRec(input, names);
+    }
+}
+
 /// Walk expression tree and collect names of functions used in CallTypedExpr
 /// into provided 'names' set.
 void collectCallNames(
     const TypedExprPtr& expr,
     std::unordered_set<std::string>& names) {
-  if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
-    names.insert(call->name());
+  static folly::Synchronized<folly::F14FastMap<core::TypedExprPtr ,std::unordered_set<std::string>>> memo;
+  {
+    auto guard = memo.rlock();
+    auto it = guard->find(expr);
+    if (it != guard->end()) {
+      names.insert(it->second.begin(), it->second.end());
+      return;
+    }
   }
-
-  for (const auto& input : expr->inputs()) {
-    collectCallNames(input, names);
+  std::unordered_set<std::string> new_names;
+  collectCallNamesRec(expr, new_names);
+  names.insert(new_names.begin(), new_names.end());
+  {
+    auto guard = memo.wlock();
+    guard->insert_or_assign(expr, std::move(new_names));
   }
 }
-
 /// Walk expression trees and collection function calls that support flattening.
 std::unordered_set<std::string> collectFlatteningCandidates(
     const std::vector<TypedExprPtr>& exprs) {
