@@ -106,7 +106,7 @@ class FilterProject : public Operator {
   std::shared_ptr<const core::FilterNode> filter_;
   bool initialized_{false};
 
-  std::shared_ptr<core::ExprSetPool> exprSetPool_;
+  std::shared_ptr<ExprSetPool> exprSetPool_;
   std::unique_ptr<ExprSet> exprs_;
   int32_t numExprs_;
 

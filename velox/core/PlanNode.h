@@ -418,31 +418,10 @@ class TraceScanNode final : public PlanNode {
   const RowTypePtr outputType_;
 };
 
-class ExprSetPool {
-  public:
-    std::unique_ptr<exec::ExprSet> take() {
-      auto pool = pool_.lock();
-      if (pool_->empty()) {
-        return nullptr;
-      }
-      auto result = std::move(pool_->back());
-      pool_->pop_back();
-      return result;
-    }
-
-    void put(std::unique_ptr<exec::ExprSet> expr_set) {
-      auto pool = pool_.lock();
-      pool->push_back(std::move(expr_set));
-    }
-
-  private:
-    folly::Synchronized<std::deque<std::unique_ptr<exec::ExprSet>>, std::mutex> pool_;
-};
-
 class FilterNode : public PlanNode {
  public:
   FilterNode(const PlanNodeId& id, TypedExprPtr filter, PlanNodePtr source)
-      : PlanNode(id), sources_{std::move(source)}, filter_(std::move(filter)), pool_(std::make_shared<ExprSetPool>()) {
+      : PlanNode(id), sources_{std::move(source)}, filter_(std::move(filter)), pool_(std::make_shared<exec::ExprSetPool>()) {
     VELOX_USER_CHECK(
         filter_->type()->isBoolean(),
         "Filter expression must be of type BOOLEAN. Got {}.",
@@ -469,7 +448,7 @@ class FilterNode : public PlanNode {
 
   static PlanNodePtr create(const folly::dynamic& obj, void* context);
 
-  const std::shared_ptr<ExprSetPool>& exprSetPool() const {
+  const std::shared_ptr<exec::ExprSetPool>& exprSetPool() const {
     return pool_;
   }
 
@@ -485,7 +464,7 @@ class FilterNode : public PlanNode {
 
   const std::vector<PlanNodePtr> sources_;
   const TypedExprPtr filter_;
-  std::shared_ptr<ExprSetPool> pool_;
+  std::shared_ptr<exec::ExprSetPool> pool_;
 };
 
 class ProjectNode : public PlanNode {
@@ -500,7 +479,7 @@ class ProjectNode : public PlanNode {
         names_(std::move(names)),
         projections_(std::move(projections)),
         outputType_(makeOutputType(names_, projections_)), 
-        pool_(std::make_shared<ExprSetPool>()) {}
+        pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   ProjectNode(
       const PlanNodeId& id,
@@ -512,7 +491,7 @@ class ProjectNode : public PlanNode {
         names_(names),
         projections_(projections),
         outputType_(makeOutputType(names_, projections_)), 
-        pool_(std::make_shared<ExprSetPool>()) {}
+        pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   const RowTypePtr& outputType() const override {
     return outputType_;
@@ -540,7 +519,7 @@ class ProjectNode : public PlanNode {
 
   static PlanNodePtr create(const folly::dynamic& obj, void* context);
 
-  const std::shared_ptr<ExprSetPool>& exprSetPool() const {
+  const std::shared_ptr<exec::ExprSetPool>& exprSetPool() const {
     return pool_;
   }
 
@@ -573,7 +552,7 @@ class ProjectNode : public PlanNode {
   const std::vector<std::string> names_;
   const std::vector<TypedExprPtr> projections_;
   const RowTypePtr outputType_;
-  std::shared_ptr<ExprSetPool> pool_;
+  std::shared_ptr<exec::ExprSetPool> pool_;
 };
 
 class TableScanNode : public PlanNode {
