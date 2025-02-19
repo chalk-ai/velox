@@ -61,6 +61,7 @@ void FilterProject::initialize() {
   if (hasFilter_) {
     VELOX_CHECK_NOT_NULL(filter_);
     allExprs.push_back(filter_->filter());
+    exprSetPool_ = filter_->exprSetPool();
   }
   if (project_) {
     const auto& inputType = project_->sources()[0]->outputType();
@@ -73,6 +74,9 @@ void FilterProject::initialize() {
         resultProjections_.emplace_back(allExprs.size() - 1, i);
       }
     }
+    if (!exprSetPool_) {
+      exprSetPool_ = project_->exprSetPool();
+    }
   } else {
     for (column_index_t i = 0; i < outputType_->size(); ++i) {
       identityProjections_.emplace_back(i, i);
@@ -80,7 +84,12 @@ void FilterProject::initialize() {
     isIdentityProjection_ = true;
   }
   numExprs_ = allExprs.size();
-  exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx());
+  if (exprSetPool_) {
+    exprs_ = exprSetPool_->take();
+  }
+  if (!exprs_) {
+    exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx());
+  }
 
   if (numExprs_ > 0 && !identityProjections_.empty()) {
     const auto inputType = project_ ? project_->sources()[0]->outputType()
