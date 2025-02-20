@@ -51,9 +51,17 @@ StackTrace::StackTrace(int32_t skipFrames) : skip_frames_(skipFrames) {
 StackTrace::StackTrace(const StackTrace& other) {
   skip_frames_ = other.skip_frames_;
   st_ = other.st_;
+  if (folly::test_once(other.bt_flag_)) {
+    bt_ = other.bt_;
+    folly::call_once(bt_flag_, [] {}); // Set the flag.
+  }
   if (folly::test_once(other.resolver_flag_)) {
-    resolver_ = other.resolver_;
+    init_resolver();
     folly::call_once(resolver_flag_, [] {}); // Set the flag.
+  }
+  if (folly::test_once(other.bt_vector_flag_)) {
+    bt_vector_ = other.bt_vector_;
+    folly::call_once(bt_vector_flag_, [] {}); // Set the flag.
   }
 }
 
@@ -85,7 +93,8 @@ const std::vector<std::string>& StackTrace::toStrVector() const {
   static folly::Indestructible<folly::fbstring> myname{
       folly::demangle(typeid(decltype(*this))) + "::"};
   bt_vector_.reserve(st_.size());
-  for (auto trace : st_) {
+  for (int i = 0; i < st_.size(); ++i) {
+    auto trace = st_[i];
     auto framename = translateFrame(&trace, true);
     if (folly::StringPiece(framename).startsWith(*myname)) {
       continue; // ignore frames in the StackTrace class
@@ -160,7 +169,7 @@ std::string StackTrace::translateFrame(void* addressPtr, bool lineNumbers) const
         backward_velox::ResolvedTrace resolved_trace = resolver.resolve(*trace);
         std::ostringstream stream;
         backward_velox::Printer printer;
-        printer.print(resolved_trace, stream);
+        printer.print_trace(resolved_trace, stream);
         return stream.str();
       });
 }

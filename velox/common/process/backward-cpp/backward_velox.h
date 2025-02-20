@@ -4028,6 +4028,13 @@ public:
     return os;
   }
 
+  std::ostream &print_trace(ResolvedTrace &st, std::ostream &os) {
+    Colorize colorize(os);
+    colorize.activate(color_mode);
+    print_trace(os, st, colorize);
+    return os;
+  }
+
   template <typename IT>
   FILE *print(IT begin, IT end, FILE *fp = stderr, size_t thread_id = 0) {
     cfile_streambuf obuf(fp);
