@@ -74,13 +74,6 @@ QueryCtx::QueryCtx(
   return fmt::format("query.{}.{}", queryId.c_str(), seqNum++);
 }
 
-ExecCtx* QueryCtx::planScopedExecCtx() {
-  if (!planScopedExecCtx_) {
-    planScopedExecCtx_ = std::make_unique<ExecCtx>(expr_pool_.get(), this);
-  }
-  return planScopedExecCtx_.get();
-}
-
 void QueryCtx::maybeSetReclaimer() {
   VELOX_CHECK_NOT_NULL(pool_);
   VELOX_CHECK(!underArbitration_);

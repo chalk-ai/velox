@@ -83,8 +83,6 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
     return queryConfig_;
   }
 
-  ExecCtx* planScopedExecCtx();
-
   config::ConfigBase* connectorSessionProperties(
       const std::string& connectorId) const {
     auto it = connectorSessionProperties_.find(connectorId);
@@ -303,6 +301,17 @@ class ExecCtx {
     return pool_;
   }
 
+  ExecCtx* withQueryScopedPool() {
+    if (queryCtx_->expressionPool() == pool_) {
+      return this;
+    }
+    if (!withQueryScopedPool_) {
+      withQueryScopedPool_ =
+          std::make_unique<ExecCtx>(queryCtx_->expressionPool(), queryCtx_);
+    }
+    return withQueryScopedPool_.get();
+  }
+
   QueryCtx* queryCtx() const {
     return queryCtx_;
   }
@@ -410,6 +419,8 @@ class ExecCtx {
   // Pool for all Buffers for this thread.
   memory::MemoryPool* const pool_;
   QueryCtx* const queryCtx_;
+
+  std::unique_ptr<ExecCtx> withQueryScopedPool_;
 
   const OptimizationParams optimizationParams_;
   // A pool of preallocated DecodedVectors for use by expressions and

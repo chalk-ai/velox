@@ -26,7 +26,7 @@ using facebook::velox::common::testutil::TestValue;
 namespace facebook::velox::exec {
 
 EvalCtx::EvalCtx(core::ExecCtx* execCtx, ExprSet* exprSet, const RowVector* row)
-    : execCtx_(execCtx), exprSet_(exprSet), row_(row) {
+    : execCtx_(execCtx->withQueryScopedPool()), exprSet_(exprSet), row_(row) {
   // TODO Change the API to replace raw pointers with non-const references.
   // Sanity check inputs to prevent crashes.
   VELOX_CHECK_NOT_NULL(execCtx);

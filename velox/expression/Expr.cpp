@@ -1772,7 +1772,7 @@ ExprSet::ExprSet(
     const std::vector<core::TypedExprPtr>& sources,
     core::ExecCtx* execCtx,
     bool enableConstantFolding)
-    : execCtx_(execCtx->queryCtx()->planScopedExecCtx()) {
+    : execCtx_(execCtx->withQueryScopedPool()) {
   exprs_ = compileExpressions(sources, execCtx_, this, enableConstantFolding);
   for (auto& expr : exprs_) {
     Expr::mergeFields(
