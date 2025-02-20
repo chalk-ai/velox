@@ -770,7 +770,7 @@ class ExprSet {
 
   // Flags a shared subexpression which needs to be reset (e.g. previously
   // computed results must be deleted) when evaluating new batch of data.
-  void addToReset(const std::shared_ptr<Expr>& expr) {
+  void addToReset(Expr* expr) {
     toReset_.emplace_back(expr);
   }
 
@@ -804,11 +804,11 @@ class ExprSet {
 
   // Distinct Exprs reachable from 'exprs_' for which reset() needs to
   // be called at the start of eval().
-  std::vector<std::shared_ptr<Expr>> toReset_;
+  std::vector<Expr*> toReset_;
 
   // Exprs which retain memoized state, e.g. from running over dictionaries.
   std::unordered_set<Expr*> memoizingExprs_;
-  core::ExecCtx* const execCtx_;
+  core::ExecCtx* execCtx_;
 };
 
 class ExprSetSimplified : public ExprSet {
@@ -839,24 +839,25 @@ class ExprSetSimplified : public ExprSet {
 
 
 class ExprSetPool {
-  public:
-    std::unique_ptr<exec::ExprSet> take() {
-      auto pool = pool_.lock();
-      if (pool_->empty()) {
-        return nullptr;
-      }
-      auto result = std::move(pool_->back());
-      pool_->pop_back();
-      return result;
+ public:
+  std::unique_ptr<exec::ExprSet> take() {
+    auto pool = pool_.lock();
+    if (pool->empty()) {
+      return nullptr;
     }
+    auto result = std::move(pool->back());
+    pool->pop_back();
+    return result;
+  }
 
-    void put(std::unique_ptr<exec::ExprSet> expr_set) {
-      auto pool = pool_.lock();
-      pool->push_back(std::move(expr_set));
-    }
+  void put(std::unique_ptr<exec::ExprSet> expr_set) {
+    auto pool = pool_.lock();
+    pool->push_back(std::move(expr_set));
+  }
 
-  private:
-    folly::Synchronized<std::deque<std::unique_ptr<exec::ExprSet>>, std::mutex> pool_;
+ private:
+  folly::Synchronized<std::deque<std::unique_ptr<exec::ExprSet>>, std::mutex>
+      pool_;
 };
 
 // Factory method that takes `kExprEvalSimplified` (query parameter) into

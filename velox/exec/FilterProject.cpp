@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "velox/exec/FilterProject.h"
+#include <memory>
 #include "velox/core/Expressions.h"
 #include "velox/expression/Expr.h"
 #include "velox/expression/FieldReference.h"
@@ -58,12 +59,16 @@ FilterProject::FilterProject(
 void FilterProject::initialize() {
   Operator::initialize();
   std::vector<core::TypedExprPtr> allExprs;
+  std::shared_ptr<ExprSetPool> exprSetPool;
   if (hasFilter_) {
     VELOX_CHECK_NOT_NULL(filter_);
     allExprs.push_back(filter_->filter());
-    exprSetPool_ = filter_->exprSetPool();
+    exprSetPool = filter_->exprSetPool();
   }
   if (project_) {
+    if (!exprSetPool) {
+      exprSetPool = project_->exprSetPool();
+    }
     const auto& inputType = project_->sources()[0]->outputType();
     for (column_index_t i = 0; i < project_->projections().size(); i++) {
       auto& projection = project_->projections()[i];
@@ -74,9 +79,6 @@ void FilterProject::initialize() {
         resultProjections_.emplace_back(allExprs.size() - 1, i);
       }
     }
-    if (!exprSetPool_) {
-      exprSetPool_ = project_->exprSetPool();
-    }
   } else {
     for (column_index_t i = 0; i < outputType_->size(); ++i) {
       identityProjections_.emplace_back(i, i);
@@ -84,12 +86,13 @@ void FilterProject::initialize() {
     isIdentityProjection_ = true;
   }
   numExprs_ = allExprs.size();
-  if (exprSetPool_) {
-    exprs_ = exprSetPool_->take();
+  if (exprSetPool) {
+    exprs_ = exprSetPool->take();
   }
   if (!exprs_) {
     exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx());
   }
+  exprSetPool_ = std::move(exprSetPool);
 
   if (numExprs_ > 0 && !identityProjections_.empty()) {
     const auto inputType = project_ ? project_->sources()[0]->outputType()

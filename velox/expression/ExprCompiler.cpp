@@ -421,7 +421,7 @@ ExprPtr compileRewrittenExpression(
   ExprPtr alreadyCompiled = getAlreadyCompiled(expr.get(), &scope->visited);
   if (alreadyCompiled) {
     if (!alreadyCompiled->isMultiplyReferenced()) {
-      scope->exprSet->addToReset(alreadyCompiled);
+      scope->exprSet->addToReset(alreadyCompiled.get());
       alreadyCompiled->setMultiplyReferenced();
       // A property of this expression changed, namely isMultiplyReferenced_,
       // that affects metadata, so we re-compute it.

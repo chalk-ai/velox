@@ -18,6 +18,7 @@
 
 #include <folly/Executor.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
+#include <memory>
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/core/QueryConfig.h"
@@ -29,6 +30,8 @@ class Config;
 };
 
 namespace facebook::velox::core {
+
+class ExecCtx;
 
 class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
  public:
@@ -50,6 +53,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
           connectorConfigs = {},
       cache::AsyncDataCache* cache = cache::AsyncDataCache::getInstance(),
       std::shared_ptr<memory::MemoryPool> pool = nullptr,
+      std::shared_ptr<memory::MemoryPool> expr_pool = nullptr,
       folly::Executor* spillExecutor = nullptr,
       const std::string& queryId = "");
 
@@ -57,6 +61,10 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
 
   memory::MemoryPool* pool() const {
     return pool_.get();
+  }
+
+  memory::MemoryPool* expressionPool() const {
+    return expr_pool_.get();
   }
 
   cache::AsyncDataCache* cache() const {
@@ -74,6 +82,8 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
   const QueryConfig& queryConfig() const {
     return queryConfig_;
   }
+
+  ExecCtx* planScopedExecCtx();
 
   config::ConfigBase* connectorSessionProperties(
       const std::string& connectorId) const {
@@ -152,6 +162,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
           connectorConfigs = {},
       cache::AsyncDataCache* cache = cache::AsyncDataCache::getInstance(),
       std::shared_ptr<memory::MemoryPool> pool = nullptr,
+      std::shared_ptr<memory::MemoryPool> expr_pool = nullptr,
       folly::Executor* spillExecutor = nullptr,
       const std::string& queryId = "");
 
@@ -200,6 +211,9 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
       pool_ = memory::memoryManager()->addRootPool(
           QueryCtx::generatePoolName(queryId), memory::kMaxMemory);
     }
+    if (expr_pool_ == nullptr) {
+      expr_pool_ = pool_->addLeafChild("expression pool");
+    }
   }
 
   // Setup the memory reclaimer for arbitration if user provided memory pool
@@ -219,6 +233,8 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
   std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
       connectorSessionProperties_;
   std::shared_ptr<memory::MemoryPool> pool_;
+  std::shared_ptr<memory::MemoryPool> expr_pool_;
+  std::unique_ptr<ExecCtx> planScopedExecCtx_;
   QueryConfig queryConfig_;
   std::atomic<uint64_t> numSpilledBytes_{0};
   std::atomic<uint64_t> numTracedBytes_{0};

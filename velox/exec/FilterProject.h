@@ -57,8 +57,9 @@ class FilterProject : public Operator {
     Operator::close();
     if (exprs_ != nullptr) {
       exprs_->clear();
-      if (exprSetPool_) {
-        exprSetPool_->put(std::move(exprs_));
+      exprs_->clearCache();
+      if (auto pool = exprSetPool_.lock()) {
+        pool->put(std::move(exprs_));
       }
     } else {
       VELOX_CHECK(!initialized_);
@@ -106,7 +107,7 @@ class FilterProject : public Operator {
   std::shared_ptr<const core::FilterNode> filter_;
   bool initialized_{false};
 
-  std::shared_ptr<ExprSetPool> exprSetPool_;
+  std::weak_ptr<ExprSetPool> exprSetPool_;
   std::unique_ptr<ExprSet> exprs_;
   int32_t numExprs_;
 
