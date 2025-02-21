@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <folly/container/F14Map.h>
@@ -770,7 +771,7 @@ class ExprSet {
 
   // Flags a shared subexpression which needs to be reset (e.g. previously
   // computed results must be deleted) when evaluating new batch of data.
-  void addToReset(Expr* expr) {
+  void addToReset(const std::shared_ptr<Expr>& expr) {
     toReset_.emplace_back(expr);
   }
 
@@ -804,7 +805,7 @@ class ExprSet {
 
   // Distinct Exprs reachable from 'exprs_' for which reset() needs to
   // be called at the start of eval().
-  std::vector<Expr*> toReset_;
+  std::vector<std::shared_ptr<Expr>> toReset_;
 
   // Exprs which retain memoized state, e.g. from running over dictionaries.
   std::unordered_set<Expr*> memoizingExprs_;
