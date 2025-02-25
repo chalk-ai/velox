@@ -33,7 +33,7 @@
 // - g++/clang++ -lunwind
 // #define BACKWARD_VELOX_HAS_LIBUNWIND 1
 
-#include "backward_velox.hpp"
+#include "backward_velox.h"
 
 namespace backward_velox {
 
