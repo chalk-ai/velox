@@ -809,7 +809,7 @@ class ExprSet {
 
   // Exprs which retain memoized state, e.g. from running over dictionaries.
   std::unordered_set<Expr*> memoizingExprs_;
-  core::ExecCtx* execCtx_;
+  core::ExecCtx* const execCtx_;
 };
 
 class ExprSetSimplified : public ExprSet {

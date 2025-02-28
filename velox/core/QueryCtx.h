@@ -31,7 +31,6 @@ class Config;
 
 namespace facebook::velox::core {
 
-class ExecCtx;
 
 class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
  public:
@@ -63,8 +62,8 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
     return pool_.get();
   }
 
-  memory::MemoryPool* expressionPool() const {
-    return expr_pool_.get();
+  memory::MemoryPool* expressionMemoryPool() const {
+    return expr_memory_pool_.get();
   }
 
   cache::AsyncDataCache* cache() const {
@@ -209,8 +208,8 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
       pool_ = memory::memoryManager()->addRootPool(
           QueryCtx::generatePoolName(queryId), memory::kMaxMemory);
     }
-    if (expr_pool_ == nullptr) {
-      expr_pool_ = pool_->addLeafChild("expression pool");
+    if (expr_memory_pool_ == nullptr) {
+      expr_memory_pool_ = pool_->addLeafChild("expression pool");
     }
   }
 
@@ -231,8 +230,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
   std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
       connectorSessionProperties_;
   std::shared_ptr<memory::MemoryPool> pool_;
-  std::shared_ptr<memory::MemoryPool> expr_pool_;
-  std::unique_ptr<ExecCtx> planScopedExecCtx_;
+  std::shared_ptr<memory::MemoryPool> expr_memory_pool_;
   QueryConfig queryConfig_;
   std::atomic<uint64_t> numSpilledBytes_{0};
   std::atomic<uint64_t> numTracedBytes_{0};
@@ -302,12 +300,12 @@ class ExecCtx {
   }
 
   ExecCtx* withQueryScopedPool() {
-    if (queryCtx_->expressionPool() == pool_) {
+    if (queryCtx_->expressionMemoryPool() == pool_) {
       return this;
     }
     if (!withQueryScopedPool_) {
       withQueryScopedPool_ =
-          std::make_unique<ExecCtx>(queryCtx_->expressionPool(), queryCtx_);
+          std::make_unique<ExecCtx>(queryCtx_->expressionMemoryPool(), queryCtx_);
     }
     return withQueryScopedPool_.get();
   }

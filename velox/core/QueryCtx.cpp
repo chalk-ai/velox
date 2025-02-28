@@ -62,7 +62,7 @@ QueryCtx::QueryCtx(
       cache_(cache),
       connectorSessionProperties_(connectorSessionProperties),
       pool_(std::move(pool)),
-      expr_pool_(std::move(expr_pool)),
+      expr_memory_pool_(std::move(expr_pool)),
       queryConfig_{std::move(queryConfig)} {
   initPool(queryId);
 }
