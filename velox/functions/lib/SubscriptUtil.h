@@ -170,7 +170,7 @@ class MapSubscript {
       return false;
     }
 
-    if (mapArg->type()->childAt(0)->isBoolean()) {
+    if (!mapArg->isConstantEncoding() || mapArg->type()->childAt(0)->isBoolean()) {
       // Disable caching if the key type is boolean.
       allowCaching_ = false;
       return false;
