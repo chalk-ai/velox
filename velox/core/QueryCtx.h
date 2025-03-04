@@ -18,6 +18,7 @@
 
 #include <folly/Executor.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
+#include <memory>
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/core/QueryConfig.h"
@@ -29,6 +30,7 @@ class Config;
 };
 
 namespace facebook::velox::core {
+
 
 class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
  public:
@@ -50,6 +52,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
           connectorConfigs = {},
       cache::AsyncDataCache* cache = cache::AsyncDataCache::getInstance(),
       std::shared_ptr<memory::MemoryPool> pool = nullptr,
+      std::shared_ptr<memory::MemoryPool> expr_pool = nullptr,
       folly::Executor* spillExecutor = nullptr,
       const std::string& queryId = "");
 
@@ -57,6 +60,10 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
 
   memory::MemoryPool* pool() const {
     return pool_.get();
+  }
+
+  memory::MemoryPool* expressionMemoryPool() const {
+    return expr_memory_pool_.get();
   }
 
   cache::AsyncDataCache* cache() const {
@@ -152,6 +159,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
           connectorConfigs = {},
       cache::AsyncDataCache* cache = cache::AsyncDataCache::getInstance(),
       std::shared_ptr<memory::MemoryPool> pool = nullptr,
+      std::shared_ptr<memory::MemoryPool> expr_pool = nullptr,
       folly::Executor* spillExecutor = nullptr,
       const std::string& queryId = "");
 
@@ -200,6 +208,9 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
       pool_ = memory::memoryManager()->addRootPool(
           QueryCtx::generatePoolName(queryId), memory::kMaxMemory);
     }
+    if (expr_memory_pool_ == nullptr) {
+      expr_memory_pool_ = pool_->addLeafChild("expression pool");
+    }
   }
 
   // Setup the memory reclaimer for arbitration if user provided memory pool
@@ -219,6 +230,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
   std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
       connectorSessionProperties_;
   std::shared_ptr<memory::MemoryPool> pool_;
+  std::shared_ptr<memory::MemoryPool> expr_memory_pool_;
   QueryConfig queryConfig_;
   std::atomic<uint64_t> numSpilledBytes_{0};
   std::atomic<uint64_t> numTracedBytes_{0};
@@ -285,6 +297,17 @@ class ExecCtx {
 
   velox::memory::MemoryPool* pool() const {
     return pool_;
+  }
+
+  ExecCtx* withQueryScopedPool() {
+    if (queryCtx_->expressionMemoryPool() == pool_) {
+      return this;
+    }
+    if (!withQueryScopedPool_) {
+      withQueryScopedPool_ =
+          std::make_unique<ExecCtx>(queryCtx_->expressionMemoryPool(), queryCtx_);
+    }
+    return withQueryScopedPool_.get();
   }
 
   QueryCtx* queryCtx() const {
@@ -394,6 +417,8 @@ class ExecCtx {
   // Pool for all Buffers for this thread.
   memory::MemoryPool* const pool_;
   QueryCtx* const queryCtx_;
+
+  std::unique_ptr<ExecCtx> withQueryScopedPool_;
 
   const OptimizationParams optimizationParams_;
   // A pool of preallocated DecodedVectors for use by expressions and

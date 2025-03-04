@@ -15,6 +15,7 @@
  */
 
 #include "velox/core/QueryCtx.h"
+#include <memory>
 #include "velox/common/base/SpillConfig.h"
 #include "velox/common/base/TraceConfig.h"
 #include "velox/common/config/Config.h"
@@ -29,6 +30,7 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
         connectorConfigs,
     cache::AsyncDataCache* cache,
     std::shared_ptr<memory::MemoryPool> pool,
+    std::shared_ptr<memory::MemoryPool> expr_pool,
     folly::Executor* spillExecutor,
     const std::string& queryId) {
   std::shared_ptr<QueryCtx> queryCtx(new QueryCtx(
@@ -37,6 +39,7 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
       std::move(connectorConfigs),
       cache,
       std::move(pool),
+      std::move(expr_pool),
       spillExecutor,
       queryId));
   queryCtx->maybeSetReclaimer();
@@ -50,6 +53,7 @@ QueryCtx::QueryCtx(
         connectorSessionProperties,
     cache::AsyncDataCache* cache,
     std::shared_ptr<memory::MemoryPool> pool,
+    std::shared_ptr<memory::MemoryPool> expr_pool,
     folly::Executor* spillExecutor,
     const std::string& queryId)
     : queryId_(queryId),
@@ -58,6 +62,7 @@ QueryCtx::QueryCtx(
       cache_(cache),
       connectorSessionProperties_(connectorSessionProperties),
       pool_(std::move(pool)),
+      expr_memory_pool_(std::move(expr_pool)),
       queryConfig_{std::move(queryConfig)} {
   initPool(queryId);
 }
