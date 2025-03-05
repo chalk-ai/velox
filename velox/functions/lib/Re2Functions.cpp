@@ -44,18 +44,13 @@ Expected<RE2*> ReCache::tryFindOrCompile(const StringView& pattern) {
     return reIt->second.get();
   }
 
-  if (cache_.size() >= maxCompiledRegexes_) {
-    return folly::makeUnexpected(
-        Status::UserError("Max number of regex reached"));
-  }
-
   auto re = std::make_unique<RE2>(toStringPiece(pattern), RE2::Quiet);
   if (!re->ok()) {
     return folly::makeUnexpected(
         Status::UserError("invalid regular expression:{}", re->error()));
   }
 
-  auto [it, inserted] = cache_.emplace(key, std::move(re));
+  auto [it, inserted] = cache_.insert(key, std::move(re));
   VELOX_CHECK(inserted);
 
   return it->second.get();
