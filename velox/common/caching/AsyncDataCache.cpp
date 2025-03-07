@@ -655,10 +655,6 @@ CacheStats CacheStats::operator-(const CacheStats& other) const {
 }
 
 AsyncDataCache::AsyncDataCache(
-    memory::MemoryAllocator* allocator)
-    : AsyncDataCache(allocator, nullptr) {}
-
-AsyncDataCache::AsyncDataCache(
     memory::MemoryAllocator* allocator,
     std::unique_ptr<SsdCache> ssdCache)
     : AsyncDataCache({}, allocator, std::move(ssdCache)){};
@@ -687,11 +683,6 @@ std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
       std::make_shared<AsyncDataCache>(options, allocator, std::move(ssdCache));
   allocator->registerCache(cache);
   return cache;
-}
-
-std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
-    memory::MemoryAllocator* allocator) {
-      return AsyncDataCache::create(allocator, nullptr);
 }
 
 // static

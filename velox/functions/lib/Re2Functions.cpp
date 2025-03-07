@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "velox/functions/lib/Re2Functions.h"
-#include <absl/strings/string_view.h>
 #include "velox/functions/lib/string/StringImpl.h"
 #include "velox/vector/FunctionVector.h"
 
@@ -44,18 +43,13 @@ Expected<RE2*> ReCache::tryFindOrCompile(const StringView& pattern) {
     return reIt->second.get();
   }
 
-  if (cache_.size() >= maxCompiledRegexes_) {
-    return folly::makeUnexpected(
-        Status::UserError("Max number of regex reached"));
-  }
-
   auto re = std::make_unique<RE2>(toStringPiece(pattern), RE2::Quiet);
   if (!re->ok()) {
     return folly::makeUnexpected(
         Status::UserError("invalid regular expression:{}", re->error()));
   }
 
-  auto [it, inserted] = cache_.emplace(key, std::move(re));
+  auto [it, inserted] = cache_.insert(key, std::move(re));
   VELOX_CHECK(inserted);
 
   return it->second.get();
@@ -1805,13 +1799,13 @@ std::vector<std::string> PatternMetadata::parseSubstrings(
   // Not support substrings-search with '_' for best performance.
   static const re2::RE2 fullPattern(R"((%+[^%_#\\]+)+%+)");
   static const re2::RE2 subPattern(R"((?:%+)([^%_#\\]+))");
-  absl::string_view full(pattern.data(), pattern.size());
+  re2::StringPiece full(pattern);
   re2::StringPiece cur;
   std::vector<std::string> substrings;
   if (RE2::FullMatch(full, fullPattern)) {
     while (RE2::PartialMatch(full, subPattern, &cur)) {
-      substrings.push_back(std::string(cur));
-      full = absl::string_view(cur.end(), full.cend() - cur.cend());
+      substrings.push_back(cur.as_string());
+      full.set(cur.end(), full.end() - cur.end());
     }
   }
   return substrings;

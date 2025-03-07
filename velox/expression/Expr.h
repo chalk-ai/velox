@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <folly/container/F14Map.h>
@@ -835,6 +836,29 @@ class ExprSetSimplified : public ExprSet {
       const SelectivityVector& rows,
       EvalCtx& ctx,
       std::vector<VectorPtr>& result) override;
+};
+
+
+class ExprSetPool {
+ public:
+  std::unique_ptr<exec::ExprSet> take() {
+    auto pool = pool_.lock();
+    if (pool->empty()) {
+      return nullptr;
+    }
+    auto result = std::move(pool->back());
+    pool->pop_back();
+    return result;
+  }
+
+  void put(std::unique_ptr<exec::ExprSet> expr_set) {
+    auto pool = pool_.lock();
+    pool->push_back(std::move(expr_set));
+  }
+
+ private:
+  folly::Synchronized<std::deque<std::unique_ptr<exec::ExprSet>>, std::mutex>
+      pool_;
 };
 
 // Factory method that takes `kExprEvalSimplified` (query parameter) into

@@ -20,6 +20,7 @@
 
 #include <string>
 #include <vector>
+#include "backward-cpp/backward_velox.h"
 
 namespace facebook::velox::process {
 
@@ -31,12 +32,12 @@ class StackTrace {
   /**
    * Translate a frame pointer to file name and line number pair.
    */
-  static std::string translateFrame(void* framePtr, bool lineNumbers = true);
+  std::string translateFrame(void* framePtr, bool lineNumbers = true) const;
 
   /**
    * Demangle a function name.
    */
-  static std::string demangle(const char* mangled);
+  std::string demangle(const char* mangled) const;
 
  public:
   /**
@@ -45,6 +46,7 @@ class StackTrace {
    * '-2' to skipFrames.
    */
   explicit StackTrace(int32_t skipFrames = 0);
+  ~StackTrace() {}
 
   StackTrace(const StackTrace& other);
   StackTrace& operator=(const StackTrace& other);
@@ -62,9 +64,7 @@ class StackTrace {
   /**
    * Return the raw stack pointers.
    */
-  const std::vector<void*>& getStack() const {
-    return bt_pointers_;
-  }
+  const std::vector<void*>& getStack() const;
 
   /**
    * Log stacktrace into a file under /tmp. If "out" is not null,
@@ -73,18 +73,22 @@ class StackTrace {
    */
   std::string log(const char* errorType, std::string* out = nullptr) const;
 
- private:
+ protected:
   /**
    * Record bt pointers.
    */
   void create(int32_t skipFrames);
+  void init_resolver() const;
 
- private:
-  std::vector<void*> bt_pointers_;
+private:
+  mutable backward_velox::StackTrace st_;
+  mutable std::string bt_;
+  mutable folly::once_flag bt_flag_;
+  mutable folly::once_flag resolver_flag_;
+  mutable backward_velox::TraceResolver resolver_;
   mutable folly::once_flag bt_vector_flag_;
   mutable std::vector<std::string> bt_vector_;
-  mutable folly::once_flag bt_flag_;
-  mutable std::string bt_;
+  int32_t skip_frames_;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
