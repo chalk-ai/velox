@@ -2262,18 +2262,18 @@ TaskStats Task::taskStats() const {
     auto pipeline_id = driver->driverCtx()->pipelineId;
     if (driver->isOnThread()) {
       ++taskStats.numRunningDrivers;
-      ++taskStats.pipelineStats[pipelineId].numRunningDrivers;
+      ++taskStats.pipelineStats[pipeline_id].numRunningDrivers;
     } else if (driver->isTerminated()) {
       ++taskStats.numTerminatedDrivers;
-      ++taskStats.pipelineStats[pipelineId].numTerminatedDrivers;
+      ++taskStats.pipelineStats[pipeline_id].numTerminatedDrivers;
     } else if (driver->state().isEnqueued) {
       ++taskStats.numQueuedDrivers;
-      ++taskStats.pipelineStats[pipelineId].numQueuedDrivers;
+      ++taskStats.pipelineStats[pipeline_id].numQueuedDrivers;
     } else {
       const auto blockingReason = driver->blockingReason();
       if (blockingReason != BlockingReason::kNotBlocked) {
         ++taskStats.numBlockedDrivers[blockingReason];
-        ++taskStats.pipelineStats[pipelineId].numBlockedDrivers[blockingReason];
+        ++taskStats.pipelineStats[pipeline_id].numBlockedDrivers[blockingReason];
       }
     }
     // Find the longest running operator.
