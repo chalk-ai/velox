@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "velox/expression/LambdaExpr.h"
+#include <expression/SpecialForm.h>
 
 #include "velox/expression/FieldReference.h"
 #include "velox/expression/ScopedVarSetter.h"
@@ -227,6 +228,11 @@ std::string LambdaExpr::toSql(std::vector<VectorPtr>* complexConstants) const {
   out << ") -> " << body_->toSql(complexConstants);
 
   return out.str();
+}
+
+void LambdaExpr::clearCache() {
+  SpecialForm::clearCache();
+  body_->clearCache();
 }
 
 void LambdaExpr::evalSpecialForm(
