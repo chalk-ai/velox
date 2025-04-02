@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 #include "velox/expression/LambdaExpr.h"
-#include <expression/SpecialForm.h>
 
 #include "velox/expression/FieldReference.h"
 #include "velox/expression/ScopedVarSetter.h"
