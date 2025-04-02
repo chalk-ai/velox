@@ -76,6 +76,7 @@ target_link_libraries(
 
 if(${VELOX_ENABLE_PARQUET})
   add_executable(velox_sort_benchmark RowContainerSortBenchmark.cpp)
+  find_package(Thrift CONFIG REQUIRED)
 
   target_link_libraries(
     velox_sort_benchmark
@@ -85,7 +86,7 @@ if(${VELOX_ENABLE_PARQUET})
     velox_vector_test_lib
     Folly::follybenchmark
     arrow
-    thrift)
+    thrift::thrift)
 endif()
 
 add_library(velox_orderby_benchmark_util OrderByBenchmarkUtil.cpp)

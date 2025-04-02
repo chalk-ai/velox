@@ -1118,7 +1118,7 @@ struct Filter<T, A, 8> {
 };
 
 template <typename A>
-struct Crc32<uint64_t, A> {
+struct Crc32 {
 #if XSIMD_WITH_SSE4_2
   static uint32_t
   apply(uint32_t checksum, uint64_t value, const xsimd::sse4_2&) {
@@ -1143,6 +1143,13 @@ struct Crc32<uint64_t, A> {
 };
 
 } // namespace detail
+
+// Calculate the CRC32 checksum.
+template <typename A = xsimd::default_arch>
+uint32_t crc32U64(uint32_t checksum, uint64_t value, const A& arch = {}) {
+  return detail::Crc32<A>::apply(checksum, value, arch);
+}
+
 
 template <typename T, typename A>
 xsimd::batch<T, A> iota(const A&) {

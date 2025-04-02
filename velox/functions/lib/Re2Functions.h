@@ -18,6 +18,7 @@
 #include <memory>
 #include <vector>
 
+#include <folly/container/EvictingCacheMap.h>
 #include <re2/re2.h>
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/Udf.h"
@@ -260,10 +261,10 @@ namespace detail {
 class ReCache {
  public:
   explicit ReCache(uint64_t maxCompiledRegexes)
-      : maxCompiledRegexes_(maxCompiledRegexes) {}
+      : cache_(maxCompiledRegexes) {}
 
   void setMaxCompiledRegexes(uint64_t maxCompiledRegexes) {
-    maxCompiledRegexes_ = maxCompiledRegexes;
+    cache_.setMaxSize(maxCompiledRegexes);
   }
 
   RE2* findOrCompile(const StringView& pattern);
@@ -271,8 +272,7 @@ class ReCache {
   Expected<RE2*> tryFindOrCompile(const StringView& pattern);
 
  private:
-  folly::F14FastMap<std::string, std::unique_ptr<RE2>> cache_;
-  uint64_t maxCompiledRegexes_;
+  folly::EvictingCacheMap<std::string, std::unique_ptr<RE2>> cache_;
 };
 
 } // namespace detail
@@ -511,7 +511,7 @@ FOLLY_ALWAYS_INLINE std::string prepareRegexpReplaceReplacement(
         &newReplacement,
         fmt::format(R"(\${{{}}})", std::string(groupName[1])),
         fmt::format("${}", groupIter->second));
-  }
+      }
 
   // Convert references to numbered capturing groups from $g to \g.
   static const RE2 kConvertRegex(R"(\$(\d+))");

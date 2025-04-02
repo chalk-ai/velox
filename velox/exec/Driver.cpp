@@ -254,6 +254,17 @@ void Driver::init(
   trackOperatorCpuUsage_ = ctx_->queryConfig().operatorTrackCpuUsage();
 }
 
+std::shared_ptr<Driver> Driver::testingCreate(
+    std::unique_ptr<DriverCtx> ctx) {
+  auto driver = new Driver();
+  if (ctx != nullptr) {
+    ctx->driver = driver;
+    driver->ctx_ = std::move(ctx);
+  }
+  return std::shared_ptr<Driver>(driver);
+}
+
+
 void Driver::initializeOperators() {
   if (operatorsInitialized_) {
     return;

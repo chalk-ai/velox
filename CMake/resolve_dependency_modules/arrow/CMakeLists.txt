@@ -13,11 +13,11 @@
 # limitations under the License.
 project(Arrow)
 
-if(VELOX_ENABLE_ARROW)
+  find_package(Thrift CONFIG REQUIRED)
   if(Thrift_FOUND)
     set(THRIFT_SOURCE "SYSTEM")
   else()
-    set(THRIFT_SOURCE "BUNDLED")
+    message(FATAL_ERROR "Failed to find system thrift")
   endif()
 
   set(ARROW_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/arrow_ep")

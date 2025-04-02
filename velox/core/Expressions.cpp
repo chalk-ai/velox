@@ -16,6 +16,7 @@
 #include "velox/core/Expressions.h"
 #include "velox/common/encode/Base64.h"
 #include "velox/vector/VectorSaver.h"
+#include <common/memory/MemoryPool.h>
 
 namespace facebook::velox::core {
 

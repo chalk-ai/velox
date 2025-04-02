@@ -53,7 +53,80 @@ struct IndexLookupCondition;
 
 namespace facebook::velox::connector {
 
-class DataSource;
+
+struct ConnectorSplit;
+
+class DataSource {
+ public:
+  static constexpr int64_t kUnknownRowSize = -1;
+  virtual ~DataSource() = default;
+
+  /// Add split to process, then call next multiple times to process the split.
+  /// A split must be fully processed by next before another split can be
+  /// added. Next returns nullptr to indicate that current split is fully
+  /// processed.
+  virtual void addSplit(std::shared_ptr<ConnectorSplit> split) = 0;
+
+  /// Process a split added via addSplit. Returns nullptr if split has been
+  /// fully processed. Returns std::nullopt and sets the 'future' if started
+  /// asynchronous work and needs to wait for it to complete to continue
+  /// processing. The caller will wait for the 'future' to complete before
+  /// calling 'next' again.
+  virtual std::optional<RowVectorPtr> next(
+      uint64_t size,
+      velox::ContinueFuture& future) = 0;
+
+  /// Add dynamically generated filter.
+  /// @param outputChannel index into outputType specified in
+  /// Connector::createDataSource() that identifies the column this filter
+  /// applies to.
+  virtual void addDynamicFilter(
+      column_index_t outputChannel,
+      const std::shared_ptr<common::Filter>& filter) = 0;
+
+  /// Returns the number of input bytes processed so far.
+  virtual uint64_t getCompletedBytes() = 0;
+
+  /// Returns the number of input rows processed so far.
+  virtual uint64_t getCompletedRows() = 0;
+
+  virtual std::unordered_map<std::string, RuntimeCounter> runtimeStats() = 0;
+
+  /// Returns true if 'this' has initiated all the prefetch this will initiate.
+  /// This means that the caller should schedule next splits to prefetch in the
+  /// background. false if the source does not prefetch.
+  virtual bool allPrefetchIssued() const {
+    return false;
+  }
+
+  /// Initializes this from 'source'. 'source' is effectively moved into 'this'
+  /// Adaptation like dynamic filters stay in effect but the parts dealing with
+  /// open files, prefetched data etc. are moved. 'source' is freed after the
+  /// move.
+  virtual void setFromDataSource(std::unique_ptr<DataSource> /*source*/) {
+    VELOX_UNSUPPORTED("setFromDataSource");
+  }
+
+  /// Returns a connector dependent row size if available. This can be
+  /// called after addSplit().  This estimates uncompressed data
+  /// sizes. This is better than getCompletedBytes()/getCompletedRows()
+  /// since these track sizes before decompression and may include
+  /// read-ahead and extra IO from coalescing reads and  will not
+  /// fully account for size of sparsely accessed columns.
+  virtual int64_t estimatedRowSize() {
+    return kUnknownRowSize;
+  }
+
+  /// Returns a Wave delegate that implements the Wave Operator
+  /// interface for a GPU table scan. This should be called after
+  /// construction and no other methods should be called on 'this'
+  /// after creating the delegate. Splits, dynamic filters etc.  will
+  /// be added to the WaveDataSource instead of 'this'. 'this' should
+  /// stay live until after the destruction of the delegate.
+  virtual std::shared_ptr<wave::WaveDataSource> toWaveDataSource() {
+    VELOX_UNSUPPORTED();
+  }
+};
 
 /// A split represents a chunk of data that a connector should load and return
 /// as a RowVectorPtr, potentially after processing pushdowns.

@@ -188,6 +188,7 @@ enum class StatusCode : int8_t {
   kNotImplemented = 11,
 };
 std::string_view toString(StatusCode code);
+static const inline std::string kNoMessage = "";
 
 class [[nodiscard]] Status {
  public:
@@ -392,7 +393,6 @@ class [[nodiscard]] Status {
 
   /// Return the specific error message attached to this status.
   const std::string& message() const {
-    static const std::string kNoMessage = "";
     return ok() ? kNoMessage : state_->msg;
   }
 

@@ -612,6 +612,7 @@ if(VELOX_BUILD_TESTING)
 endif()
 
 include_directories(.)
+add_definitions(-w)
 
 # TODO: Include all other installation files. For now just making sure this
 # generates an installable makefile.

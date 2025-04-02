@@ -16,9 +16,15 @@
 #pragma once
 
 #include <fmt/format.h>
+#include <folly/Synchronized.h>
 
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <utility>
+#include <vector>
 
+#include "velox/expression/Expr.h"
 #include "velox/connectors/Connector.h"
 #include "velox/core/Expressions.h"
 #include "velox/core/QueryConfig.h"
@@ -440,7 +446,7 @@ class TraceScanNode final : public PlanNode {
 class FilterNode : public PlanNode {
  public:
   FilterNode(const PlanNodeId& id, TypedExprPtr filter, PlanNodePtr source)
-      : PlanNode(id), sources_{std::move(source)}, filter_(std::move(filter)) {
+      : PlanNode(id), sources_{std::move(source)}, filter_(std::move(filter)), pool_(std::make_shared<exec::ExprSetPool>()) {
     VELOX_USER_CHECK(
         filter_->type()->isBoolean(),
         "Filter expression must be of type BOOLEAN. Got {}.",
@@ -470,6 +476,10 @@ class FilterNode : public PlanNode {
 
   static PlanNodePtr create(const folly::dynamic& obj, void* context);
 
+  const std::shared_ptr<exec::ExprSetPool>& exprSetPool() const {
+    return pool_;
+  }
+
  private:
   void addDetails(std::stringstream& stream) const override {
     stream << "expression: " << filter_->toString();
@@ -482,6 +492,7 @@ class FilterNode : public PlanNode {
 
   const std::vector<PlanNodePtr> sources_;
   const TypedExprPtr filter_;
+  std::shared_ptr<exec::ExprSetPool> pool_;
 };
 
 class AbstractProjectNode : public PlanNode {
@@ -495,7 +506,8 @@ class AbstractProjectNode : public PlanNode {
         sources_{source},
         names_(std::move(names)),
         projections_(std::move(projections)),
-        outputType_(makeOutputType(names_, projections_)) {}
+        outputType_(makeOutputType(names_, projections_)), 
+        pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   AbstractProjectNode(
       const PlanNodeId& id,
@@ -506,7 +518,8 @@ class AbstractProjectNode : public PlanNode {
         sources_{source},
         names_(names),
         projections_(projections),
-        outputType_(makeOutputType(names_, projections_)) {}
+        outputType_(makeOutputType(names_, projections_)), 
+        pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   const RowTypePtr& outputType() const override {
     return outputType_;
@@ -528,6 +541,10 @@ class AbstractProjectNode : public PlanNode {
   // this class without re-implementing the other functions.
   virtual std::string_view name() const override {
     return "Project";
+  }
+
+  const std::shared_ptr<exec::ExprSetPool>& exprSetPool() const {
+    return pool_;
   }
 
  protected:
@@ -559,6 +576,7 @@ class AbstractProjectNode : public PlanNode {
   const std::vector<std::string> names_;
   const std::vector<TypedExprPtr> projections_;
   const RowTypePtr outputType_;
+  std::shared_ptr<exec::ExprSetPool> pool_;
 };
 
 class ProjectNode : public AbstractProjectNode {

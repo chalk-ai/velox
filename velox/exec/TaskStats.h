@@ -43,6 +43,16 @@ struct PipelineStats {
   /// True if contains the sync node for the task.
   bool outputPipeline;
 
+  /// Total number of drivers queued on an executor but not on thread.
+  uint64_t numQueuedDrivers{0};
+  /// The number of completed drivers (which slots are null in Task 'drivers_'
+  /// list).
+  uint64_t numTerminatedDrivers{0};
+  /// The number of drivers that are currently running on driver thread.
+  uint64_t numRunningDrivers{0};
+  /// Drivers blocked for various reasons. Based on enum BlockingReason.
+  std::unordered_map<BlockingReason, uint64_t> numBlockedDrivers;
+
   PipelineStats(bool _inputPipeline, bool _outputPipeline)
       : inputPipeline{_inputPipeline}, outputPipeline{_outputPipeline} {}
 };

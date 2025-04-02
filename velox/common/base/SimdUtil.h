@@ -344,16 +344,6 @@ xsimd::batch<To, A> getHalf(xsimd::batch<From, A> data, const A& arch = {}) {
   return detail::GetHalf<To, From, A>::template apply<kSecond>(data, arch);
 }
 
-namespace detail {
-template <typename T, typename A>
-struct Crc32;
-}
-
-// Calculate the CRC32 checksum.
-template <typename A = xsimd::default_arch>
-uint32_t crc32U64(uint32_t checksum, uint64_t value, const A& arch = {}) {
-  return detail::Crc32<uint64_t, A>::apply(checksum, value, arch);
-}
 
 // Return a vector consisting {0, 1, ..., n} where 'n' is the number
 // of lanes.

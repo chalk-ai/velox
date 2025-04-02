@@ -473,15 +473,7 @@ class Driver : public std::enable_shared_from_this<Driver> {
   /// Returns the process-wide number of driver cpu yields.
   static std::atomic_uint64_t& yieldCount();
 
-  static std::shared_ptr<Driver> testingCreate(
-      std::unique_ptr<DriverCtx> ctx = nullptr) {
-    auto driver = new Driver();
-    if (ctx != nullptr) {
-      ctx->driver = driver;
-      driver->ctx_ = std::move(ctx);
-    }
-    return std::shared_ptr<Driver>(driver);
-  }
+  static std::shared_ptr<Driver> testingCreate(std::unique_ptr<DriverCtx> ctx = nullptr);
 
  private:
   // Ensures that the thread is removed from its Task's thread count on exit.

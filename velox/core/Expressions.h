@@ -61,15 +61,15 @@ class ConstantTypedExpr : public ITypedExpr {
   // variant::null() value is supported.
   ConstantTypedExpr(TypePtr type, variant value)
       : ITypedExpr{std::move(type)}, value_{std::move(value)} {}
-
   // Creates constant expression of scalar or complex type. The value comes from
   // index zero.
-  explicit ConstantTypedExpr(const VectorPtr& value)
+  ConstantTypedExpr(const VectorPtr& value)
       : ITypedExpr{value->type()},
         valueVector_{
             value->isConstantEncoding()
                 ? value
                 : BaseVector::wrapInConstant(1, 0, value)} {}
+
 
   std::string toString() const override {
     if (hasValueVector()) {
@@ -84,7 +84,7 @@ class ConstantTypedExpr : public ITypedExpr {
 
     return bits::hashMix(
         kBaseHash,
-        hasValueVector() ? valueVector_->hashValueAt(0) : value_.hash());
+        hasValueVector() ? reinterpret_cast<uintptr_t>(this)  : value_.hash());
   }
 
   bool hasValueVector() const {

@@ -1203,7 +1203,7 @@ void MemoryPoolImpl::recordAllocDbg(const void* addr, uint64_t size) {
   std::lock_guard<std::mutex> l(debugAllocMutex_);
   debugAllocRecords_.emplace(
       reinterpret_cast<uint64_t>(addr),
-      AllocationRecord{size, process::StackTrace()});
+      AllocationRecord{size, ""}); // process::StackTrace().toString()
 }
 
 void MemoryPoolImpl::recordAllocDbg(const Allocation& allocation) {
@@ -1244,7 +1244,7 @@ void MemoryPoolImpl::recordFreeDbg(const void* addr, uint64_t size) {
         "{}\n",
         size,
         allocRecord.size,
-        allocRecord.callStack.toString(),
+        allocRecord.callStack,
         freeStackTrace));
   }
   debugAllocRecords_.erase(addrUint64);
@@ -1296,7 +1296,7 @@ void MemoryPoolImpl::leakCheckDbg() {
   std::unordered_map<std::string, AllocationStats> sizeAggregatedRecords;
   for (const auto& itr : debugAllocRecords_) {
     const auto& allocationRecord = itr.second;
-    const auto stackStr = allocationRecord.callStack.toString();
+    const auto stackStr = allocationRecord.callStack;
     if (sizeAggregatedRecords.count(stackStr) == 0) {
       sizeAggregatedRecords[stackStr] = AllocationStats();
     }

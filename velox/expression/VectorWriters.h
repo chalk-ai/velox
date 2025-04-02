@@ -416,7 +416,7 @@ struct VectorWriter<T, std::enable_if_t<std::is_same_v<T, bool>>>
     }
   }
 
-  VectorWriter() {}
+  VectorWriter(): proxy_(false), vector_(nullptr) {}
 
   bool& current() {
     return proxy_;

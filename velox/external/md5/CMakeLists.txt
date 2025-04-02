@@ -9,9 +9,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-velox_add_library(velox_external_md5 md5.cpp)
+add_library(md5 md5.cpp)
 
-velox_link_libraries(
-        velox_external_md5
-        PRIVATE
+target_link_libraries(
+        md5
         Folly::folly)

@@ -579,7 +579,7 @@ std::ostream& operator<<(std::ostream& out, MemoryPool::Kind kind);
 
 std::ostream& operator<<(std::ostream& os, const MemoryPool::Stats& stats);
 
-class MemoryPoolImpl : public MemoryPool {
+class MemoryPoolImpl final : public MemoryPool {
  public:
   /// The callback invoked on the root memory pool destruction. It is set by
   /// memory manager to removes the pool from 'MemoryManager::pools_'.
@@ -729,7 +729,7 @@ class MemoryPoolImpl : public MemoryPool {
   /// Structure to store allocation details in debug mode.
   struct AllocationRecord {
     uint64_t size;
-    process::StackTrace callStack;
+    std::string callStack;
   };
 
   std::unordered_map<uint64_t, AllocationRecord>& testingDebugAllocRecords() {

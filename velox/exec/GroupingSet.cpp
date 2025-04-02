@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "velox/exec/GroupingSet.h"
+#include <vector>
 #include "velox/common/testutil/TestValue.h"
 #include "velox/exec/Task.h"
 
@@ -754,7 +755,9 @@ bool GroupingSet::getOutput(
   VELOX_CHECK(!isDistinct());
 
   // @lint-ignore CLANGTIDY
-  char* groups[maxOutputRows];
+  std::vector<char*> groups_vector;
+  groups_vector.resize(maxOutputRows);
+  auto groups = groups_vector.data();
   const int32_t numGroups = table_
       ? table_->rows()->listRows(
             &iterator, maxOutputRows, maxOutputBytes, groups)

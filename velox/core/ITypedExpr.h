@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include "velox/type/Type.h"
 
 namespace facebook::velox::core {
@@ -28,10 +29,10 @@ using TypedExprPtr = std::shared_ptr<const ITypedExpr>;
 /// Strongly-typed expression, e.g. literal, function call, etc.
 class ITypedExpr : public ISerializable {
  public:
-  explicit ITypedExpr(TypePtr type) : type_{std::move(type)}, inputs_{} {}
+  explicit ITypedExpr(TypePtr type) : type_{std::move(type)}, hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{} {}
 
   ITypedExpr(TypePtr type, std::vector<TypedExprPtr> inputs)
-      : type_{std::move(type)}, inputs_{std::move(inputs)} {}
+      : type_{std::move(type)},  hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{std::move(inputs)} {}
 
   const TypePtr& type() const {
     return type_;
@@ -63,11 +64,19 @@ class ITypedExpr : public ISerializable {
   virtual size_t localHash() const = 0;
 
   size_t hash() const {
-    size_t hash = bits::hashMix(type_->hashKind(), localHash());
-    for (int32_t i = 0; i < inputs_.size(); ++i) {
-      hash = bits::hashMix(hash, inputs_[i]->hash());
+    if (*hash_ == 0) {  
+      size_t hash = bits::hashMix(type_->hashKind(), localHash());
+      for (int32_t i = 0; i < inputs_.size(); ++i) {
+        hash = bits::hashMix(hash, inputs_[i]->hash());
+      }
+      if (hash == 0) [[unlikely]] {
+        // We use 0 to represent "the hash has not yet been computed", so marking values that somehow
+        // hash to 0 as having a hash of 1 instead
+        hash = 1;
+      }
+      *hash_ = hash;
     }
-    return hash;
+    return *hash_;
   }
 
   /// Returns true if other is recursively equal to 'this'. We do not
@@ -111,6 +120,7 @@ class ITypedExpr : public ISerializable {
   }
 
   TypePtr type_;
+  std::shared_ptr<std::atomic_size_t> hash_;
   std::vector<TypedExprPtr> inputs_;
 };
 
