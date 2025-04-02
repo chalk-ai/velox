@@ -79,6 +79,8 @@ option(
 option(VELOX_MONO_LIBRARY "Build single unified library." OFF)
 option(ENABLE_ALL_WARNINGS "Enable -Wall and -Wextra compiler warnings." ON)
 option(VELOX_BUILD_SHARED "Build Velox as shared libraries." OFF)
+option(VELOX_SKIP_WAVE_BRANCH_KERNEL_TEST "Disable Wave branch kernel test."
+       OFF)
 # While it's possible to build both in one go we currently want to build either
 # static or shared.
 cmake_dependent_option(
@@ -138,6 +140,7 @@ option(VELOX_ENABLE_ABFS "Build Abfs Connector" OFF)
 option(VELOX_ENABLE_HDFS "Build Hdfs Connector" OFF)
 option(VELOX_ENABLE_PARQUET "Enable Parquet support" ON)
 option(VELOX_ENABLE_ARROW "Enable Arrow support" OFF)
+option(VELOX_ENABLE_GEO "Enable Geospatial support" OFF)
 option(VELOX_ENABLE_REMOTE_FUNCTIONS "Enable remote function support" OFF)
 option(VELOX_ENABLE_CCACHE "Use ccache if installed." ON)
 
@@ -149,6 +152,8 @@ option(
   VELOX_ENABLE_INT64_BUILD_PARTITION_BOUND
   "make buildPartitionBounds_ a vector int64 instead of int32 to avoid integer overflow when the hashtable has billions of records"
   OFF)
+option(VELOX_SIMDJSON_SKIPUTF8VALIDATION
+       "Skip simdjson utf8 validation in JSON parsing" OFF)
 
 # Explicitly force compilers to generate colored output. Compilers usually do
 # this by default if they detect the output is a terminal, but this assumption
@@ -201,6 +206,7 @@ if(${VELOX_BUILD_PYTHON_PACKAGE})
   set(VELOX_ENABLE_AGGREGATES ON)
   set(VELOX_ENABLE_SPARK_FUNCTIONS ON)
   set(VELOX_BUILD_RUNNER OFF)
+  set(VELOX_BUILD_TEST_UTILS ON) # required for velox_exec_test_lib
 endif()
 
 if(${VELOX_ENABLE_DUCKDB})
@@ -367,8 +373,6 @@ if(ENABLE_ALL_WARNINGS)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra ${KNOWN_WARNINGS}")
 endif()
 
-message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
-
 if(${VELOX_ENABLE_GPU})
   enable_language(CUDA)
   # Determine CUDA_ARCHITECTURES automatically.
@@ -491,7 +495,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO}
 
   # Locate or build protobuf.
   velox_set_source(Protobuf)
-  velox_resolve_dependency(Protobuf CONFIG 3.21.7 REQUIRED)
+  velox_resolve_dependency(Protobuf 3.21.7 REQUIRED)
   include_directories(${Protobuf_INCLUDE_DIRS})
 endif()
 
@@ -592,7 +596,7 @@ if(NOT VELOX_DISABLE_GOOGLETEST)
   velox_set_source(GTest)
   velox_resolve_dependency(GTest)
   set(VELOX_GTEST_INCUDE_DIR
-      "${gtest_SOURCE_DIR}/googletest/include"
+      "${gtest_SOURCE_DIR}/include"
       PARENT_SCOPE)
 endif()
 
@@ -620,9 +624,16 @@ if("${TREAT_WARNINGS_AS_ERRORS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
 endif()
 
+message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
+
 if(VELOX_ENABLE_ARROW)
   velox_set_source(Arrow)
   velox_resolve_dependency(Arrow)
+endif()
+
+if(VELOX_ENABLE_GEO)
+  velox_set_source(geos)
+  velox_resolve_dependency(geos)
 endif()
 
 add_subdirectory(velox)

@@ -256,8 +256,12 @@ class BaseVector {
     return const_cast<uint64_t*>(rawNulls_);
   }
 
-  BufferPtr& mutableNulls(vector_size_t size) {
-    ensureNullsCapacity(size);
+  /// Ensures the vector has capacity for the nulls and returns the shared
+  /// pointer to the buffer containing them.
+  /// Optional parameter 'setNotNull' is passed to ensureNullsCapacity() and is
+  /// used to ensure all the rows will be 'not nulls' if set to true.
+  BufferPtr& mutableNulls(vector_size_t size, bool setNotNull = false) {
+    ensureNullsCapacity(size, setNotNull);
     return nulls_;
   }
 
@@ -1074,6 +1078,16 @@ std::string printNulls(
 std::string printIndices(
     const BufferPtr& indices,
     vector_size_t maxIndicesToPrint = 10);
+
+template <typename OutputStream>
+OutputStream& operator<<(
+    OutputStream& out,
+    const BaseVector::CopyRange& range) {
+  out << "{sourceIndex=" << range.sourceIndex
+      << " targetIndex=" << range.targetIndex << " count=" << range.count
+      << "}";
+  return out;
+}
 
 } // namespace facebook::velox
 

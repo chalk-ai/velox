@@ -28,34 +28,37 @@ void appendComma(int32_t i, std::stringstream& sql) {
 
 // Returns the SQL string of the given type.
 std::string toTypeSql(const TypePtr& type) {
+  // Date needs special handling because it is not supported by TypeKind. We
+  // will need to explicitly specify or we are at risk of a date being casted to
+  // an integer and failing.
+  if (type->isDate()) {
+    return "DATE";
+  }
   switch (type->kind()) {
     case TypeKind::ARRAY:
-      return fmt::format("array({})", toTypeSql(type->childAt(0)));
+      return fmt::format("ARRAY({})", toTypeSql(type->childAt(0)));
     case TypeKind::MAP:
       return fmt::format(
-          "map({}, {})",
+          "MAP({}, {})",
           toTypeSql(type->childAt(0)),
           toTypeSql(type->childAt(1)));
     case TypeKind::ROW: {
       const auto& rowType = type->asRow();
       std::stringstream sql;
-      sql << "row(";
+      sql << "ROW(";
       for (auto i = 0; i < type->size(); ++i) {
         appendComma(i, sql);
+        // TODO Field names may need to be quoted.
         sql << rowType.nameOf(i) << " " << toTypeSql(type->childAt(i));
       }
       sql << ")";
       return sql.str();
     }
     case TypeKind::VARCHAR:
-      if (isJsonType(type)) {
-        return "json";
-      } else {
-        return "varchar";
-      }
+      return isJsonType(type) ? "JSON" : "VARCHAR";
     default:
       if (type->isPrimitiveType()) {
-        return type->toString();
+        return mapTypeKindToName(type->kind());
       }
       VELOX_UNSUPPORTED("Type is not supported: {}", type->toString());
   }
@@ -75,6 +78,15 @@ std::string toLambdaSql(const core::LambdaTypedExprPtr& lambda) {
   toCallInputsSql({lambda->body()}, sql);
   return sql.str();
 }
+
+namespace {
+std::string toDereferenceSql(const core::DereferenceTypedExpr& dereference) {
+  std::stringstream sql;
+  toCallInputsSql(dereference.inputs(), sql);
+  sql << "." << dereference.name();
+  return sql.str();
+}
+} // namespace
 
 void toCallInputsSql(
     const std::vector<core::TypedExprPtr>& inputs,
@@ -98,20 +110,20 @@ void toCallInputsSql(
     } else if (
         auto constantArg =
             std::dynamic_pointer_cast<const core::ConstantTypedExpr>(input)) {
-      sql << toConstantSql(constantArg);
+      sql << toConstantSql(*constantArg);
     } else if (
         auto castArg =
             std::dynamic_pointer_cast<const core::CastTypedExpr>(input)) {
-      sql << toCastSql(castArg);
+      sql << toCastSql(*castArg);
     } else if (
         auto concatArg =
             std::dynamic_pointer_cast<const core::ConcatTypedExpr>(input)) {
-      sql << toConcatSql(concatArg);
+      sql << toConcatSql(*concatArg);
     } else if (
         auto dereferenceArg =
             std::dynamic_pointer_cast<const core::DereferenceTypedExpr>(
                 input)) {
-      sql << toDereferenceSql(dereferenceArg);
+      sql << toDereferenceSql(*dereferenceArg);
     } else {
       VELOX_NYI("Unsupported input expression: {}.", input->toString());
     }
@@ -122,7 +134,9 @@ void toCallInputsSql(
 // operators supported in Presto SQL.
 const std::unordered_map<std::string, std::string>& unaryOperatorMap() {
   static std::unordered_map<std::string, std::string> unaryOperatorMap{
-      {"negate", "-"}};
+      {"negate", "-"},
+      {"not", "not"},
+  };
   return unaryOperatorMap;
 }
 
@@ -132,6 +146,7 @@ const std::unordered_map<std::string, std::string>& binaryOperatorMap() {
   static std::unordered_map<std::string, std::string> binaryOperatorMap{
       {"plus", "+"},
       {"subtract", "-"},
+      {"minus", "-"},
       {"multiply", "*"},
       {"divide", "/"},
       {"eq", "="},
@@ -140,6 +155,7 @@ const std::unordered_map<std::string, std::string>& binaryOperatorMap() {
       {"gt", ">"},
       {"lte", "<="},
       {"gte", ">="},
+      {"distinct_from", "is distinct from"},
   };
   return binaryOperatorMap;
 }
@@ -162,6 +178,12 @@ std::string toCallSql(const core::CallTypedExprPtr& call) {
     sql << fmt::format(" {} ", binaryOperators.at(call->name()));
     toCallInputsSql({call->inputs()[1]}, sql);
     sql << ")";
+  } else if (call->name() == "is_null" || call->name() == "not_null") {
+    sql << "(";
+    VELOX_CHECK_EQ(call->inputs().size(), 1);
+    toCallInputsSql({call->inputs()[0]}, sql);
+    sql << fmt::format(" is{} null", call->name() == "not_null" ? " not" : "");
+    sql << ")";
   } else if (call->name() == "in") {
     VELOX_CHECK_GE(call->inputs().size(), 2);
     toCallInputsSql({call->inputs()[0]}, sql);
@@ -172,6 +194,7 @@ std::string toCallSql(const core::CallTypedExprPtr& call) {
     }
     sql << ")";
   } else if (call->name() == "like") {
+    sql << "(";
     toCallInputsSql({call->inputs()[0]}, sql);
     sql << " like ";
     toCallInputsSql({call->inputs()[1]}, sql);
@@ -179,6 +202,7 @@ std::string toCallSql(const core::CallTypedExprPtr& call) {
       sql << " escape ";
       toCallInputsSql({call->inputs()[2]}, sql);
     }
+    sql << ")";
   } else if (call->name() == "or" || call->name() == "and") {
     sql << "(";
     const auto& inputs = call->inputs();
@@ -214,67 +238,54 @@ std::string toCallSql(const core::CallTypedExprPtr& call) {
   return sql.str();
 }
 
-std::string toCastSql(const core::CastTypedExprPtr& cast) {
+std::string toCastSql(const core::CastTypedExpr& cast) {
   std::stringstream sql;
-  if (cast->nullOnFailure()) {
+  if (cast.nullOnFailure()) {
     sql << "try_cast(";
   } else {
     sql << "cast(";
   }
-  toCallInputsSql(cast->inputs(), sql);
-  sql << " as " << toTypeSql(cast->type());
+  toCallInputsSql(cast.inputs(), sql);
+  sql << " as " << toTypeSql(cast.type());
   sql << ")";
   return sql.str();
 }
 
-std::string toConcatSql(const core::ConcatTypedExprPtr& concat) {
+std::string toConcatSql(const core::ConcatTypedExpr& concat) {
   std::stringstream sql;
-  sql << "concat(";
-  toCallInputsSql(concat->inputs(), sql);
+  sql << "row(";
+  toCallInputsSql(concat.inputs(), sql);
   sql << ")";
   return sql.str();
 }
 
-std::string toDereferenceSql(const core::DereferenceTypedExprPtr& dereference) {
-  std::stringstream sql;
-  toCallInputsSql(dereference->inputs(), sql);
-  sql << "." << dereference->name();
-  return sql.str();
-}
-
-// Constant expressions of complex types, timestamp with timezone, interval, and
-// decimal types are not supported yet.
-std::string toConstantSql(const core::ConstantTypedExprPtr& constant) {
-  // Escape single quote in string literals used in SQL texts.
-  auto escape = [](const std::string& input) -> std::string {
-    std::string result;
-    result.reserve(input.size());
-    for (auto i = 0; i < input.size(); ++i) {
-      if (input[i] == '\'') {
-        result.push_back('\'');
-      }
-      result.push_back(input[i]);
-    }
-    return result;
-  };
+std::string toConstantSql(const core::ConstantTypedExpr& constant) {
+  const auto& type = constant.type();
+  const auto typeSql = toTypeSql(type);
 
   std::stringstream sql;
-  if (constant->toString() == "null") {
+  if (constant.isNull()) {
     // Syntax like BIGINT 'null' for typed null is not supported, so use cast
     // instead.
-    sql << fmt::format("cast(null as {})", toTypeSql(constant->type()));
-  } else if (constant->type()->isVarchar() || constant->type()->isVarbinary()) {
-    sql << fmt::format(
-        "{} '{}'",
-        toTypeSql(constant->type()),
-        escape(constant->valueVector()->toString(0)));
-  } else if (constant->type()->isPrimitiveType()) {
-    sql << fmt::format(
-        "{} '{}'", toTypeSql(constant->type()), constant->toString());
+    sql << fmt::format("cast(null as {})", typeSql);
+  } else if (type->isVarchar() || type->isVarbinary()) {
+    std::string value;
+    if (constant.hasValueVector()) {
+      value = constant.valueVector()
+                  ->as<SimpleVector<StringView>>()
+                  ->valueAt(0)
+                  .getString();
+    } else {
+      value = constant.value().value<std::string>();
+    }
+
+    // Escape single quote in string literals used in SQL texts.
+    sql << typeSql << " " << std::quoted(value, '\'', '\'');
+  } else if (type->isPrimitiveType()) {
+    sql << fmt::format("{} '{}'", typeSql, constant.toString());
   } else {
     VELOX_NYI(
-        "Constant expressions of {} are not supported yet.",
-        constant->type()->toString());
+        "Constant expressions of {} are not supported yet.", type->toString());
   }
   return sql.str();
 }

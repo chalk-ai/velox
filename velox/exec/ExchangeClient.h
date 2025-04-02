@@ -25,7 +25,6 @@ namespace facebook::velox::exec {
 class ExchangeClient : public std::enable_shared_from_this<ExchangeClient> {
  public:
   static constexpr int32_t kDefaultMaxQueuedBytes = 32 << 20; // 32 MB.
-  static constexpr std::chrono::seconds kRequestDataSizesMaxWait{10};
   static constexpr std::chrono::milliseconds kRequestDataMaxWait{100};
   static inline const std::string kBackgroundCpuTimeMs = "backgroundCpuTimeMs";
 
@@ -33,14 +32,20 @@ class ExchangeClient : public std::enable_shared_from_this<ExchangeClient> {
       std::string taskId,
       int destination,
       int64_t maxQueuedBytes,
+      int32_t numberOfConsumers,
+      uint64_t minOutputBatchBytes,
       memory::MemoryPool* pool,
-      folly::Executor* executor)
+      folly::Executor* executor,
+      int32_t requestDataSizesMaxWaitSec = 10)
       : taskId_{std::move(taskId)},
         destination_(destination),
         maxQueuedBytes_{maxQueuedBytes},
+        kRequestDataSizesMaxWaitSec_{requestDataSizesMaxWaitSec},
         pool_(pool),
         executor_(executor),
-        queue_(std::make_shared<ExchangeQueue>()) {
+        queue_(std::make_shared<ExchangeQueue>(
+            numberOfConsumers,
+            minOutputBatchBytes)) {
     VELOX_CHECK_NOT_NULL(pool_);
     VELOX_CHECK_NOT_NULL(executor_);
     // NOTE: the executor is used to run async response callback from the
@@ -66,7 +71,7 @@ class ExchangeClient : public std::enable_shared_from_this<ExchangeClient> {
   // upstream task. If 'close' has been called already, creates an exchange
   // source and immediately closes it to notify the upstream task that data is
   // no longer needed. Repeated calls with the same 'taskId' are ignored.
-  void addRemoteTaskId(const std::string& taskId);
+  void addRemoteTaskId(const std::string& remoteTaskId);
 
   void noMoreRemoteTasks();
 
@@ -91,11 +96,15 @@ class ExchangeClient : public std::enable_shared_from_this<ExchangeClient> {
   /// The data may be compressed, in which case 'maxBytes' applies to compressed
   /// size.
   std::vector<std::unique_ptr<SerializedPage>>
-  next(uint32_t maxBytes, bool* atEnd, ContinueFuture* future);
+  next(int consumerId, uint32_t maxBytes, bool* atEnd, ContinueFuture* future);
 
   std::string toString() const;
 
   folly::dynamic toJson() const;
+
+  std::chrono::seconds requestDataSizesMaxWaitSec() const {
+    return kRequestDataSizesMaxWaitSec_;
+  }
 
  private:
   struct RequestSpec {
@@ -119,6 +128,8 @@ class ExchangeClient : public std::enable_shared_from_this<ExchangeClient> {
   const std::string taskId_;
   const int destination_;
   const int64_t maxQueuedBytes_;
+  const std::chrono::seconds kRequestDataSizesMaxWaitSec_;
+
   memory::MemoryPool* const pool_;
   folly::Executor* const executor_;
   const std::shared_ptr<ExchangeQueue> queue_;

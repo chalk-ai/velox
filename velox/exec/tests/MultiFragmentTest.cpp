@@ -209,7 +209,7 @@ class MultiFragmentTest : public HiveConnectorTestBase,
   std::vector<std::shared_ptr<TempFilePath>> filePaths_;
   std::vector<RowVectorPtr> vectors_;
   std::shared_ptr<OutputBufferManager> bufferManager_{
-      OutputBufferManager::getInstance().lock()};
+      OutputBufferManager::getInstanceRef()};
 };
 
 TEST_P(MultiFragmentTest, aggregationSingleKey) {
@@ -2287,10 +2287,32 @@ class DataFetcher {
         out.str() + "]";
   }
 
+  std::atomic<bool>& bufferFull() {
+    return bufferFull_;
+  }
+
+  std::atomic<bool>& bufferDone() {
+    return bufferDone_;
+  }
+
+  folly::EventCount& bufferFullOrDoneWait() {
+    return bufferFullOrDoneWait_;
+  }
+
  private:
   static constexpr int64_t kInitialSequence = 0;
 
   void doFetch(int64_t sequence) {
+    // We only want to consume data when the buffer is full or done because we
+    // want to make sure maxBytes is respected, so there needs to be enough data
+    // in the buffer for maxBytes to have an effect.
+    bufferFullOrDoneWait_.await(
+        [&]() { return bufferFull_.load() || bufferDone_.load(); });
+    // Reset the bufferFull_ flag as we're about to consume some data and we
+    // want to detect when it fills up again. Note that we don't reset the
+    // bufferDone_ flag because once it's done it's done.
+    bufferFull_ = false;
+
     bool ok = bufferManager_->getData(
         taskId_,
         destination_,
@@ -2348,15 +2370,23 @@ class DataFetcher {
   /// All the pages sizes of each packet.
   std::vector<std::vector<std::size_t>> packetPageSizes_;
 
+  /// Flag that gets set when the OutputBuffer is full.
+  std::atomic<bool> bufferFull_{false};
+  /// Flag that gets set when the OutputBuffer sees that all upstream Drivers
+  /// have finished.
+  std::atomic<bool> bufferDone_{false};
+  /// Used to notify DataFetcher that one of the above bool flags has been set.
+  folly::EventCount bufferFullOrDoneWait_;
+
   std::shared_ptr<OutputBufferManager> bufferManager_{
-      OutputBufferManager::getInstance().lock()};
+      OutputBufferManager::getInstanceRef()};
 };
 
 /// Verify that POBM::getData() honors maxBytes parameter roughly at 1MB
 /// granularity. It can do so only if PartitionedOutput operator limits the size
 /// of individual pages. PartitionedOutput operator is expected to limit page
 /// sizes to no more than 1MB give and take 30%.
-TEST_P(MultiFragmentTest, maxBytes) {
+DEBUG_ONLY_TEST_P(MultiFragmentTest, maxBytes) {
   if (GetParam().compressionKind != common::CompressionKind_NONE) {
     // NOTE: different compression generates different serialized byte size so
     // only test with no-compression to ease testing.s
@@ -2387,14 +2417,29 @@ TEST_P(MultiFragmentTest, maxBytes) {
 
     SCOPED_TRACE(taskId);
     SCOPED_TRACE(fmt::format("maxBytes: {}", maxBytes));
+
+    DataFetcher fetcher(taskId, 0, maxBytes);
+
+    SCOPED_TESTVALUE_SET(
+        "facebook::velox::exec::OutputBuffer::enqueue",
+        std::function<void(const OutputBuffer*)>(
+            [&](const OutputBuffer* /* unused */) {
+              fetcher.bufferFull() = true;
+              fetcher.bufferFullOrDoneWait().notifyAll();
+            }));
+
+    SCOPED_TESTVALUE_SET(
+        "facebook::velox::exec::OutputBuffer::checkIfDone",
+        std::function<void(const OutputBuffer*)>(
+            [&](const OutputBuffer* /* unused */) {
+              fetcher.bufferDone() = true;
+              fetcher.bufferFullOrDoneWait().notifyAll();
+            }));
+
     auto task = makeTask(taskId, plan, 0);
     task->start(1);
     task->updateOutputBuffers(1, true);
 
-    // Allow for data to accumulate.
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-
-    DataFetcher fetcher(taskId, 0, maxBytes);
     fetcher.fetch().wait();
 
     ASSERT_TRUE(waitForTaskCompletion(task.get()));
@@ -2671,19 +2716,36 @@ TEST_P(MultiFragmentTest, compression) {
         producerStats.customStats.at(Operator::kShuffleCompressionKind).max,
         static_cast<common::CompressionKind>(GetParam().compressionKind));
     if (GetParam().compressionKind == common::CompressionKind_NONE) {
-      ASSERT_EQ(producerStats.customStats.at("compressedBytes").sum, 0);
-      ASSERT_EQ(producerStats.customStats.at("compressionInputBytes").sum, 0);
-      ASSERT_EQ(producerStats.customStats.at("compressionSkippedBytes").sum, 0);
+      ASSERT_EQ(
+          producerStats.customStats.count(
+              IterativeVectorSerializer::kCompressedBytes),
+          0);
+      ASSERT_EQ(
+          producerStats.customStats.count(
+              IterativeVectorSerializer::kCompressionInputBytes),
+          0);
+      ASSERT_EQ(
+          producerStats.customStats.count(
+              IterativeVectorSerializer::kCompressionSkippedBytes),
+          0);
       return;
     }
     // The data is extremely compressible, 1, 2, 3 repeated 1000000 times.
     if (!expectSkipCompression) {
       ASSERT_LT(
-          producerStats.customStats.at("compressedBytes").sum,
-          producerStats.customStats.at("compressionInputBytes").sum);
-      ASSERT_EQ(0, producerStats.customStats.at("compressionSkippedBytes").sum);
+          producerStats.customStats
+              .at(IterativeVectorSerializer::kCompressedBytes)
+              .sum,
+          producerStats.customStats
+              .at(IterativeVectorSerializer::kCompressionInputBytes)
+              .sum);
+      ASSERT_EQ(producerStats.customStats.count("compressionSkippedBytes"), 0);
     } else {
-      ASSERT_LT(0, producerStats.customStats.at("compressionSkippedBytes").sum);
+      ASSERT_LT(
+          0,
+          producerStats.customStats
+              .at(IterativeVectorSerializer::kCompressionSkippedBytes)
+              .sum);
     }
   };
 
@@ -2828,7 +2890,12 @@ TEST_P(MultiFragmentTest, scaledTableScan) {
 VELOX_INSTANTIATE_TEST_SUITE_P(
     MultiFragmentTest,
     MultiFragmentTest,
-    testing::ValuesIn(MultiFragmentTest::getTestParams()));
-
+    testing::ValuesIn(MultiFragmentTest::getTestParams()),
+    [](const testing::TestParamInfo<TestParam>& info) {
+      return fmt::format(
+          "{}_{}",
+          VectorSerde::kindName(info.param.serdeKind),
+          compressionKindToString(info.param.compressionKind));
+    });
 } // namespace
 } // namespace facebook::velox::exec

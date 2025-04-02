@@ -134,20 +134,22 @@ bool re2Extract(
     if (emptyNoMatch) {
       result.setNoCopy(row, StringView(nullptr, 0));
       return true;
-    } else {
-      result.setNull(row, true);
-      return false;
     }
+    result.setNull(row, true);
+    return false;
   } else {
     const re2::StringPiece extracted = groups[groupId];
     // Check if the extracted data is null.
     if (extracted.data()) {
       result.setNoCopy(row, StringView(extracted.data(), extracted.size()));
       return !StringView::isInline(extracted.size());
-    } else {
-      result.setNull(row, true);
-      return false;
     }
+    if (emptyNoMatch) {
+      result.setNoCopy(row, StringView(nullptr, 0));
+      return true;
+    }
+    result.setNull(row, true);
+    return false;
   }
 }
 
@@ -260,7 +262,12 @@ class Re2Match final : public exec::VectorFunction {
     exec::LocalDecodedVector toSearch(context, *args[0], rows);
     exec::LocalDecodedVector pattern(context, *args[1], rows);
     context.applyToSelectedNoThrow(rows, [&](vector_size_t row) {
-      auto& re = *cache_.findOrCompile(pattern->valueAt<StringView>(row));
+      auto tryRe = cache_.tryFindOrCompile(pattern->valueAt<StringView>(row));
+      if (tryRe.hasError()) {
+        context.setStatus(row, tryRe.error());
+        return;
+      }
+      const auto& re = *tryRe.value();
       result.set(row, Fn(toSearch->valueAt<StringView>(row), re));
     });
   }
@@ -355,6 +362,8 @@ class Re2SearchAndExtractConstantPattern final : public exec::VectorFunction {
 
  private:
   RE2 re_;
+  // If true, returns empty string as result for no match case, which is Spark's
+  // behavior. Otherwise, returns null as result, which is Presto's behavior.
   const bool emptyNoMatch_;
 };
 
@@ -390,7 +399,13 @@ class Re2SearchAndExtract final : public exec::VectorFunction {
     if (args.size() == 2) {
       groups.resize(1);
       context.applyToSelectedNoThrow(rows, [&](vector_size_t i) {
-        auto& re = *cache_.findOrCompile(pattern->valueAt<StringView>(i));
+        auto tryRe = cache_.tryFindOrCompile(pattern->valueAt<StringView>(i));
+        if (tryRe.hasError()) {
+          context.setStatus(i, tryRe.error());
+          return;
+        }
+        const auto& re = *tryRe.value();
+
         mustRefSourceStrings |=
             re2Extract(result, i, re, toSearch, groups, 0, emptyNoMatch_);
       });
@@ -398,7 +413,13 @@ class Re2SearchAndExtract final : public exec::VectorFunction {
       exec::LocalDecodedVector groupIds(context, *args[2], rows);
       context.applyToSelectedNoThrow(rows, [&](vector_size_t i) {
         const auto groupId = groupIds->valueAt<T>(i);
-        auto& re = *cache_.findOrCompile(pattern->valueAt<StringView>(i));
+        auto tryRe = cache_.tryFindOrCompile(pattern->valueAt<StringView>(i));
+        if (tryRe.hasError()) {
+          context.setStatus(i, tryRe.error());
+          return;
+        }
+
+        const auto& re = *tryRe.value();
         checkForBadGroupId(groupId, re);
         groups.resize(groupId + 1);
         mustRefSourceStrings |=
@@ -1066,8 +1087,13 @@ void re2ExtractAll(
     const re2::StringPiece fullMatch = groups[0];
     const re2::StringPiece subMatch = groups[groupId];
 
-    arrayWriter.add_item().setNoCopy(
-        StringView(subMatch.data(), subMatch.size()));
+    // Check if the subMatch is null.
+    if (subMatch.data()) {
+      arrayWriter.add_item().setNoCopy(
+          StringView(subMatch.data(), subMatch.size()));
+    } else {
+      arrayWriter.add_null();
+    }
     pos = fullMatch.data() + fullMatch.size() - input.data();
     if (UNLIKELY(fullMatch.size() == 0)) {
       ++pos;
@@ -1186,7 +1212,12 @@ class Re2ExtractAll final : public exec::VectorFunction {
       //
       groups.resize(1);
       context.applyToSelectedNoThrow(rows, [&](vector_size_t row) {
-        auto& re = *cache_.findOrCompile(pattern->valueAt<StringView>(row));
+        auto tryRe = cache_.tryFindOrCompile(pattern->valueAt<StringView>(row));
+        if (tryRe.hasError()) {
+          context.setStatus(row, tryRe.error());
+          return;
+        }
+        const auto& re = *tryRe.value();
         re2ExtractAll(resultWriter, re, inputStrs, row, groups, 0);
       });
     } else {
@@ -1195,7 +1226,12 @@ class Re2ExtractAll final : public exec::VectorFunction {
       exec::LocalDecodedVector groupIds(context, *args[2], rows);
       context.applyToSelectedNoThrow(rows, [&](vector_size_t row) {
         const T groupId = groupIds->valueAt<T>(row);
-        auto& re = *cache_.findOrCompile(pattern->valueAt<StringView>(row));
+        auto tryRe = cache_.tryFindOrCompile(pattern->valueAt<StringView>(row));
+        if (tryRe.hasError()) {
+          context.setStatus(row, tryRe.error());
+          return;
+        }
+        const auto& re = *tryRe.value();
         checkForBadGroupId(groupId, re);
         groups.resize(groupId + 1);
         re2ExtractAll(resultWriter, re, inputStrs, row, groups, groupId);
@@ -1388,11 +1424,11 @@ class RegexpReplaceWithLambdaFunction : public exec::VectorFunction {
   // Sections being replaced should not overlap.
   struct Replacer {
     const StringView& original;
-    exec::StringWriter<false>& writer;
+    exec::StringWriter& writer;
     char* result;
     size_t start = 0;
 
-    Replacer(const StringView& _original, exec::StringWriter<false>& _writer)
+    Replacer(const StringView& _original, exec::StringWriter& _writer)
         : original{_original}, writer{_writer}, result{writer.data()} {}
 
     void replace(size_t offset, size_t size, const StringView& replacement) {
@@ -1800,12 +1836,14 @@ std::vector<std::string> PatternMetadata::parseSubstrings(
   // Not support substrings-search with '_' for best performance.
   static const re2::RE2 fullPattern(R"((%+[^%_#\\]+)+%+)");
   static const re2::RE2 subPattern(R"((?:%+)([^%_#\\]+))");
+  // Chalk change: we are using absl::string_view in place of re2::StringPiece
   absl::string_view full(pattern.data(), pattern.size());
   re2::StringPiece cur;
   std::vector<std::string> substrings;
   if (RE2::FullMatch(full, fullPattern)) {
     while (RE2::PartialMatch(full, subPattern, &cur)) {
       substrings.push_back(std::string(cur));
+      // Chalk change: we are using absl::string_view in place of re2::StringPiece
       full = absl::string_view(cur.end(), full.cend() - cur.cend());
     }
   }

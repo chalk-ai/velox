@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include <stdint.h>
 
 /// Types for device side access to device vectors. Separate header
 /// independent of Velox headers, included for both host and device
@@ -168,9 +168,8 @@ struct KernelError {
   /// message is compleemented by 'number' (kInt64Param) or
   /// 'ptr'kStringParam) (k. If kNoParam the string is the only error
   /// info.
-  const char* messageAndTag{nullptr};
-  int64_t number;
-  char* ptr;
+  int32_t messageEnum{0};
+  int64_t extra;
 };
 
 /// Describes the location of an instruction's return state in the

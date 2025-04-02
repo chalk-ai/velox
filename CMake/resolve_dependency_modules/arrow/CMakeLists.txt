@@ -13,7 +13,6 @@
 # limitations under the License.
 project(Arrow)
 
-if(VELOX_ENABLE_ARROW)
   find_package(Thrift CONFIG REQUIRED)
   if(Thrift_FOUND)
     set(THRIFT_SOURCE "SYSTEM")

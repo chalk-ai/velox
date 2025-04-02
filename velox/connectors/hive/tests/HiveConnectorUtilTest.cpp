@@ -79,7 +79,7 @@ TEST_F(HiveConnectorUtilTest, configureReaderOptions) {
         "testConnectorId",
         "testTable",
         false,
-        hive::SubfieldFilters{},
+        common::SubfieldFilters{},
         nullptr,
         nullptr,
         tableParameters);
@@ -305,7 +305,7 @@ TEST_F(HiveConnectorUtilTest, cacheRetention) {
         "testConnectorId",
         "testTable",
         false,
-        hive::SubfieldFilters{},
+        common::SubfieldFilters{},
         nullptr,
         nullptr,
         std::unordered_map<std::string, std::string>{});
@@ -320,6 +320,7 @@ TEST_F(HiveConnectorUtilTest, cacheRetention) {
         std::nullopt,
         std::unordered_map<std::string, std::string>{},
         std::shared_ptr<std::string>{},
+        std::unordered_map<std::string, std::string>{},
         std::unordered_map<std::string, std::string>{},
         0,
         testData.splitCacheable);

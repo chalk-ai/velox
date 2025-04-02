@@ -18,6 +18,7 @@
 #include "velox/functions/prestosql/RegexpReplace.h"
 #include "velox/functions/prestosql/SplitPart.h"
 #include "velox/functions/prestosql/SplitToMap.h"
+#include "velox/functions/prestosql/SplitToMultiMap.h"
 #include "velox/functions/prestosql/StringFunctions.h"
 #include "velox/functions/prestosql/WordStem.h"
 
@@ -42,6 +43,8 @@ void registerSimpleFunctions(const std::string& prefix) {
   registerFunction<LevenshteinDistanceFunction, int64_t, Varchar, Varchar>(
       {prefix + "levenshtein_distance"});
   registerFunction<LengthFunction, int64_t, Varchar>({prefix + "length"});
+  registerFunction<XxHash64StringFunction, int64_t, Varchar>(
+      {prefix + "xxhash64_internal"});
 
   // Length for varbinary have different semantics.
   registerFunction<LengthVarbinaryFunction, int64_t, Varbinary>(
@@ -110,6 +113,33 @@ void registerSimpleFunctions(const std::string& prefix) {
       {prefix + "regexp_split"});
 }
 
+void registerSplitToMultiMap(const std::string& prefix) {
+  registerFunction<
+      SplitToMultiMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      Varchar,
+      Varchar>({prefix + "split_to_multimap"});
+  registerFunction<
+      SplitToMultiMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      UnknownValue,
+      Varchar>({prefix + "split_to_multimap"});
+  registerFunction<
+      SplitToMultiMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      Varchar,
+      UnknownValue>({prefix + "split_to_multimap"});
+  registerFunction<
+      SplitToMultiMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      UnknownValue,
+      UnknownValue>({prefix + "split_to_multimap"});
+}
+
 void registerSplitToMap(const std::string& prefix) {
   registerFunction<
       SplitToMapFunction,
@@ -151,6 +181,7 @@ void registerStringFunctions(const std::string& prefix) {
   VELOX_REGISTER_VECTOR_FUNCTION(udf_split, prefix + "split");
 
   registerSplitToMap(prefix);
+  registerSplitToMultiMap(prefix);
 
   VELOX_REGISTER_VECTOR_FUNCTION(udf_concat, prefix + "concat");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_replaceFirst, prefix + "replace_first");
