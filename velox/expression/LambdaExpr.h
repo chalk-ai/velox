@@ -49,6 +49,8 @@ class LambdaExpr : public SpecialForm {
       EvalCtx& context,
       VectorPtr& result) override;
 
+  virtual void clearCache() override;
+
  protected:
   void computeDistinctFields() override;
 

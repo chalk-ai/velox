@@ -229,6 +229,11 @@ std::string LambdaExpr::toSql(std::vector<VectorPtr>* complexConstants) const {
   return out.str();
 }
 
+void LambdaExpr::clearCache() {
+  SpecialForm::clearCache();
+  body_->clearCache();
+}
+
 void LambdaExpr::evalSpecialForm(
     const SelectivityVector& rows,
     EvalCtx& context,
