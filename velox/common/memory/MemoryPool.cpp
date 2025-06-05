@@ -469,7 +469,7 @@ MemoryPoolImpl::~MemoryPoolImpl() {
           kMetricMemoryPoolReservationLeakBytes, minReservationBytes_);
     }
   }
-  VELOX_DCHECK(
+  VELOX_CHECK(
       (usedReservationBytes_ == 0) && (reservationBytes_ == 0) &&
           (minReservationBytes_ == 0),
       "Bad memory usage track state: {}",
