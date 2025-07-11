@@ -465,7 +465,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO} OR ${VELOX_ENABLE_HIVE_CONNECTOR})
   # TODO: make these optional and pluggable.
   find_package(ZLIB REQUIRED)
   find_package(lz4 REQUIRED)
-  find_package(lzo2 REQUIRED)
+  #find_package(lzo2 REQUIRED)
   find_package(zstd REQUIRED)
   find_package(Snappy REQUIRED)
   if(NOT TARGET zstd::zstd)
