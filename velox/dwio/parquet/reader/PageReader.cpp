@@ -53,12 +53,9 @@ void PageReader::seekToPage(int64_t row) {
     PageHeader pageHeader = readPageHeader();
     pageStart_ = pageDataStart_ + pageHeader.compressed_page_size;
 
-    assert(pageHeader.type != thrift::PageType::DATA_PAGE);
-
     switch (pageHeader.type) {
       case thrift::PageType::DATA_PAGE:
-// **DISABLED** due to lzo2 dependency.
-//         prepareDataPageV1(pageHeader, row);
+        prepareDataPageV1(pageHeader, row);
         break;
       case thrift::PageType::DATA_PAGE_V2:
         prepareDataPageV2(pageHeader, row);
@@ -132,35 +129,34 @@ const char* PageReader::readBytes(int32_t size, BufferPtr& copy) {
   return copy->as<char>();
 }
 
-// **DISABLED** due to lzo2 dependency.
-// const char* PageReader::decompressData(
-//     const char* pageData,
-//     uint32_t compressedSize,
-//     uint32_t uncompressedSize) {
-//   std::unique_ptr<dwio::common::SeekableInputStream> inputStream =
-//       std::make_unique<dwio::common::SeekableArrayInputStream>(
-//           pageData, compressedSize, 0);
-//   auto streamDebugInfo =
-//       fmt::format("Page Reader: Stream {}", inputStream_->getName());
-//   std::unique_ptr<dwio::common::SeekableInputStream> decompressedStream =
-//       dwio::common::compression::createDecompressor(
-//           codec_,
-//           std::move(inputStream),
-//           uncompressedSize,
-//           pool_,
-//           getParquetDecompressionOptions(codec_),
-//           streamDebugInfo,
-//           nullptr,
-//           true,
-//           compressedSize);
-// 
-//   dwio::common::ensureCapacity<char>(
-//       decompressedData_, uncompressedSize, &pool_);
-//   decompressedStream->readFully(
-//       decompressedData_->asMutable<char>(), uncompressedSize);
-// 
-//   return decompressedData_->as<char>();
-// }
+const char* PageReader::decompressData(
+    const char* pageData,
+    uint32_t compressedSize,
+    uint32_t uncompressedSize) {
+  std::unique_ptr<dwio::common::SeekableInputStream> inputStream =
+      std::make_unique<dwio::common::SeekableArrayInputStream>(
+          pageData, compressedSize, 0);
+  auto streamDebugInfo =
+      fmt::format("Page Reader: Stream {}", inputStream_->getName());
+  std::unique_ptr<dwio::common::SeekableInputStream> decompressedStream =
+      dwio::common::compression::createDecompressor(
+          codec_,
+          std::move(inputStream),
+          uncompressedSize,
+          pool_,
+          getParquetDecompressionOptions(codec_),
+          streamDebugInfo,
+          nullptr,
+          true,
+          compressedSize);
+
+  dwio::common::ensureCapacity<char>(
+      decompressedData_, uncompressedSize, &pool_);
+  decompressedStream->readFully(
+      decompressedData_->asMutable<char>(), uncompressedSize);
+
+  return decompressedData_->as<char>();
+}
 
 void PageReader::setPageRowInfo(bool forRepDef) {
   if (isTopLevel_ || forRepDef || maxRepeat_ == 0) {
@@ -204,64 +200,63 @@ void PageReader::updateRowInfoAfterPageSkipped() {
   }
 }
 
-// **DISABLED** due to lzo2 dependency.
-// void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
-//   VELOX_CHECK(
-//       pageHeader.type == thrift::PageType::DATA_PAGE &&
-//       pageHeader.__isset.data_page_header);
-//   numRepDefsInPage_ = pageHeader.data_page_header.num_values;
-//   setPageRowInfo(row == kRepDefOnly);
-//   if (row != kRepDefOnly && numRowsInPage_ != kRowsUnknown &&
-//       numRowsInPage_ + rowOfPage_ <= row) {
-//     dwio::common::skipBytes(
-//         pageHeader.compressed_page_size,
-//         inputStream_.get(),
-//         bufferStart_,
-//         bufferEnd_);
-// 
-//     return;
-//   }
-//   pageData_ = readBytes(pageHeader.compressed_page_size, pageBuffer_);
-//   pageData_ = decompressData(
-//       pageData_,
-//       pageHeader.compressed_page_size,
-//       pageHeader.uncompressed_page_size);
-//   auto pageEnd = pageData_ + pageHeader.uncompressed_page_size;
-//   if (maxRepeat_ > 0) {
-//     uint32_t repeatLength = readField<int32_t>(pageData_);
-//     repeatDecoder_ = std::make_unique<RleDecoder>(
-//         reinterpret_cast<const uint8_t*>(pageData_),
-//         repeatLength,
-//         ::arrow::bit_util::NumRequiredBits(maxRepeat_));
-// 
-//     pageData_ += repeatLength;
-//   }
-// 
-//   if (maxDefine_ > 0) {
-//     auto defineLength = readField<uint32_t>(pageData_);
-//     if (maxDefine_ == 1) {
-//       defineDecoder_ = std::make_unique<RleBpDecoder>(
-//           pageData_,
-//           pageData_ + defineLength,
-//           ::arrow::bit_util::NumRequiredBits(maxDefine_));
-//     }
-//     wideDefineDecoder_ = std::make_unique<RleDecoder>(
-//         reinterpret_cast<const uint8_t*>(pageData_),
-//         defineLength,
-//         ::arrow::bit_util::NumRequiredBits(maxDefine_));
-//     pageData_ += defineLength;
-//   }
-//   encodedDataSize_ = pageEnd - pageData_;
-// 
-//   encoding_ = pageHeader.data_page_header.encoding;
-//   if (!hasChunkRepDefs_ && (numRowsInPage_ == kRowsUnknown || maxDefine_ > 1)) {
-//     readPageDefLevels();
-//   }
-// 
-//   if (row != kRepDefOnly) {
-//     makeDecoder();
-//   }
-// }
+void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
+  VELOX_CHECK(
+      pageHeader.type == thrift::PageType::DATA_PAGE &&
+      pageHeader.__isset.data_page_header);
+  numRepDefsInPage_ = pageHeader.data_page_header.num_values;
+  setPageRowInfo(row == kRepDefOnly);
+  if (row != kRepDefOnly && numRowsInPage_ != kRowsUnknown &&
+      numRowsInPage_ + rowOfPage_ <= row) {
+    dwio::common::skipBytes(
+        pageHeader.compressed_page_size,
+        inputStream_.get(),
+        bufferStart_,
+        bufferEnd_);
+
+    return;
+  }
+  pageData_ = readBytes(pageHeader.compressed_page_size, pageBuffer_);
+  pageData_ = decompressData(
+      pageData_,
+      pageHeader.compressed_page_size,
+      pageHeader.uncompressed_page_size);
+  auto pageEnd = pageData_ + pageHeader.uncompressed_page_size;
+  if (maxRepeat_ > 0) {
+    uint32_t repeatLength = readField<int32_t>(pageData_);
+    repeatDecoder_ = std::make_unique<RleDecoder>(
+        reinterpret_cast<const uint8_t*>(pageData_),
+        repeatLength,
+        ::arrow::bit_util::NumRequiredBits(maxRepeat_));
+
+    pageData_ += repeatLength;
+  }
+
+  if (maxDefine_ > 0) {
+    auto defineLength = readField<uint32_t>(pageData_);
+    if (maxDefine_ == 1) {
+      defineDecoder_ = std::make_unique<RleBpDecoder>(
+          pageData_,
+          pageData_ + defineLength,
+          ::arrow::bit_util::NumRequiredBits(maxDefine_));
+    }
+    wideDefineDecoder_ = std::make_unique<RleDecoder>(
+        reinterpret_cast<const uint8_t*>(pageData_),
+        defineLength,
+        ::arrow::bit_util::NumRequiredBits(maxDefine_));
+    pageData_ += defineLength;
+  }
+  encodedDataSize_ = pageEnd - pageData_;
+
+  encoding_ = pageHeader.data_page_header.encoding;
+  if (!hasChunkRepDefs_ && (numRowsInPage_ == kRowsUnknown || maxDefine_ > 1)) {
+    readPageDefLevels();
+  }
+
+  if (row != kRepDefOnly) {
+    makeDecoder();
+  }
+}
 
 void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
   VELOX_CHECK(pageHeader.__isset.data_page_header_v2);
@@ -300,19 +295,14 @@ void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
   }
   auto levelsSize = repeatLength + defineLength;
   pageData_ += levelsSize;
-// **DISABLED** due to lzo2 dependency.
-//   if (pageHeader.data_page_header_v2.__isset.is_compressed &&
-//       pageHeader.data_page_header_v2.is_compressed &&
-//       (pageHeader.compressed_page_size - levelsSize > 0)) {
-//     pageData_ = decompressData(
-//         pageData_,
-//         pageHeader.compressed_page_size - levelsSize,
-//         pageHeader.uncompressed_page_size - levelsSize);
-//   }
-  assert(!(
-      pageHeader.data_page_header_v2.__isset.is_compressed &&
+  if (pageHeader.data_page_header_v2.__isset.is_compressed &&
       pageHeader.data_page_header_v2.is_compressed &&
-      (pageHeader.compressed_page_size - levelsSize > 0)));
+      (pageHeader.compressed_page_size - levelsSize > 0)) {
+    pageData_ = decompressData(
+        pageData_,
+        pageHeader.compressed_page_size - levelsSize,
+        pageHeader.uncompressed_page_size - levelsSize);
+  }
   if (row == kRepDefOnly) {
     skipBytes(bytes, inputStream_.get(), bufferStart_, bufferEnd_);
     return;
@@ -337,15 +327,13 @@ void PageReader::prepareDictionary(const PageHeader& pageHeader) {
       dictionaryEncoding_ == Encoding::PLAIN_DICTIONARY ||
       dictionaryEncoding_ == Encoding::PLAIN);
 
-// **DISABLED** due to lzo2 dependency.
-//   if (codec_ != common::CompressionKind::CompressionKind_NONE) {
-//     pageData_ = readBytes(pageHeader.compressed_page_size, pageBuffer_);
-//     pageData_ = decompressData(
-//         pageData_,
-//         pageHeader.compressed_page_size,
-//         pageHeader.uncompressed_page_size);
-//   }
-  assert(codec_ == common::CompressionKind::CompressionKind_NONE);
+  if (codec_ != common::CompressionKind::CompressionKind_NONE) {
+    pageData_ = readBytes(pageHeader.compressed_page_size, pageBuffer_);
+    pageData_ = decompressData(
+        pageData_,
+        pageHeader.compressed_page_size,
+        pageHeader.uncompressed_page_size);
+  }
 
   auto parquetType = type_->parquetType_.value();
   switch (parquetType) {

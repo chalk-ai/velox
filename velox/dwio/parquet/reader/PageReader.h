@@ -16,7 +16,7 @@
 
 #pragma once
 
-//#include "velox/common/compression/Compression.h"
+#include "velox/common/compression/Compression.h"
 #include "velox/dwio/common/BitConcatenation.h"
 #include "velox/dwio/common/DirectDecoder.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
@@ -200,8 +200,7 @@ class PageReader {
   // next page.
   void updateRowInfoAfterPageSkipped();
 
-// **DISABLED** due to lzo2 dependency.
-//   void prepareDataPageV1(const thrift::PageHeader& pageHeader, int64_t row);
+  void prepareDataPageV1(const thrift::PageHeader& pageHeader, int64_t row);
   void prepareDataPageV2(const thrift::PageHeader& pageHeader, int64_t row);
   void prepareDictionary(const thrift::PageHeader& pageHeader);
   void makeDecoder();
@@ -216,14 +215,13 @@ class PageReader {
   // straddles buffers. Allocates or resizes 'copy' as needed.
   const char* readBytes(int32_t size, BufferPtr& copy);
 
-// **DISABLED** due to lzo2 dependency.
-//   // Decompresses data starting at 'pageData_', consuming 'compressedsize' and
-//   // producing up to 'uncompressedSize' bytes. The start of the decoding
-//   // result is returned. an intermediate copy may be made in 'decompresseddata_'
-//   const char* decompressData(
-//       const char* pageData,
-//       uint32_t compressedSize,
-//       uint32_t uncompressedSize);
+  // Decompresses data starting at 'pageData_', consuming 'compressedsize' and
+  // producing up to 'uncompressedSize' bytes. The start of the decoding
+  // result is returned. an intermediate copy may be made in 'decompresseddata_'
+  const char* decompressData(
+      const char* pageData,
+      uint32_t compressedSize,
+      uint32_t uncompressedSize);
 
   template <typename T>
   T readField(const char* FOLLY_NONNULL& ptr) {
