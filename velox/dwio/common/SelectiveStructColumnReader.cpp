@@ -504,7 +504,7 @@ void SelectiveStructColumnReaderBase::getValues(
         setConstantField(childSpec->constantValue(), rows.size(), childResult);
         childSpec->deltaUpdate()->update(rows, childResult);
       } else {
-        setOutputRowsForLazy(rows);
+        // setOutputRowsForLazy(rows);  // Materializing immediately instead!
         setLazyField(
             std::make_unique<DeltaUpdateColumnLoader>(
                 this, children_[index], numReads_),
@@ -512,6 +512,7 @@ void SelectiveStructColumnReaderBase::getValues(
             rows.size(),
             memoryPool_,
             childResult);
+        LazyVector::ensureLoadedRows(childResult, SelectivityVector(rows.size(), true));
       }
       continue;
     }
@@ -549,13 +550,14 @@ void SelectiveStructColumnReaderBase::getValues(
     }
 
     // LazyVector result.
-    setOutputRowsForLazy(rows);
+    // setOutputRowsForLazy(rows);  // Materializing immediately instead!
     setLazyField(
         std::make_unique<ColumnLoader>(this, children_[index], numReads_),
         resultRow->type()->childAt(channel),
         rows.size(),
         memoryPool_,
         childResult);
+    LazyVector::ensureLoadedRows(childResult, SelectivityVector(rows.size(), true));
   }
   resultRow->updateContainsLazyNotLoaded();
 }
