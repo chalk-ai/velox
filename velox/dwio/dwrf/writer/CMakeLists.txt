@@ -38,6 +38,6 @@ velox_link_libraries(
   velox_vector
   Boost::headers
   lz4::lz4
-  lzo2::lzo2
+  #lzo2::lzo2
   zstd::zstd
   ZLIB::ZLIB)
