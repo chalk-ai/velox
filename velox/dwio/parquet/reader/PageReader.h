@@ -526,7 +526,9 @@ getParquetDecompressionOptions(common::CompressionKind kind) {
   } else if (
       kind == common::CompressionKind_LZ4 ||
       kind == common::CompressionKind_LZO) {
-    options.format.lz4_lzo.isHadoopFrameFormat = true;
+    // LZ4F is supposed to be deprecated!
+    options.format.lz4_lzo.isHadoopFrameFormat = false;
+    // options.format.lz4_lzo.isHadoopFrameFormat = true;
   }
   return options;
 }
