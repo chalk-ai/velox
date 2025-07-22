@@ -651,9 +651,11 @@ class TypeBase : public Type {
   }
 
   const std::vector<TypeParameter>& parameters() const override {
-    static const std::vector<TypeParameter> kEmpty = {};
-    return kEmpty;
+    return kEmptyParameters;
   }
+
+ private:
+  static inline const std::vector<TypeParameter> kEmptyParameters = {};
 };
 
 template <TypeKind KIND>
