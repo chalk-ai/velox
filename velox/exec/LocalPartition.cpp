@@ -28,13 +28,20 @@ void notify(std::vector<ContinuePromise>& promises) {
 
 bool LocalExchangeMemoryManager::increaseMemoryUsage(
     ContinueFuture* future,
-    int64_t added) {
+    int64_t added,
+    bool wasEmpty) {
   std::lock_guard<std::mutex> l(mutex_);
   bufferedBytes_ += added;
+  if (wasEmpty) {
+    emptyQueues_--;
+  }
 
-  if (bufferedBytes_ >= maxBufferSize_) {
-    promises_.emplace_back("LocalExchangeMemoryManager::updateMemoryUsage");
-    *future = promises_.back().getSemiFuture();
+  // We only block if all queues have input
+  if (bufferedBytes_ >= maxBufferSize_ && emptyQueues_ == 0) {
+    if (future != nullptr) {
+      promises_.emplace_back("LocalExchangeMemoryManager::updateMemoryUsage");
+      *future = promises_.back().getSemiFuture();
+    }
     return true;
   }
 
@@ -42,13 +49,17 @@ bool LocalExchangeMemoryManager::increaseMemoryUsage(
 }
 
 std::vector<ContinuePromise> LocalExchangeMemoryManager::decreaseMemoryUsage(
-    int64_t removed) {
+    int64_t removed, bool nowEmpty) {
   std::vector<ContinuePromise> promises;
   {
     std::lock_guard<std::mutex> l(mutex_);
     bufferedBytes_ -= removed;
+    if (nowEmpty) {
+      emptyQueues_++;
+    }
 
-    if (bufferedBytes_ < maxBufferSize_) {
+    // If any queues are empty, we need to accept more data to prevent deadlock
+    if (bufferedBytes_ < maxBufferSize_ || emptyQueues_ > 0) {
       promises = std::move(promises_);
     }
   }
@@ -110,10 +121,11 @@ BlockingReason LocalExchangeQueue::enqueue(
     if (closed_) {
       return true;
     }
+    bool wasEmpty = queue.empty();
     queue.emplace(std::move(input), inputBytes);
     consumerPromises = std::move(consumerPromises_);
 
-    if (memoryManager_->increaseMemoryUsage(future, inputBytes)) {
+    if (memoryManager_->increaseMemoryUsage(future, inputBytes, wasEmpty)) {
       blockedOnConsumer = true;
     }
 
@@ -167,7 +179,7 @@ BlockingReason LocalExchangeQueue::next(
     std::tie(*data, size) = std::move(queue.front());
     queue.pop();
 
-    memoryPromises = memoryManager_->decreaseMemoryUsage(size);
+    memoryPromises = memoryManager_->decreaseMemoryUsage(size, queue.empty());
 
     return BlockingReason::kNotBlocked;
   });
@@ -210,8 +222,12 @@ void LocalExchangeQueue::close() {
     }
 
     if (freedBytes) {
-      memoryPromises = memoryManager_->decreaseMemoryUsage(freedBytes);
+      memoryPromises = memoryManager_->decreaseMemoryUsage(freedBytes, true);
     }
+
+    // Indicate that there is one less queue that must be full in order to block
+    // We don't care if this means all the queues are full now, because we can't interupt the producer anyways
+    memoryManager_->increaseMemoryUsage(nullptr, 0, true);
 
     consumerPromises = std::move(consumerPromises_);
     closed_ = true;

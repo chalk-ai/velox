@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <common/base/Exceptions.h>
+#include <common/base/Portability.h>
+#include <cstdint>
 #include "velox/exec/Operator.h"
 #include "velox/exec/VectorHasher.h"
 
@@ -29,12 +32,12 @@ class LocalExchangeMemoryManager {
 
   /// Returns 'true' if memory limit is reached or exceeded and sets future that
   /// will be complete when memory usage is update to be below the limit.
-  bool increaseMemoryUsage(ContinueFuture* future, int64_t added);
+  bool increaseMemoryUsage(ContinueFuture* future, int64_t added, bool wasEmpty);
 
   /// Decreases the memory usage by 'removed' bytes. If the memory usage goes
   /// below the limit after the decrease, the function returns 'promises_' to
   /// caller to fulfill.
-  std::vector<ContinuePromise> decreaseMemoryUsage(int64_t removed);
+  std::vector<ContinuePromise> decreaseMemoryUsage(int64_t removed, bool nowEmpty);
 
   /// Returns the maximum buffer size in bytes.
   int64_t maxBufferBytes() const {
@@ -50,6 +53,7 @@ class LocalExchangeMemoryManager {
   const int64_t maxBufferSize_;
   std::mutex mutex_;
   tsan_atomic<int64_t> bufferedBytes_{0};
+  tsan_atomic<int64_t> emptyQueues_{0};
   std::vector<ContinuePromise> promises_;
 };
 
@@ -85,7 +89,10 @@ class LocalExchangeQueue {
       int partition)
       : memoryManager_{std::move(memoryManager)},
         vectorPool_{std::move(vectorPool)},
-        partition_{partition} {}
+        partition_{partition} {
+          auto promises = memoryManager_->decreaseMemoryUsage(0, true);
+          VELOX_CHECK_EQ(promises.size(), 0, "There should not be anyone waiting on this local exchange yet");
+        }
 
   std::string toString() const {
     return fmt::format("LocalExchangeQueue({})", partition_);
