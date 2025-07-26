@@ -15,9 +15,6 @@
  */
 #pragma once
 
-#include <common/base/Exceptions.h>
-#include <common/base/Portability.h>
-#include <cstdint>
 #include "velox/exec/Operator.h"
 #include "velox/exec/VectorHasher.h"
 
