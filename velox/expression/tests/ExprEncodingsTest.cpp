@@ -128,7 +128,7 @@ class ExprEncodingsTest
       public VectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -490,7 +490,7 @@ class ExprEncodingsTest
         execCtx_->pool(),
         vector->type(),
         vector->size(),
-        std::make_unique<SimpleVectorLoader>([=](RowSet /*rows*/) {
+        std::make_unique<SimpleVectorLoader>([=, this](RowSet /*rows*/) {
           auto indices =
               makeIndices(vector->size(), [](auto row) { return row; });
           return wrapInDictionary(indices, vector->size(), vector);

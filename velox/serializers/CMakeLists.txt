@@ -23,7 +23,9 @@ velox_add_library(
   PrestoSerializerEstimationUtils.cpp
   PrestoSerializerSerializationUtils.cpp
   PrestoVectorLexer.cpp
-  VectorStream.cpp)
+  RowSerializer.cpp
+  VectorStream.cpp
+)
 
 velox_link_libraries(velox_presto_serializer velox_vector velox_row_fast)
 

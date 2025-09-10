@@ -33,7 +33,7 @@ namespace {
 class OrcReaderTest : public testing::Test, public VectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 };
 
@@ -239,12 +239,10 @@ TEST_F(OrcReaderTest, testOrcReadAllType) {
     auto mapValues = mapCol->mapValues()->as<SimpleVector<int64_t>>();
     EXPECT_EQ(mapKeys->size(), 2);
     EXPECT_EQ(mapKeys->size(), mapValues->size());
-    EXPECT_EQ(
-        mapCol->toString(0, 2, ",", false),
-        "2 elements starting at 0 {foo => 1, bar => 2}");
+    EXPECT_EQ(mapCol->toString(0, 2, ",", false), "{foo => 1, bar => 2}");
 
     EXPECT_EQ(structCol->size(), 1);
-    EXPECT_EQ(structCol->type()->toString(), "ROW<\"\":BIGINT,\"\":DOUBLE>");
+    EXPECT_EQ(structCol->type()->toString(), "ROW<x:BIGINT,y:DOUBLE>");
     EXPECT_EQ(structCol->toString(0, 2, ",", false), "{1, 2}");
   }
 }
@@ -342,7 +340,7 @@ class OrcReaderTestP : public testing::TestWithParam<OrcFileDescription>,
                        public VectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   inline std::string getExamplesFilePath(const std::string& fileName) {

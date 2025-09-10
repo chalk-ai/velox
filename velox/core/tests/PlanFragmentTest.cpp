@@ -28,7 +28,7 @@ namespace {
 class PlanFragmentTest : public testing::Test {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -129,10 +129,9 @@ TEST_F(PlanFragmentTest, aggregationCanSpill) {
   const std::vector<FieldAccessTypedExprPtr> emptyPreGroupingKeys;
   std::vector<std::string> aggregateNames{"sum"};
   std::vector<std::string> emptyAggregateNames{};
-  std::vector<TypedExprPtr> aggregateInputs{
-      std::make_shared<InputTypedExpr>(BIGINT())};
+  auto aggregateInput = std::make_shared<InputTypedExpr>(BIGINT());
   const std::vector<AggregationNode::Aggregate> aggregates{
-      {std::make_shared<core::CallTypedExpr>(BIGINT(), aggregateInputs, "sum"),
+      {std::make_shared<core::CallTypedExpr>(BIGINT(), "sum", aggregateInput),
        {},
        nullptr,
        {},
@@ -149,8 +148,9 @@ TEST_F(PlanFragmentTest, aggregationCanSpill) {
 
     std::string debugString() const {
       return fmt::format(
-          "aggregationStep:{} isSpillEnabled:{} isAggregationSpillEnabled:{} isDistinct:{} hasPreAggregation:{} expectedCanSpill:{}",
-          AggregationNode::stepName(aggregationStep),
+          "aggregationStep:{} isSpillEnabled:{} isAggregationSpillEnabled:{} "
+          "isDistinct:{} hasPreAggregation:{} expectedCanSpill:{}",
+          AggregationNode::toName(aggregationStep),
           isSpillEnabled,
           isAggregationSpillEnabled,
           isDistinct,
@@ -333,4 +333,47 @@ TEST_F(PlanFragmentTest, executionStrategyToString) {
   ASSERT_EQ(
       executionStrategyToString(static_cast<core::ExecutionStrategy>(999)),
       "UNKNOWN: 999");
+}
+
+TEST_F(PlanFragmentTest, supportsBarrier) {
+  // Plan fragment with plan node not supporting barrier.
+  {
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    const auto plan = PlanBuilder(planNodeIdGenerator)
+                          .tableScan(rowType_)
+                          .project({"c0 AS t0", "c1 AS t1", "c2 AS t2"})
+                          .hashJoin(
+                              {"t0"},
+                              {"u0"},
+                              PlanBuilder(planNodeIdGenerator)
+                                  .tableScan(rowType_)
+                                  .project({"c0 AS u0", "c1 AS u1", "c2 AS u2"})
+                                  .planNode(),
+                              "",
+                              {"t1"},
+                              core::JoinType::kAnti)
+                          .planNode();
+    const PlanFragment planFragment{plan};
+    ASSERT_TRUE(planFragment.firstNodeNotSupportingBarrier() != nullptr);
+  }
+  // Plan fragment with plan node supporting barrier.
+  {
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    auto plan = PlanBuilder(planNodeIdGenerator)
+                    .tableScan(rowType_)
+                    .project({"c0 AS t0", "c1 AS t1", "c2 AS t2"})
+                    .mergeJoin(
+                        {"t0"},
+                        {"u0"},
+                        PlanBuilder(planNodeIdGenerator)
+                            .tableScan(rowType_)
+                            .project({"c0 AS u0", "c1 AS u1", "c2 AS u2"})
+                            .planNode(),
+                        "",
+                        {"t0", "t1", "t2", "u0", "u1", "u2"},
+                        core::JoinType::kInner)
+                    .planNode();
+    const PlanFragment planFragment{plan};
+    ASSERT_TRUE(planFragment.firstNodeNotSupportingBarrier() == nullptr);
+  }
 }

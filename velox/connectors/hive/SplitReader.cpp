@@ -22,9 +22,7 @@
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/iceberg/IcebergSplitReader.h"
-#include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/ReaderFactory.h"
-#include "velox/type/TimestampConversion.h"
 
 namespace facebook::velox::connector::hive {
 namespace {
@@ -77,16 +75,15 @@ VectorPtr newConstantFromString(
 
 std::unique_ptr<SplitReader> SplitReader::create(
     const std::shared_ptr<hive::HiveConnectorSplit>& hiveSplit,
-    const std::shared_ptr<const HiveTableHandle>& hiveTableHandle,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-        partitionKeys,
+    const HiveTableHandlePtr& hiveTableHandle,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
     const ConnectorQueryCtx* connectorQueryCtx,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const RowTypePtr& readerOutputType,
     const std::shared_ptr<io::IoStatistics>& ioStats,
     const std::shared_ptr<filesystems::File::IoStats>& fsStats,
     FileHandleFactory* fileHandleFactory,
-    folly::Executor* executor,
+    folly::Executor* ioExecutor,
     const std::shared_ptr<common::ScanSpec>& scanSpec) {
   //  Create the SplitReader based on hiveSplit->customSplitInfo["table_format"]
   if (hiveSplit->customSplitInfo.count("table_format") > 0 &&
@@ -101,7 +98,7 @@ std::unique_ptr<SplitReader> SplitReader::create(
         ioStats,
         fsStats,
         fileHandleFactory,
-        executor,
+        ioExecutor,
         scanSpec);
   } else {
     return std::unique_ptr<SplitReader>(new SplitReader(
@@ -114,23 +111,22 @@ std::unique_ptr<SplitReader> SplitReader::create(
         ioStats,
         fsStats,
         fileHandleFactory,
-        executor,
+        ioExecutor,
         scanSpec));
   }
 }
 
 SplitReader::SplitReader(
     const std::shared_ptr<const hive::HiveConnectorSplit>& hiveSplit,
-    const std::shared_ptr<const HiveTableHandle>& hiveTableHandle,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-        partitionKeys,
+    const HiveTableHandlePtr& hiveTableHandle,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
     const ConnectorQueryCtx* connectorQueryCtx,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const RowTypePtr& readerOutputType,
     const std::shared_ptr<io::IoStatistics>& ioStats,
     const std::shared_ptr<filesystems::File::IoStats>& fsStats,
     FileHandleFactory* fileHandleFactory,
-    folly::Executor* executor,
+    folly::Executor* ioExecutor,
     const std::shared_ptr<common::ScanSpec>& scanSpec)
     : hiveSplit_(hiveSplit),
       hiveTableHandle_(hiveTableHandle),
@@ -141,7 +137,7 @@ SplitReader::SplitReader(
       ioStats_(ioStats),
       fsStats_(fsStats),
       fileHandleFactory_(fileHandleFactory),
-      executor_(executor),
+      ioExecutor_(ioExecutor),
       pool_(connectorQueryCtx->memoryPool()),
       scanSpec_(scanSpec),
       baseReaderOpts_(connectorQueryCtx->memoryPool()),
@@ -177,13 +173,57 @@ void SplitReader::prepareSplit(
   createRowReader(std::move(metadataFilter), std::move(rowType));
 }
 
-uint64_t SplitReader::next(uint64_t size, VectorPtr& output) {
-  if (!baseReaderOpts_.randomSkip()) {
-    return baseRowReader_->next(size, output);
+void SplitReader::setBucketConversion(
+    std::vector<column_index_t> bucketChannels) {
+  bucketChannels_ = {bucketChannels.begin(), bucketChannels.end()};
+  partitionFunction_ = std::make_unique<HivePartitionFunction>(
+      hiveSplit_->bucketConversion->tableBucketCount,
+      std::move(bucketChannels));
+}
+
+std::vector<BaseVector::CopyRange> SplitReader::bucketConversionRows(
+    const RowVector& vector) {
+  partitions_.clear();
+  partitionFunction_->partition(vector, partitions_);
+  const auto bucketToKeep = *hiveSplit_->tableBucketNumber;
+  const auto partitionBucketCount =
+      hiveSplit_->bucketConversion->partitionBucketCount;
+  std::vector<BaseVector::CopyRange> ranges;
+  for (vector_size_t i = 0; i < vector.size(); ++i) {
+    VELOX_CHECK_EQ((partitions_[i] - bucketToKeep) % partitionBucketCount, 0);
+    if (partitions_[i] == bucketToKeep) {
+      auto& r = ranges.emplace_back();
+      r.sourceIndex = i;
+      r.targetIndex = ranges.size() - 1;
+      r.count = 1;
+    }
   }
-  dwio::common::Mutation mutation;
-  mutation.randomSkip = baseReaderOpts_.randomSkip().get();
-  return baseRowReader_->next(size, output, &mutation);
+  return ranges;
+}
+
+void SplitReader::applyBucketConversion(
+    VectorPtr& output,
+    const std::vector<BaseVector::CopyRange>& ranges) {
+  auto filtered =
+      BaseVector::create(output->type(), ranges.size(), output->pool());
+  filtered->copyRanges(output.get(), ranges);
+  output = std::move(filtered);
+}
+
+uint64_t SplitReader::next(uint64_t size, VectorPtr& output) {
+  uint64_t numScanned;
+  if (!baseReaderOpts_.randomSkip()) {
+    numScanned = baseRowReader_->next(size, output);
+  } else {
+    dwio::common::Mutation mutation;
+    mutation.randomSkip = baseReaderOpts_.randomSkip().get();
+    numScanned = baseRowReader_->next(size, output, &mutation);
+  }
+  if (numScanned > 0 && output->size() > 0 && partitionFunction_) {
+    applyBucketConversion(
+        output, bucketConversionRows(*output->asChecked<RowVector>()));
+  }
+  return numScanned;
 }
 
 void SplitReader::resetFilterCaches() {
@@ -246,9 +286,12 @@ void SplitReader::createReader() {
       baseReaderOpts_.fileFormat(), dwio::common::FileFormat::UNKNOWN);
 
   FileHandleCachedPtr fileHandleCachePtr;
+  FileHandleKey fileHandleKey{
+      .filename = hiveSplit_->filePath,
+      .tokenProvider = connectorQueryCtx_->fsTokenProvider()};
   try {
     fileHandleCachePtr = fileHandleFactory_->generate(
-        hiveSplit_->filePath,
+        fileHandleKey,
         hiveSplit_->properties.has_value() ? &*hiveSplit_->properties : nullptr,
         fsStats_ ? fsStats_.get() : nullptr);
     VELOX_CHECK_NOT_NULL(fileHandleCachePtr.get());
@@ -275,10 +318,13 @@ void SplitReader::createReader() {
       connectorQueryCtx_,
       ioStats_,
       fsStats_,
-      executor_);
+      ioExecutor_);
 
   baseReader_ = dwio::common::getReaderFactory(baseReaderOpts_.fileFormat())
                     ->createReader(std::move(baseFileInput), baseReaderOpts_);
+  if (!baseReader_) {
+    emptySplit_ = true;
+  }
 }
 
 RowTypePtr SplitReader::getAdaptedRowType() const {

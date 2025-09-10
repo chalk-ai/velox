@@ -15,6 +15,8 @@
  */
 
 #include "velox/vector/BaseVector.h"
+#include <map>
+#include <vector>
 #include "velox/type/StringView.h"
 #include "velox/type/Type.h"
 #include "velox/type/Variant.h"
@@ -31,12 +33,121 @@
 
 namespace facebook::velox {
 
+namespace {
+
+Variant nullVariant(const TypePtr& type) {
+  return Variant(type->kind());
+}
+
+template <TypeKind kind>
+Variant variantAtTyped(const BaseVector* vector, vector_size_t row) {
+  using T = typename TypeTraits<kind>::NativeType;
+
+  const T value = vector->as<SimpleVector<T>>()->valueAt(row);
+
+  if (vector->type()->providesCustomComparison()) {
+    return Variant::typeWithCustomComparison<kind>(value, vector->type());
+  }
+
+  return Variant(value);
+}
+
+template <>
+Variant variantAtTyped<TypeKind::VARBINARY>(
+    const BaseVector* vector,
+    vector_size_t row) {
+  return Variant::binary(vector->as<SimpleVector<StringView>>()->valueAt(row));
+}
+
+Variant variantAtImpl(const BaseVector* vector, vector_size_t row);
+
+Variant arrayVariantAt(const BaseVector* vector, vector_size_t row) {
+  auto arrayVector = vector->wrappedVector()->as<ArrayVector>();
+  auto& elements = arrayVector->elements();
+
+  auto wrappedRow = vector->wrappedIndex(row);
+  auto offset = arrayVector->offsetAt(wrappedRow);
+  auto size = arrayVector->sizeAt(wrappedRow);
+
+  std::vector<Variant> array;
+  array.reserve(size);
+  for (auto i = 0; i < size; i++) {
+    auto innerRow = offset + i;
+    array.push_back(variantAtImpl(elements.get(), innerRow));
+  }
+  return Variant::array(array);
+}
+
+Variant mapVariantAt(const BaseVector* vector, vector_size_t row) {
+  auto mapVector = vector->wrappedVector()->as<MapVector>();
+  auto& mapKeys = mapVector->mapKeys();
+  auto& mapValues = mapVector->mapValues();
+
+  auto wrappedRow = vector->wrappedIndex(row);
+  auto offset = mapVector->offsetAt(wrappedRow);
+  auto size = mapVector->sizeAt(wrappedRow);
+
+  std::map<Variant, Variant> map;
+  for (auto i = 0; i < size; i++) {
+    auto innerRow = offset + i;
+    auto key = variantAtImpl(mapKeys.get(), innerRow);
+    auto value = variantAtImpl(mapValues.get(), innerRow);
+    map.insert({key, value});
+  }
+  return Variant::map(map);
+}
+
+Variant rowVariantAt(const BaseVector* vector, vector_size_t row) {
+  auto rowValues = vector->wrappedVector()->as<RowVector>();
+  auto wrappedRow = vector->wrappedIndex(row);
+
+  std::vector<Variant> values;
+  for (auto& child : rowValues->children()) {
+    values.push_back(variantAtImpl(child.get(), wrappedRow));
+  }
+  return Variant::row(std::move(values));
+}
+
+Variant variantAtImpl(const BaseVector* vector, vector_size_t row) {
+  if (vector->isNullAt(row)) {
+    return nullVariant(vector->type());
+  }
+
+  auto typeKind = vector->typeKind();
+  if (typeKind == TypeKind::ROW) {
+    return rowVariantAt(vector, row);
+  }
+
+  if (typeKind == TypeKind::ARRAY) {
+    return arrayVariantAt(vector, row);
+  }
+
+  if (typeKind == TypeKind::MAP) {
+    return mapVariantAt(vector, row);
+  }
+
+  if (typeKind == TypeKind::OPAQUE) {
+    return Variant::opaque(
+        vector->as<SimpleVector<std::shared_ptr<void>>>()->valueAt(row),
+        std::dynamic_pointer_cast<const OpaqueType>(vector->type()));
+  }
+
+  return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+      variantAtTyped, typeKind, vector, row);
+}
+
+} // namespace
+
+Variant BaseVector::variantAt(vector_size_t index) const {
+  return variantAtImpl(this, index);
+}
+
 BaseVector::BaseVector(
     velox::memory::MemoryPool* pool,
     std::shared_ptr<const Type> type,
     VectorEncoding::Simple encoding,
     BufferPtr nulls,
-    size_t length,
+    vector_size_t length,
     std::optional<vector_size_t> distinctValueCount,
     std::optional<vector_size_t> nullCount,
     std::optional<ByteCount> representedByteCount,
@@ -55,6 +166,10 @@ BaseVector::BaseVector(
       representedByteCount_(representedByteCount),
       storageByteCount_(storageByteCount) {
   VELOX_CHECK_NOT_NULL(type_, "Vector creation requires a non-null type.");
+  VELOX_CHECK_LE(
+      length,
+      std::numeric_limits<vector_size_t>::max(),
+      "Length must be smaller or equal to max(vector_size_t).");
 
   if (nulls_) {
     int32_t bytes = byteSize<bool>(length_);
@@ -107,6 +222,7 @@ uint64_t BaseVector::byteSize<bool>(vector_size_t count) {
 }
 
 void BaseVector::resize(vector_size_t size, bool setNotNull) {
+  VELOX_CHECK_GE(size, 0, "Size must be non-negative.");
   if (nulls_) {
     const auto bytes = byteSize<bool>(size);
     if (length_ < size || nulls_->isView()) {
@@ -154,7 +270,7 @@ VectorPtr BaseVector::wrapInDictionary(
     shouldFlatten = !isLazyNotLoaded(*base) && (base->size() / 8) > size;
   }
 
-  auto kind = vector->typeKind();
+  const auto kind = vector->typeKind();
   auto result = VELOX_DYNAMIC_TYPE_DISPATCH_ALL(
       addDictionary,
       kind,
@@ -194,11 +310,8 @@ VectorPtr BaseVector::wrapInSequence(
 }
 
 template <TypeKind kind>
-static VectorPtr addConstant(
-    vector_size_t size,
-    vector_size_t index,
-    VectorPtr vector,
-    bool copyBase) {
+static VectorPtr
+addConstant(vector_size_t size, vector_size_t index, VectorPtr vector) {
   using T = typename KindToFlatVector<kind>::WrapperType;
 
   auto* pool = vector->pool();
@@ -237,13 +350,6 @@ static VectorPtr addConstant(
     }
   }
 
-  if (copyBase) {
-    VectorPtr copy = BaseVector::create(vector->type(), 1, pool);
-    copy->copy(vector.get(), 0, index, 1);
-    return std::make_shared<ConstantVector<T>>(
-        pool, size, 0, std::move(copy), SimpleVectorStats<T>{});
-  }
-
   return std::make_shared<ConstantVector<T>>(
       pool, size, index, std::move(vector), SimpleVectorStats<T>{});
 }
@@ -252,11 +358,10 @@ static VectorPtr addConstant(
 VectorPtr BaseVector::wrapInConstant(
     vector_size_t length,
     vector_size_t index,
-    VectorPtr vector,
-    bool copyBase) {
+    VectorPtr vector) {
   const auto kind = vector->typeKind();
   return VELOX_DYNAMIC_TYPE_DISPATCH_ALL(
-      addConstant, kind, length, index, std::move(vector), copyBase);
+      addConstant, kind, length, index, std::move(vector));
 }
 
 std::optional<bool> BaseVector::equalValueAt(
@@ -545,7 +650,7 @@ std::string BaseVector::toString(vector_size_t index) const {
   if (!nulls_) {
     out << "no nulls";
   } else if (isNullAt(index)) {
-    out << "null";
+    out << kNullValueString;
   } else {
     out << "not null";
   }
@@ -588,6 +693,7 @@ void BaseVector::ensureWritable(const SelectivityVector& rows) {
   this->resetDataDependentFlags(&rows);
 }
 
+// static
 void BaseVector::ensureWritable(
     const SelectivityVector& rows,
     const TypePtr& type,
@@ -602,17 +708,22 @@ void BaseVector::ensureWritable(
     }
     return;
   }
-  const auto& resultType = result->type();
-  bool isUnknownType = resultType->containsUnknown();
+
   if (result->encoding() == VectorEncoding::Simple::LAZY) {
     result = BaseVector::loadedVectorShared(result);
   }
+
+  const auto& resultType = result->type();
+  const bool isUnknownType = resultType->containsUnknown();
+
+  // Check if ensure writable can work in place.
   if (result.use_count() == 1 && !isUnknownType) {
     switch (result->encoding()) {
       case VectorEncoding::Simple::FLAT:
       case VectorEncoding::Simple::ROW:
       case VectorEncoding::Simple::ARRAY:
       case VectorEncoding::Simple::MAP:
+      case VectorEncoding::Simple::FLAT_MAP:
       case VectorEncoding::Simple::FUNCTION: {
         result->ensureWritable(rows);
         return;
@@ -621,6 +732,8 @@ void BaseVector::ensureWritable(
         break; /** NOOP **/
     }
   }
+
+  // Otherwise, allocate a new vector and copy the remaining values over.
 
   // The copy-on-write size is the max of the writable row set and the
   // vector.
@@ -633,8 +746,10 @@ void BaseVector::ensureWritable(
     copy =
         BaseVector::create(isUnknownType ? type : resultType, targetSize, pool);
   }
+
   SelectivityVector copyRows(result->size());
   copyRows.deselect(rows);
+
   if (copyRows.hasSelections()) {
     copy->copy(result.get(), copyRows, nullptr);
   }
@@ -644,7 +759,7 @@ void BaseVector::ensureWritable(
 template <TypeKind kind>
 VectorPtr newConstant(
     const TypePtr& type,
-    variant& value,
+    const Variant& value,
     vector_size_t size,
     velox::memory::MemoryPool* pool) {
   using T = typename KindToFlatVector<kind>::WrapperType;
@@ -667,7 +782,7 @@ VectorPtr newConstant(
 template <>
 VectorPtr newConstant<TypeKind::OPAQUE>(
     const TypePtr& type,
-    variant& value,
+    const Variant& value,
     vector_size_t size,
     velox::memory::MemoryPool* pool) {
   const auto& capsule = value.value<TypeKind::OPAQUE>();
@@ -679,7 +794,7 @@ VectorPtr newConstant<TypeKind::OPAQUE>(
 // static
 VectorPtr BaseVector::createConstant(
     const TypePtr& type,
-    variant value,
+    const Variant value,
     vector_size_t size,
     velox::memory::MemoryPool* pool) {
   VELOX_CHECK_EQ(type->kind(), value.kind());

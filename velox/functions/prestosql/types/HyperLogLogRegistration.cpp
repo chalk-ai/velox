@@ -17,11 +17,12 @@
 #include "velox/functions/prestosql/types/HyperLogLogRegistration.h"
 
 #include "velox/functions/prestosql/types/HyperLogLogType.h"
+#include "velox/functions/prestosql/types/fuzzer_utils/HyperLogLogInputGenerator.h"
 #include "velox/type/Type.h"
 
 namespace facebook::velox {
 namespace {
-class HyperLogLogTypeFactories : public CustomTypeFactories {
+class HyperLogLogTypeFactory : public CustomTypeFactory {
  public:
   TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
     VELOX_CHECK(parameters.empty());
@@ -34,13 +35,14 @@ class HyperLogLogTypeFactories : public CustomTypeFactories {
   }
 
   AbstractInputGeneratorPtr getInputGenerator(
-      const InputGeneratorConfig& /*config*/) const override {
-    return nullptr;
+      const InputGeneratorConfig& config) const override {
+    return std::make_shared<fuzzer::HyperLogLogInputGenerator>(
+        config.seed_, config.nullRatio_, config.pool_);
   }
 };
 } // namespace
 void registerHyperLogLogType() {
   registerCustomType(
-      "hyperloglog", std::make_unique<const HyperLogLogTypeFactories>());
+      "hyperloglog", std::make_unique<const HyperLogLogTypeFactory>());
 }
 } // namespace facebook::velox

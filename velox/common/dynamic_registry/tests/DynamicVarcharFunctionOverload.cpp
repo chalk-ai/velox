@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-#include "velox/common/dynamic_registry/DynamicUdf.h"
+#include "velox/functions/Udf.h"
 
 // This file defines a mock function that will be dynamically linked and
 // registered. There are no restrictions as to how the function needs to be
-// defined, but the library (.so) needs to provide a `void registry()` C
-// function in the top-level namespace.
+// defined, but the library (.so) needs to provide a `void registerExtensions()`
+// C function in the top-level namespace.
 //
 // (note the extern "C" directive to prevent the compiler from mangling the
 // symbol name).
@@ -41,7 +41,7 @@ struct DynamicFunction {
 
 extern "C" {
 
-void registry() {
+void registerExtensions() {
   facebook::velox::registerFunction<
       facebook::velox::common::dynamicRegistry::DynamicFunction,
       facebook::velox::Varchar,

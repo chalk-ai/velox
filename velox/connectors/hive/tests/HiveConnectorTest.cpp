@@ -64,7 +64,7 @@ groupSubfields(const std::vector<Subfield>& subfields) {
 }
 
 bool mapKeyIsNotNull(const ScanSpec& mapSpec) {
-  return dynamic_cast<IsNotNull*>(
+  return dynamic_cast<const IsNotNull*>(
       mapSpec.childByName(ScanSpec::kMapKeysFieldName)->filter());
 }
 
@@ -609,7 +609,7 @@ TEST_F(HiveConnectorTest, extractFiltersFromRemainingFilter) {
   // Change these once HUGEINT filter merge is fixed.
   ASSERT_TRUE(remaining);
   ASSERT_EQ(
-      remaining->toString(), "not(lt(ROW[\"c2\"],cast 0 as DECIMAL(20, 0)))");
+      remaining->toString(), "not(lt(ROW[\"c2\"],cast(0 as DECIMAL(20, 0))))");
 }
 
 TEST_F(HiveConnectorTest, prestoTableSampling) {

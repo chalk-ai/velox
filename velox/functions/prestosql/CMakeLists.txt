@@ -21,6 +21,7 @@ velox_add_library(
   ArrayContains.cpp
   ArrayDistinct.cpp
   ArrayDuplicates.cpp
+  ArrayFlatten.cpp
   ArrayIntersectExcept.cpp
   ArrayAndMapMatch.cpp
   ArrayMinMaxBy.cpp
@@ -45,6 +46,7 @@ velox_add_library(
   Reverse.cpp
   RowFunction.cpp
   Sequence.cpp
+  SfmSketchFunctions.cpp
   SimpleComparisonMatcher.cpp
   Split.cpp
   SplitToMap.cpp
@@ -55,12 +57,14 @@ velox_add_library(
   TransformKeys.cpp
   TransformValues.cpp
   TypeOf.cpp
+  UpperLower.cpp
   URIParser.cpp
   URLFunctions.cpp
   VectorArithmetic.cpp
   WidthBucketArray.cpp
   Zip.cpp
-  ZipWith.cpp)
+  ZipWith.cpp
+)
 
 velox_link_libraries(
   velox_functions_prestosql_impl
@@ -73,11 +77,21 @@ velox_link_libraries(
   velox_presto_types
   velox_functions_util
   Folly::folly
-  stemmer::stemmer)
+  stemmer::stemmer
+)
+
+if(VELOX_ENABLE_FAISS)
+  velox_link_libraries(velox_functions_prestosql_impl FAISS::faiss)
+  velox_compile_definitions(velox_functions_prestosql_impl PRIVATE VELOX_ENABLE_FAISS)
+endif()
+
+if(VELOX_ENABLE_GEO)
+  add_subdirectory(geospatial)
+  velox_link_libraries(velox_functions_prestosql_impl velox_functions_geo)
+endif()
 
 if(NOT VELOX_MONO_LIBRARY)
-  set_property(TARGET velox_functions_prestosql_impl PROPERTY JOB_POOL_COMPILE
-                                                              high_memory_pool)
+  set_property(TARGET velox_functions_prestosql_impl PROPERTY JOB_POOL_COMPILE high_memory_pool)
 endif()
 
 if(${VELOX_ENABLE_AGGREGATES})

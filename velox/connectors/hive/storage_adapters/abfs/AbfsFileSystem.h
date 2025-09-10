@@ -19,7 +19,7 @@
 
 namespace facebook::velox::filesystems {
 
-/// Implementation of the ABS (Azure Blob Storage) filesystem and file
+/// Implementation of the ABFS (Azure Blob File Storage) filesystem and file
 /// interface. We provide a registration method for reading and writing files so
 /// that the appropriate type of file can be constructed based on a filename.
 /// The supported schema is `abfs(s)://` to align with the valid scheme
@@ -76,5 +76,4 @@ class AbfsFileSystem : public FileSystem {
   }
 };
 
-void registerAbfsFileSystem();
 } // namespace facebook::velox::filesystems

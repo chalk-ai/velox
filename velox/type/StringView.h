@@ -149,17 +149,13 @@ struct StringView {
                size_ - kPrefixSize) == 0;
   }
 
-  bool operator!=(const StringView& other) const {
-    return !(*this == other);
-  }
-
   // Returns 0, if this == other
   //       < 0, if this < other
   //       > 0, if this > other
   int32_t compare(const StringView& other) const {
     if (prefixAsInt() != other.prefixAsInt()) {
-      // The result is decided on prefix. The shorter will be less
-      // because the prefix is padded with zeros.
+      // The result is decided on prefix. The shorter will be less because the
+      // prefix is padded with zeros.
       return memcmp(prefix_, other.prefix_, kPrefixSize);
     }
     int32_t size = std::min(size_, other.size_) - kPrefixSize;
@@ -167,7 +163,7 @@ struct StringView {
       // One ends within the prefix.
       return size_ - other.size_;
     }
-    if (size <= kInlineSize && isInline() && other.isInline()) {
+    if (isInline() && other.isInline()) {
       int32_t result = memcmp(value_.inlined, other.value_.inlined, size);
       return (result != 0) ? result : size_ - other.size_;
     }
@@ -176,20 +172,11 @@ struct StringView {
     return (result != 0) ? result : size_ - other.size_;
   }
 
-  bool operator<(const StringView& other) const {
-    return compare(other) < 0;
-  }
-
-  bool operator<=(const StringView& other) const {
-    return compare(other) <= 0;
-  }
-
-  bool operator>(const StringView& other) const {
-    return compare(other) > 0;
-  }
-
-  bool operator>=(const StringView& other) const {
-    return compare(other) >= 0;
+  auto operator<=>(const StringView& other) const {
+    const auto cmp = compare(other);
+    return cmp < 0 ? std::strong_ordering::less
+        : cmp > 0  ? std::strong_ordering::greater
+                   : std::strong_ordering::equal;
   }
 
   operator folly::StringPiece() && = delete;
@@ -277,7 +264,7 @@ struct StringView {
 //
 //   auto myStringView = "my string"_sv;
 //   auto vec = {"str1"_sv, "str2"_sv};
-inline StringView operator"" _sv(const char* str, size_t len) {
+inline StringView operator""_sv(const char* str, size_t len) {
   return StringView(str, len);
 }
 

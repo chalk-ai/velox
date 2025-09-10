@@ -15,7 +15,6 @@
  */
 #include "velox/exec/Cursor.h"
 #include "velox/common/file/FileSystems.h"
-#include "velox/exec/Operator.h"
 
 #include <filesystem>
 
@@ -142,7 +141,7 @@ class TaskCursorBase : public TaskCursor {
       const CursorParameters& params,
       const std::shared_ptr<folly::Executor>& executor) {
     static std::atomic<int32_t> cursorId;
-    taskId_ = fmt::format("test_cursor {}", ++cursorId);
+    taskId_ = fmt::format("test_cursor_{}", ++cursorId);
 
     if (params.queryCtx) {
       queryCtx_ = params.queryCtx;
@@ -232,7 +231,11 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
         Task::ExecutionMode::kParallel,
         // consumer
         [queue, copyResult = params.copyResult](
-            const RowVectorPtr& vector, velox::ContinueFuture* future) {
+            const RowVectorPtr& vector,
+            bool drained,
+            velox::ContinueFuture* future) {
+          VELOX_CHECK(
+              !drained, "Unexpected drain in multithreaded task cursor");
           if (!vector || !copyResult) {
             return queue->enqueue(vector, future);
           }
@@ -269,8 +272,17 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
   void start() override {
     if (!started_) {
       started_ = true;
-      task_->start(maxDrivers_, numConcurrentSplitGroups_);
-      queue_->setNumProducers(numSplitGroups_ * task_->numOutputDrivers());
+      try {
+        task_->start(maxDrivers_, numConcurrentSplitGroups_);
+        queue_->setNumProducers(numSplitGroups_ * task_->numOutputDrivers());
+      } catch (const VeloxException& e) {
+        // Could not find output pipeline, due to Task terminated before
+        // start. Do not override the error.
+        if (e.message().find("Output pipeline not found for task") ==
+            std::string::npos) {
+          throw;
+        }
+      }
     }
   }
 
@@ -282,23 +294,24 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
       std::rethrow_exception(error_);
     }
 
+    // Task might be aborted before start.
+    checkTaskError();
     current_ = queue_->dequeue();
-    if (task_->error()) {
-      // Wait for the task to finish (there's' a small period of time between
-      // when the error is set on the Task and terminate is called).
-      task_->taskCompletionFuture()
-          .within(std::chrono::microseconds(5'000'000))
-          .wait();
 
-      // Wait for all task drivers to finish to avoid destroying the executor_
-      // before task_ finished using it and causing a crash.
-      waitForTaskDriversToFinish(task_.get());
-      std::rethrow_exception(task_->error());
-    }
+    checkTaskError();
     if (!current_) {
       atEnd_ = true;
     }
     return current_ != nullptr;
+  }
+
+  void setNoMoreSplits() override {
+    VELOX_CHECK(!noMoreSplits_);
+    noMoreSplits_ = true;
+  }
+
+  bool noMoreSplits() const override {
+    return noMoreSplits_;
   }
 
   bool hasNext() override {
@@ -321,6 +334,22 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
   }
 
  private:
+  void checkTaskError() {
+    if (!task_->error()) {
+      return;
+    }
+    // Wait for the task to finish (there's' a small period of time between
+    // when the error is set on the Task and terminate is called).
+    task_->taskCompletionFuture()
+        .within(std::chrono::microseconds(5'000'000))
+        .wait();
+
+    // Wait for all task drivers to finish to avoid destroying the executor_
+    // before task_ finished using it and causing a crash.
+    waitForTaskDriversToFinish(task_.get());
+    std::rethrow_exception(task_->error());
+  }
+
   const int32_t maxDrivers_;
   const int32_t numConcurrentSplitGroups_;
   const int32_t numSplitGroups_;
@@ -330,6 +359,7 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
   std::shared_ptr<exec::Task> task_;
   RowVectorPtr current_;
   bool atEnd_{false};
+  tsan_atomic<bool> noMoreSplits_{false};
   std::exception_ptr error_;
 };
 
@@ -368,6 +398,15 @@ class SingleThreadedTaskCursor : public TaskCursorBase {
     // no-op
   }
 
+  void setNoMoreSplits() override {
+    VELOX_CHECK(!noMoreSplits_);
+    noMoreSplits_ = true;
+  }
+
+  bool noMoreSplits() const override {
+    return noMoreSplits_;
+  }
+
   bool moveNext() override {
     if (!hasNext()) {
       return false;
@@ -393,7 +432,7 @@ class SingleThreadedTaskCursor : public TaskCursorBase {
       }
       // When next is returned from task as a null pointer.
       if (!future.valid()) {
-        VELOX_CHECK(!task_->isRunning());
+        VELOX_CHECK(!task_->isRunning() || !noMoreSplits_);
         return false;
       }
       // Task is blocked for some reason. Wait and try again.
@@ -419,6 +458,7 @@ class SingleThreadedTaskCursor : public TaskCursorBase {
 
  private:
   std::shared_ptr<exec::Task> task_;
+  bool noMoreSplits_{false};
   RowVectorPtr current_;
   RowVectorPtr next_;
   std::exception_ptr error_;

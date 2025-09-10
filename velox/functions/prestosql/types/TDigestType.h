@@ -20,16 +20,14 @@
 
 namespace facebook::velox {
 
-class TDigestType : public VarbinaryType {
+class TDigestType final : public VarbinaryType {
  public:
-  static const std::shared_ptr<const TDigestType>& get(
-      const TypePtr& dataType) {
+  static std::shared_ptr<const TDigestType> get(const TypePtr& dataType) {
     // Only TDIGEST(DOUBLE) exists in Presto so we use a singleton to improve
     // performance.
     VELOX_CHECK(dataType->isDouble());
-    static const auto instance =
-        std::shared_ptr<const TDigestType>(new TDigestType(DOUBLE()));
-    return instance;
+    static const TDigestType kInstance{DOUBLE()};
+    return {std::shared_ptr<const TDigestType>{}, &kInstance};
   }
 
   bool equivalent(const Type& other) const override {
@@ -61,12 +59,21 @@ class TDigestType : public VarbinaryType {
     return obj;
   }
 
+  bool isOrderable() const override {
+    return false;
+  }
+
  private:
   explicit TDigestType(const TypePtr& dataType)
       : parameters_({TypeParameter(dataType)}) {}
 
   const std::vector<TypeParameter> parameters_;
 };
+
+inline bool isTDigestType(const TypePtr& type) {
+  // Pointer comparison works since this type is a singleton.
+  return TDigestType::get(DOUBLE()) == type;
+}
 
 inline std::shared_ptr<const TDigestType> TDIGEST(const TypePtr& dataType) {
   return TDigestType::get(dataType);

@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 #pragma once
-#include <velox/exec/Driver.h>
+
 #include "velox/core/PlanNode.h"
+#include "velox/exec/Driver.h"
 #include "velox/exec/Task.h"
 
 namespace facebook::velox::exec {
@@ -75,6 +76,8 @@ struct CursorParameters {
   /// If true, use serial execution mode. Use parallel execution mode
   /// otherwise.
   bool serialExecution = false;
+
+  bool barrierExecution = false;
 
   /// If both 'queryConfigs' and 'queryCtx' are specified, the configurations
   /// in 'queryCtx' will be overridden by 'queryConfig'.
@@ -155,6 +158,10 @@ class TaskCursor {
   virtual RowVectorPtr& current() = 0;
 
   virtual void setError(std::exception_ptr error) = 0;
+
+  virtual bool noMoreSplits() const = 0;
+
+  virtual void setNoMoreSplits() = 0;
 
   virtual const std::shared_ptr<Task>& task() = 0;
 };

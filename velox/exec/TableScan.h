@@ -28,7 +28,7 @@ class TableScan : public SourceOperator {
       DriverCtx* driverCtx,
       const std::shared_ptr<const core::TableScanNode>& tableScanNode);
 
-  folly::dynamic toJson() const override;
+  void initialize() override;
 
   RowVectorPtr getOutput() override;
 
@@ -40,6 +40,10 @@ class TableScan : public SourceOperator {
     return BlockingReason::kNotBlocked;
   }
 
+  bool startDrain() override {
+    return false;
+  }
+
   bool isFinished() override;
 
   void close() override;
@@ -48,10 +52,9 @@ class TableScan : public SourceOperator {
     return connector_->canAddDynamicFilter();
   }
 
-  void addDynamicFilter(
+  void addDynamicFilterLocked(
       const core::PlanNodeId& producer,
-      column_index_t outputChannel,
-      const std::shared_ptr<common::Filter>& filter) override;
+      const PushdownFilters& filters) override;
 
   /// The name of runtime stats specific to table scan.
   /// The number of running table scan drivers.
@@ -74,6 +77,9 @@ class TableScan : public SourceOperator {
   // terminated.
   bool shouldStop(StopReason taskStopReason) const;
 
+  // Returns true if a new split is fetched from the task otherwise false.
+  bool getSplit();
+
   // Sets 'maxPreloadSplits' and 'splitPreloader' if prefetching splits is
   // appropriate. The preloader will be applied to the 'first 'maxPreloadSplits'
   // of the Task's split queue for 'this' when getting splits.
@@ -93,10 +99,8 @@ class TableScan : public SourceOperator {
   // processing or not.
   void tryScaleUp();
 
-  const std::shared_ptr<connector::ConnectorTableHandle> tableHandle_;
-  const std::
-      unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-          columnHandles_;
+  const connector::ConnectorTableHandlePtr tableHandle_;
+  const connector::ColumnHandleMap columnHandles_;
   DriverCtx* const driverCtx_;
   const int32_t maxSplitPreloadPerDriver_{0};
   const vector_size_t maxReadBatchSize_;
@@ -119,9 +123,6 @@ class TableScan : public SourceOperator {
   std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
   std::unique_ptr<connector::DataSource> dataSource_;
   bool noMoreSplits_ = false;
-  // Dynamic filters to add to the data source when it gets created.
-  std::unordered_map<column_index_t, std::shared_ptr<common::Filter>>
-      dynamicFilters_;
 
   int32_t maxPreloadedSplits_{0};
 
@@ -142,10 +143,6 @@ class TableScan : public SourceOperator {
 
   // String shown in ExceptionContext inside DataSource and LazyVector loading.
   std::string debugString_;
-
-  // Holds the current status of the operator. Used when debugging to understand
-  // what operator is doing.
-  std::atomic<const char*> curStatus_{""};
 
   // The total number of raw input rows read up till the last finished split.
   // This is used to detect if a finished split is empty or not.

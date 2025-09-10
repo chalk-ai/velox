@@ -28,8 +28,6 @@ namespace test {
 class RowContainerTestHelper;
 }
 
-using NextRowVector = std::vector<char*, StlAllocator<char*>>;
-
 class Aggregate;
 
 class Accumulator {
@@ -330,13 +328,7 @@ class RowContainer {
   /// Sets all fields, aggregates, keys and dependents to null. Used when making
   /// a row with uninitialized keys for aggregates with no-op partial
   /// aggregation.
-  void setAllNull(char* row) {
-    removeOrUpdateRowColumnStats(row, /*setToNull=*/true);
-    if (!nullOffsets_.empty()) {
-      memset(row + nullByte(nullOffsets_[0]), 0xff, initialNulls_.size());
-      bits::clearBit(row, freeFlagOffset_);
-    }
-  }
+  void setAllNull(char* row);
 
   /// The row size excluding any out-of-line stored variable length values.
   int32_t fixedRowSize() const {
@@ -758,14 +750,8 @@ class RowContainer {
 
   /// Creates a next-row-vector if it doesn't exist. Appends the row address to
   /// the next-row-vector, and store the address of the next-row-vector in the
-  /// 'nextOffset_' slot for all duplicate rows. 'allocator' is provided for the
-  /// duplicate row vector allocations.
-  void
-  appendNextRow(char* current, char* nextRow, HashStringAllocator* allocator);
-
-  NextRowVector*& getNextRowVector(char* row) const {
-    return *reinterpret_cast<NextRowVector**>(row + nextOffset_);
-  }
+  /// 'nextOffset_' slot for all duplicate rows.
+  void appendNextRow(char* current, char* nextRow);
 
   /// Hashes the values of 'columnIndex' for 'rows'.  If 'mix' is true, mixes
   /// the hash with the existing value in 'result'.
@@ -1110,7 +1096,7 @@ class RowContainer {
 
     BufferPtr& nullBuffer = result->mutableNulls(maxRows, true);
     auto nulls = nullBuffer->asMutable<uint64_t>();
-    BufferPtr valuesBuffer = result->mutableValues(maxRows);
+    BufferPtr valuesBuffer = result->mutableValues();
     [[maybe_unused]] auto values = valuesBuffer->asMutableRange<T>();
     for (int32_t i = 0; i < numRows; ++i) {
       const char* row;
@@ -1142,9 +1128,9 @@ class RowContainer {
       int32_t offset,
       int32_t resultOffset,
       FlatVector<T>* result) {
-    auto maxRows = numRows + resultOffset;
+    [[maybe_unused]] auto maxRows = numRows + resultOffset;
     VELOX_DCHECK_LE(maxRows, result->size());
-    BufferPtr valuesBuffer = result->mutableValues(maxRows);
+    BufferPtr valuesBuffer = result->mutableValues();
     [[maybe_unused]] auto values = valuesBuffer->asMutableRange<T>();
     for (int32_t i = 0; i < numRows; ++i) {
       const char* row;
@@ -1477,10 +1463,7 @@ class RowContainer {
   // Free any aggregates associated with the 'rows'.
   void freeAggregates(folly::Range<char**> rows);
 
-  // Free next row vectors associated with the 'rows'.
-  void freeNextRowVectors(folly::Range<char**> rows);
-
-  void freeRowsExtraMemory(folly::Range<char**> rows, bool freeNextRowVector);
+  void freeRowsExtraMemory(folly::Range<char**> rows);
 
   inline void updateColumnStats(
       const DecodedVector& decoded,
@@ -1523,7 +1506,7 @@ class RowContainer {
   // Indicates if this row container has rows with duplicate keys. This only
   // applies if 'nextOffset_' is set.
   tsan_atomic<bool> hasDuplicateRows_{false};
-  // Bit position of null bit  in the row. 0 if no null flag. Order is keys,
+  // Bit position of null bit in the row. 0 if no null flag. Order is keys,
   // accumulators, dependent.
   std::vector<int32_t> nullOffsets_;
   // Position of field or accumulator. Corresponds 1:1 to 'nullOffset_'.
@@ -1554,9 +1537,6 @@ class RowContainer {
   // Extra bytes to reserve before  each added row for a normalized key. Set to
   // 0 after deciding not to use normalized keys.
   int normalizedKeySize_;
-  // Copied over the null bits of each row on initialization. Keys are
-  // not null, aggregates are null.
-  std::vector<uint8_t> initialNulls_;
   uint64_t numRows_ = 0;
   // Head of linked list of free rows.
   char* firstFreeRow_ = nullptr;
@@ -1884,11 +1864,21 @@ class RowComparator {
   /// Returns true if lhs < rhs, false otherwise.
   bool operator()(const char* lhs, const char* rhs);
 
-  /// Returns true if decodeVectors[index] < rhs, false otherwise.
+  /// Returns 0 for equal, < 0 for lhs < rhs, > 0 otherwise.
+  int compare(const char* lhs, const char* rhs);
+
+  /// Returns true if decodedVectors[index] < other, false otherwise.
   bool operator()(
       const std::vector<DecodedVector>& decodedVectors,
       vector_size_t index,
-      const char* rhs);
+      const char* other);
+
+  /// Returns 0 for equal, < 0 for decodedVectors[index] < other,
+  /// > 0 otherwise.
+  int32_t compare(
+      const std::vector<DecodedVector>& decodedVectors,
+      vector_size_t index,
+      const char* other);
 
  private:
   std::vector<std::pair<column_index_t, core::SortOrder>> keyInfo_;

@@ -124,7 +124,7 @@ class NestedLoopJoinProbe : public Operator {
   // true), or if the output is full (returns false). If it returns false, a
   // valid vector with more than zero records will be available at `output_`; if
   // it returns true, either nullptr or zero records may be placed at `output_`.
-  // Also if it returns true, it's the caller's responsiblity to deicide when to
+  // Also if it returns true, it's the caller's responsiblity to decide when to
   // set `output_` size.
   //
   // Also updates `buildMatched_` if the build records that received a match, so
@@ -238,7 +238,7 @@ class NestedLoopJoinProbe : public Operator {
 
   // Cross joins are translated into NLJ's without a join conditition.
   bool isCrossJoin() const {
-    return joinCondition_ == nullptr;
+    return joinCondition_ == nullptr && !isLeftSemiProjectJoin(joinType_);
   }
 
   // If build has a single vector, we can wrap probe and build batches into
@@ -258,6 +258,14 @@ class NestedLoopJoinProbe : public Operator {
   bool isSingleBuildRow() const {
     return isSingleBuildVector() && buildVectors_->front()->size() == 1;
   }
+
+  // Check if this is a LeftSemiProjectJoin with no join condition.
+  bool isLeftSemiProjectNoCondition() const {
+    return joinCondition_ == nullptr && isLeftSemiProjectJoin(joinType_);
+  }
+
+  // Handles LeftSemiProjectJoin with no join condition
+  void handleLeftSemiProjectNoCondition();
 
   // Wraps rows of 'data' that are not selected in 'matched' and projects
   // to the output according to 'projections'. 'nullProjections' is used to

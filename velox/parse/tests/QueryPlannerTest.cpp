@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 #include "velox/parse/QueryPlanner.h"
-#include "velox/common/base/tests/GTestUtils.h"
+#include <gtest/gtest.h>
 
 namespace facebook::velox::core::test {
 
 class QueryPlannerTest : public testing::Test {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void assertPlan(

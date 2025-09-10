@@ -39,6 +39,40 @@ bool checkAddIdentityProjection(
 
   return false;
 }
+
+// Split stats to attrbitute cardinality reduction to the Filter node.
+std::vector<OperatorStats> splitStats(
+    const OperatorStats& combinedStats,
+    const core::PlanNodeId& filterNodeId) {
+  OperatorStats filterStats;
+
+  filterStats.operatorId = combinedStats.operatorId;
+  filterStats.pipelineId = combinedStats.pipelineId;
+  filterStats.planNodeId = filterNodeId;
+  filterStats.operatorType = combinedStats.operatorType;
+  filterStats.numDrivers = combinedStats.numDrivers;
+
+  filterStats.inputBytes = combinedStats.inputBytes;
+  filterStats.inputPositions = combinedStats.inputPositions;
+  filterStats.inputVectors = combinedStats.inputVectors;
+
+  // Estimate Filter's output bytes based on cardinality change.
+  const double filterRate = combinedStats.inputPositions > 0
+      ? (combinedStats.outputPositions * 1.0 / combinedStats.inputPositions)
+      : 1.0;
+
+  filterStats.outputBytes = (uint64_t)(filterStats.inputBytes * filterRate);
+  filterStats.outputPositions = combinedStats.outputPositions;
+  filterStats.outputVectors = combinedStats.outputVectors;
+
+  auto projectStats = combinedStats;
+  projectStats.inputBytes = filterStats.outputBytes;
+  projectStats.inputPositions = filterStats.outputPositions;
+  projectStats.inputVectors = filterStats.outputVectors;
+
+  return {std::move(projectStats), std::move(filterStats)};
+}
+
 } // namespace
 
 FilterProject::FilterProject(
@@ -53,8 +87,22 @@ FilterProject::FilterProject(
           project ? project->id() : filter->id(),
           "FilterProject"),
       hasFilter_(filter != nullptr),
+      lazyDereference_(
+          dynamic_cast<const core::LazyDereferenceNode*>(project.get()) !=
+          nullptr),
       project_(project),
-      filter_(filter) {}
+      filter_(filter) {
+  VELOX_CHECK(!(lazyDereference_ && filter));
+  if (filter_ != nullptr && project_ != nullptr) {
+    folly::Synchronized<OperatorStats>& opStats = Operator::stats();
+    opStats.withWLock([&](auto& stats) {
+      stats.setStatSplitter(
+          [filterId = filter_->id()](const auto& combinedStats) {
+            return splitStats(combinedStats, filterId);
+          });
+    });
+  }
+}
 
 void FilterProject::initialize() {
   Operator::initialize();
@@ -90,7 +138,7 @@ void FilterProject::initialize() {
     exprs_ = exprSetPool->take();
   }
   if (!exprs_) {
-    exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx());
+    exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx(), lazyDereference_);
   }
   exprSetPool_ = std::move(exprSetPool);
 
@@ -115,60 +163,50 @@ void FilterProject::initialize() {
 
 void FilterProject::addInput(RowVectorPtr input) {
   input_ = std::move(input);
-  numProcessedInputRows_ = 0;
-}
-
-bool FilterProject::allInputProcessed() {
-  if (!input_) {
-    return true;
-  }
-  if (numProcessedInputRows_ == input_->size()) {
-    input_ = nullptr;
-    return true;
-  }
-  return false;
 }
 
 bool FilterProject::isFinished() {
-  return noMoreInput_ && allInputProcessed();
+  return noMoreInput_ && !input_;
 }
 
 RowVectorPtr FilterProject::getOutput() {
-  if (allInputProcessed()) {
+  if (!input_) {
     return nullptr;
   }
+  SCOPE_EXIT {
+    input_.reset();
+  };
 
   vector_size_t size = input_->size();
   LocalSelectivityVector localRows(*operatorCtx_->execCtx(), size);
   auto* rows = localRows.get();
   VELOX_DCHECK_NOT_NULL(rows);
   rows->setAll();
-  EvalCtx evalCtx(operatorCtx_->execCtx(), exprs_.get(), input_.get());
+  EvalCtx evalCtx(
+      operatorCtx_->execCtx(), exprs_.get(), input_.get(), lazyDereference_);
 
-  // Pre-load lazy vectors which are referenced by both expressions and identity
-  // projections.
-  for (auto fieldIdx : multiplyReferencedFieldIndices_) {
-    evalCtx.ensureFieldLoaded(fieldIdx, *rows);
+  if (!lazyDereference_) {
+    // Pre-load lazy vectors which are referenced by both expressions and
+    // identity projections.
+    for (auto fieldIdx : multiplyReferencedFieldIndices_) {
+      evalCtx.ensureFieldLoaded(fieldIdx, *rows);
+    }
   }
 
   if (!hasFilter_) {
-    numProcessedInputRows_ = size;
     VELOX_CHECK(!isIdentityProjection_);
     auto results = project(*rows, evalCtx);
-
     return fillOutput(size, nullptr, results);
   }
 
   // evaluate filter
   auto numOut = filter(evalCtx, *rows);
-  numProcessedInputRows_ = size;
   if (numOut == 0) { // no rows passed the filer
     input_ = nullptr;
     return nullptr;
   }
 
-  bool allRowsSelected = (numOut == size);
-
+  const bool allRowsSelected = (numOut == size);
   // evaluate projections (if present)
   std::vector<VectorPtr> results;
   if (!isIdentityProjection_) {
@@ -199,5 +237,17 @@ vector_size_t FilterProject::filter(
   std::vector<VectorPtr> results;
   exprs_->eval(0, 1, true, allRows, evalCtx, results);
   return processFilterResults(results[0], allRows, filterEvalCtx_, pool());
+}
+
+OperatorStats FilterProject::stats(bool clear) {
+  auto stats = Operator::stats(clear);
+  if (operatorCtx()
+          ->driverCtx()
+          ->queryConfig()
+          .operatorTrackExpressionStats() &&
+      exprs_ != nullptr) {
+    stats.expressionStats = exprs_->stats(true /*excludeSpecialForm*/);
+  }
+  return stats;
 }
 } // namespace facebook::velox::exec

@@ -147,7 +147,6 @@ std::shared_ptr<connector::ConnectorSplit> makeConnectorSplit(
       /*customSplitInfo=*/std::unordered_map<std::string, std::string>{},
       /*extraFileInfo=*/nullptr,
       /*serdeParameters=*/std::unordered_map<std::string, std::string>{},
-      /*storageParameters=*/std::unordered_map<std::string, std::string>{},
       /*splitWeight=*/0,
       /*cacheable=*/true,
       infoColumns);
@@ -332,12 +331,18 @@ TypePtr sanitizeTryResolveType(
     const exec::TypeSignature& typeSignature,
     const std::unordered_map<std::string, SignatureVariable>& variables,
     const std::unordered_map<std::string, TypePtr>& typeVariablesBindings,
-    std::unordered_map<std::string, int>& integerVariablesBindings) {
+    std::unordered_map<std::string, int>& integerVariablesBindings,
+    const std::unordered_map<std::string, LongEnumParameter>&
+        longEnumParameterVariablesBindings,
+    const std::unordered_map<std::string, VarcharEnumParameter>&
+        varcharEnumParameterVariablesBindings) {
   return sanitize(SignatureBinder::tryResolveType(
       typeSignature,
       variables,
       typeVariablesBindings,
-      integerVariablesBindings));
+      integerVariablesBindings,
+      longEnumParameterVariablesBindings,
+      varcharEnumParameterVariablesBindings));
 }
 
 void setupMemory(
@@ -347,7 +352,7 @@ void setupMemory(
   FLAGS_velox_enable_memory_usage_track_in_default_memory_pool = true;
   FLAGS_velox_memory_leak_check_enabled = true;
   facebook::velox::memory::SharedArbitrator::registerFactory();
-  facebook::velox::memory::MemoryManagerOptions options;
+  facebook::velox::memory::MemoryManager::Options options;
   options.allocatorCapacity = allocatorCapacity;
   options.arbitratorCapacity = arbitratorCapacity;
   options.arbitratorKind = "SHARED";
@@ -366,17 +371,13 @@ void setupMemory(
 void registerHiveConnector(
     const std::unordered_map<std::string, std::string>& hiveConfigs) {
   auto configs = hiveConfigs;
-  if (!connector::hasConnectorFactory(
-          connector::hive::HiveConnectorFactory::kHiveConnectorName)) {
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
-  }
-  auto hiveConnector =
-      connector::getConnectorFactory(
-          connector::hive::HiveConnectorFactory::kHiveConnectorName)
-          ->newConnector(
-              kHiveConnectorId,
-              std::make_shared<config::ConfigBase>(std::move(configs)));
+  // Make sure not to run out of open file descriptors.
+  configs[connector::hive::HiveConfig::kNumCacheFileHandles] = "1000";
+
+  connector::hive::HiveConnectorFactory factory;
+  auto hiveConnector = factory.newConnector(
+      kHiveConnectorId,
+      std::make_shared<config::ConfigBase>(std::move(configs)));
   connector::registerConnector(hiveConnector);
 }
 

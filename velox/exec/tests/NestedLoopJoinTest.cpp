@@ -13,6 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/PlanNode.h"
+#include "velox/exec/NestedLoopJoinBuild.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -100,7 +103,7 @@ class NestedLoopJoinTest : public HiveConnectorTestBase {
         SCOPED_TRACE(fmt::format(
             "maxDrivers:{} joinType:{} comparison:{}",
             std::to_string(numDrivers),
-            joinTypeName(joinType),
+            core::JoinTypeName::toName(joinType),
             comparison));
 
         params.planNode =
@@ -120,7 +123,9 @@ class NestedLoopJoinTest : public HiveConnectorTestBase {
         assertQuery(
             params,
             fmt::format(
-                fmt::runtime(queryStr_), joinTypeName(joinType), comparison));
+                fmt::runtime(queryStr_),
+                core::JoinTypeName::toName(joinType),
+                comparison));
       }
     }
   }
@@ -374,7 +379,7 @@ TEST_F(NestedLoopJoinTest, outerJoinWithoutCondition) {
         op,
         fmt::format(
             "SELECT count(*) FROM t {} join u on 1",
-            core::joinTypeName(joinType)));
+            core::JoinTypeName::toName(joinType)));
   };
   testOuterJoin(core::JoinType::kLeft);
   testOuterJoin(core::JoinType::kRight);
@@ -620,6 +625,191 @@ TEST_F(NestedLoopJoinTest, mergeBuildVectors) {
   }
   ASSERT_FALSE(cursor->moveNext());
   ASSERT_TRUE(waitForTaskCompletion(cursor->task().get()));
+}
+
+TEST_F(NestedLoopJoinTest, leftSemiJoinProjectDataValidation) {
+  auto probeVectors = makeRowVector({"t0"}, {sequence<int32_t>(5)});
+
+  auto buildVectors = makeRowVector({"u0"}, {sequence<int32_t>(3, 2)});
+
+  auto expected = makeRowVector(
+      {"t0", "match"},
+      {makeFlatVector<int32_t>({0, 1, 2, 3, 4}),
+       makeFlatVector<bool>({false, false, true, true, true})});
+
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto op = PlanBuilder(planNodeIdGenerator)
+                .values({probeVectors})
+                .nestedLoopJoin(
+                    PlanBuilder(planNodeIdGenerator)
+                        .values({buildVectors})
+                        .planNode(),
+                    "t0 = u0",
+                    {"t0", "match"},
+                    core::JoinType::kLeftSemiProject)
+                .planNode();
+
+  AssertQueryBuilder builder{op};
+  auto result = builder.copyResults(pool());
+
+  assertEqualVectors(expected, result);
+}
+
+TEST_F(NestedLoopJoinTest, leftSemiJoinWithNullsAndFilter) {
+  auto probeVectors = makeRowVector(
+      {"t0"}, {makeNullableFlatVector<int32_t>({0, 1, std::nullopt, 3, 4})});
+
+  auto buildVectors = makeRowVector(
+      {"u0"}, {makeNullableFlatVector<int32_t>({3, std::nullopt, 4})});
+
+  auto expected = makeRowVector(
+      {"t0", "match"},
+      {
+          makeNullableFlatVector<int32_t>({0, 1, std::nullopt, 3, 4}),
+          makeFlatVector<bool>({false, false, false, true, true}),
+      });
+
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto op = PlanBuilder(planNodeIdGenerator)
+                .values({probeVectors})
+                .nestedLoopJoin(
+                    PlanBuilder(planNodeIdGenerator)
+                        .values({buildVectors})
+                        .planNode(),
+                    "t0 = u0 AND t0 > 2",
+                    {"t0", "match"},
+                    core::JoinType::kLeftSemiProject)
+                .planNode();
+
+  AssertQueryBuilder builder{op};
+  auto result = builder.copyResults(pool());
+
+  assertEqualVectors(expected, result);
+}
+
+TEST_F(NestedLoopJoinTest, mergeBuildVectorsOverflow) {
+  const std::vector<RowVectorPtr> buildVectors = {
+      makeRowVector({makeFlatVector<int64_t>({1, 2})})};
+  const std::vector<RowVectorPtr> probeVectors = {
+      makeRowVector({makeFlatVector<int64_t>({1, 2})}),
+  };
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto planNode = PlanBuilder(planNodeIdGenerator)
+                      .values(probeVectors)
+                      .nestedLoopJoin(
+                          PlanBuilder(planNodeIdGenerator)
+                              .values(buildVectors)
+                              .project({"c0 as r0"})
+                              .planNode(),
+                          {"c0", "r0"})
+                      .planNode();
+  auto joinNode =
+      std::dynamic_pointer_cast<const velox::core::NestedLoopJoinNode>(
+          planNode);
+  std::vector<RowVectorPtr> values = {};
+  core::PlanFragment fakePlanFragment;
+  const core::PlanNodeId id{"0"};
+  fakePlanFragment.planNode = std::make_shared<core::ValuesNode>(id, values);
+
+  auto fakeTask = Task::create(
+      "NestedLoopJoinTest",
+      std::move(fakePlanFragment),
+      0,
+      core::QueryCtx::create(executor_.get()),
+      Task::ExecutionMode::kParallel);
+  DriverCtx driverCtx(fakeTask, 0, 0, 0, 0);
+
+  // int32_t 1066768200 + 1108383700 > int32_t.MAX_VALUE
+  NestedLoopJoinBuild nestedLoopJoinBuild(1, &driverCtx, joinNode);
+  nestedLoopJoinBuild.addInput(makeRowVector({makeConstant(1, 1066768200)}));
+  nestedLoopJoinBuild.addInput(makeRowVector({makeConstant(1, 1108383700)}));
+
+  std::vector<RowVectorPtr> mergeResult =
+      nestedLoopJoinBuild.mergeDataVectors();
+  // Expect the 2 vectors are not merged together since they are
+  // over the limit.
+  ASSERT_EQ(mergeResult.size(), 2);
+}
+
+DEBUG_ONLY_TEST_F(NestedLoopJoinTest, longBatchDurationYield) {
+  const uint32_t kProbeSize = 10;
+  const uint32_t kBuildSize = 1'000;
+  const uint64_t kDriverCpuTimeSliceLimitMs = 1'000;
+  const std::string kLargeBatchSize =
+      folly::to<std::string>(kProbeSize * kBuildSize);
+
+  struct {
+    uint32_t numGetOutputCalls;
+    bool hasDelay;
+    std::string debugString() const {
+      return fmt::format(
+          "numGetOutputCalls: {}, needSleep: {}", numGetOutputCalls, hasDelay);
+    }
+  } testSettings[] = {{0, false}, {0, true}};
+
+  const auto probeData = makeRowVector(
+      {"t_c0", "t_c1"},
+      {
+          makeFlatVector<int32_t>(kProbeSize, [](auto row) { return row; }),
+          makeFlatVector<int32_t>(kProbeSize, [](auto row) { return row * 2; }),
+      });
+
+  const auto buildData = makeRowVector(
+      {"u_c0", "u_c1"},
+      {
+          makeFlatVector<int32_t>(kBuildSize, [](auto row) { return row; }),
+          makeFlatVector<int32_t>(kBuildSize, [](auto row) { return row * 3; }),
+      });
+
+  createDuckDbTable("t", {probeData});
+  createDuckDbTable("u", {buildData});
+
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto planNode =
+      PlanBuilder(planNodeIdGenerator)
+          .values({probeData})
+          .nestedLoopJoin(
+              PlanBuilder(planNodeIdGenerator).values({buildData}).planNode(),
+              "",
+              {"t_c0", "t_c1", "u_c0", "u_c1"},
+              core::JoinType::kInner)
+          .planNode();
+
+  for (auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
+    std::atomic<int> nestedLoopJoinProbeGetOutputCalls{0};
+    SCOPED_TESTVALUE_SET(
+        "facebook::velox::exec::Driver::runInternal::getOutput",
+        std::function<void(void*)>([&](void* op) {
+          auto* operatorPtr = static_cast<Operator*>(op);
+          if (operatorPtr->operatorType() == "NestedLoopJoinProbe") {
+            // The second time NestedLoopJoinProbe::getOutput actually calls
+            // generateOutput, and the function
+            // NestedLoopJoinProbe::shouldYield is expected to be called.
+            if (nestedLoopJoinProbeGetOutputCalls.fetch_add(1) == 2 &&
+                testData.hasDelay) {
+              std::this_thread::sleep_for(
+                  std::chrono::milliseconds(2 * kDriverCpuTimeSliceLimitMs));
+            }
+          }
+        }));
+
+    auto queryCtx = core::QueryCtx::create(
+        executor_.get(),
+        core::QueryConfig({
+            {core::QueryConfig::kDriverCpuTimeSliceLimitMs,
+             folly::to<std::string>(kDriverCpuTimeSliceLimitMs)},
+            {core::QueryConfig::kPreferredOutputBatchRows, kLargeBatchSize},
+        }));
+
+    AssertQueryBuilder(planNode, duckDbQueryRunner_)
+        .queryCtx(queryCtx)
+        .maxDrivers(1)
+        .assertResults("SELECT t_c0, t_c1, u_c0, u_c1 FROM t, u");
+    testData.numGetOutputCalls = nestedLoopJoinProbeGetOutputCalls.load();
+  }
+  ASSERT_LT(
+      testSettings[0].numGetOutputCalls, testSettings[1].numGetOutputCalls);
 }
 
 } // namespace

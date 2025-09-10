@@ -46,15 +46,13 @@ namespace facebook::velox {
 /// 41-63: y-coordinate (23 bits)
 /// (high bits first, low bits last). This peculiar arrangement maximizes
 /// low-bit entropy for the Java long hash function.
-class BingTileType : public BigintType {
-  BingTileType() : BigintType() {}
+class BingTileType final : public BigintType {
+  BingTileType() = default;
 
  public:
-  static const std::shared_ptr<const BingTileType>& get() {
-    static const std::shared_ptr<const BingTileType> instance =
-        std::shared_ptr<BingTileType>(new BingTileType());
-
-    return instance;
+  static std::shared_ptr<const BingTileType> get() {
+    VELOX_CONSTEXPR_SINGLETON BingTileType kInstance;
+    return {std::shared_ptr<const BingTileType>{}, &kInstance};
   }
 
   bool equivalent(const Type& other) const override {
@@ -82,6 +80,10 @@ class BingTileType : public BigintType {
     return obj;
   }
 
+  bool isOrderable() const override {
+    return false;
+  }
+
   static constexpr uint8_t kBingTileVersion = 0;
   static constexpr uint8_t kBingTileMaxZoomLevel = 23;
   static constexpr uint8_t kBingTileZoomBitWidth = 5;
@@ -89,6 +91,12 @@ class BingTileType : public BigintType {
   static constexpr uint8_t kBingTileZoomOffset = 31 - kBingTileZoomBitWidth;
   static constexpr uint64_t kBits23Mask = (1 << 24) - 1;
   static constexpr uint64_t kBits5Mask = (1 << 6) - 1;
+  static constexpr double kMaxLatitude = 85.05112878;
+  static constexpr double kMinLatitude = -85.05112878;
+  static constexpr double kMaxLongitude = 180.0;
+  static constexpr double kMinLongitude = -180.0;
+  static constexpr uint16_t kTilePixels = 256;
+  static constexpr double kEarthRadiusKm = 6371.01;
 
   static inline uint64_t
   bingTileCoordsToInt(uint32_t x, uint32_t y, uint8_t zoom) {
@@ -120,7 +128,7 @@ class BingTileType : public BigintType {
   /// Returns true if the tile (as uint64) is valid
   static inline bool isBingTileIntValid(uint64_t tile) {
     uint8_t zoom = bingTileZoom(tile);
-    uint64_t coordinateBound = 1 << zoom;
+    uint64_t coordinateBound = 1ul << zoom;
     // Using bitwise & so that it's branchless and the data
     // can be prefetched and the ops pipelined.
     // Linter wants the bools cast to uint8 for bitwise ops.
@@ -136,14 +144,44 @@ class BingTileType : public BigintType {
       uint64_t tile,
       uint8_t parentZoom);
 
-  static folly::Expected<std::vector<uint64_t>, std::string> bingTileChildren(
-      uint64_t tile,
-      uint8_t childZoom);
+  static folly::Expected<std::vector<uint64_t>, std::string>
+  bingTileChildren(uint64_t tile, uint8_t childZoom, uint8_t maxZoomShift);
 
   static folly::Expected<uint64_t, std::string> bingTileFromQuadKey(
       const std::string_view& quadKey);
 
   static std::string bingTileToQuadKey(uint64_t tile);
+
+  static folly::Expected<uint64_t, std::string>
+  latitudeLongitudeToTile(double latitude, double longitude, uint8_t zoomLevel);
+
+  /**
+   * Return the longitude (in degrees) of the west edge of the tile.
+   */
+  static double tileXToLongitude(uint32_t tileX, uint8_t zoomLevel);
+
+  /**
+   * Return the latitude (in degrees) of the north edge of the tile.
+   */
+  static double tileYToLatitude(uint32_t tileY, uint8_t zoomLevel);
+
+  static folly::Expected<std::vector<uint64_t>, std::string>
+  bingTilesAround(double latitude, double longitude, uint8_t zoomLevel);
+
+  static folly::Expected<std::vector<uint64_t>, std::string> bingTilesAround(
+      double latitude,
+      double longitude,
+      uint8_t zoomLevel,
+      double radiusInKm);
+
+  // This isn't used in BingTiles, but since it relies on
+  // GreatCircleDistanceToPoint this is exposed here for use in Geometry
+  // functions.
+  static double greatCircleDistance(
+      double latitude1,
+      double longitude1,
+      double latitude2,
+      double longitude2);
 };
 
 inline bool isBingTileType(const TypePtr& type) {

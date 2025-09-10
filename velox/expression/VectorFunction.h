@@ -17,7 +17,7 @@
 #pragma once
 
 #include <vector>
-#include "velox/core/Expressions.h"
+#include "velox/core/ITypedExpr.h"
 #include "velox/expression/EvalCtx.h"
 #include "velox/expression/FunctionMetadata.h"
 #include "velox/expression/FunctionSignature.h"
@@ -187,6 +187,11 @@ TypePtr resolveVectorFunction(
     const std::string& functionName,
     const std::vector<TypePtr>& argTypes);
 
+TypePtr resolveVectorFunctionWithCoercions(
+    const std::string& functionName,
+    const std::vector<TypePtr>& argTypes,
+    std::vector<TypePtr>& coercions);
+
 std::optional<std::pair<TypePtr, VectorFunctionMetadata>>
 resolveVectorFunctionWithMetadata(
     const std::string& functionName,
@@ -257,8 +262,8 @@ template <typename T>
 VectorFunctionFactory makeVectorFunctionFactory() {
   return [](const std::string& name,
             const std::vector<VectorFunctionArg>& inputArgs,
-            const core::QueryConfig& /*config*/) {
-    return std::make_shared<T>(name, inputArgs);
+            const core::QueryConfig& config) {
+    return std::make_shared<T>(name, inputArgs, config);
   };
 }
 

@@ -18,10 +18,12 @@
 
 #include <folly/json.h>
 
-#include <numeric>
+#include <utility>
+
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/file/File.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/exec/TableWriter.h"
 #include "velox/exec/Trace.h"
 
 namespace facebook::velox::exec::trace {
@@ -34,6 +36,52 @@ std::string findLastPathNode(const std::string& path) {
   }
   VELOX_CHECK(!pathNodes.empty(), "No valid path nodes found from {}", path);
   return pathNodes.back();
+}
+
+const std::vector<core::PlanNodePtr> kEmptySources;
+
+class DummySourceNode final : public core::PlanNode {
+ public:
+  explicit DummySourceNode(RowTypePtr outputType)
+      : PlanNode(""), outputType_(std::move(outputType)) {}
+
+  const RowTypePtr& outputType() const override {
+    return outputType_;
+  }
+
+  const std::vector<core::PlanNodePtr>& sources() const override {
+    return kEmptySources;
+  }
+
+  std::string_view name() const override {
+    return "DummySource";
+  }
+
+  folly::dynamic serialize() const override {
+    folly::dynamic obj = folly::dynamic::object;
+    obj["name"] = "DummySource";
+    obj["outputType"] = outputType_->serialize();
+    return obj;
+  }
+
+  static core::PlanNodePtr create(const folly::dynamic& obj, void* context) {
+    return std::make_shared<DummySourceNode>(
+        ISerializable::deserialize<RowType>(obj["outputType"]));
+  }
+
+ private:
+  void addDetails(std::stringstream& stream) const override {
+    // Nothing to add.
+  }
+
+  const RowTypePtr outputType_;
+};
+
+void registerDummySourceSerDe();
+
+std::unordered_map<std::string, TraceNodeFactory>& traceNodeRegistry() {
+  static std::unordered_map<std::string, TraceNodeFactory> registry;
+  return registry;
 }
 } // namespace
 
@@ -66,7 +114,13 @@ void createTraceDirectory(
 std::string getQueryTraceDirectory(
     const std::string& traceDir,
     const std::string& queryId) {
-  return fmt::format("{}/{}", traceDir, queryId);
+  // Remove trailing slash from traceDir if present
+  std::string normalizedTraceDir = traceDir;
+  if (!normalizedTraceDir.empty() && normalizedTraceDir.back() == '/') {
+    normalizedTraceDir.pop_back();
+  }
+
+  return fmt::format("{}/{}", normalizedTraceDir, queryId);
 }
 
 std::string getTaskTraceDirectory(
@@ -80,8 +134,9 @@ std::string getTaskTraceDirectory(
     const std::string& traceDir,
     const std::string& queryId,
     const std::string& taskId) {
-  return fmt::format(
-      "{}/{}", getQueryTraceDirectory(traceDir, queryId), taskId);
+  auto queryTraceDir = getQueryTraceDirectory(traceDir, queryId);
+
+  return fmt::format("{}/{}", queryTraceDir, taskId);
 }
 
 std::string getTaskTraceMetaFilePath(const std::string& taskTraceDir) {
@@ -235,10 +290,187 @@ bool canTrace(const std::string& operatorType) {
       "FilterProject",
       "HashBuild",
       "HashProbe",
+      "IndexLookupJoin",
+      "Unnest",
       "PartialAggregation",
       "PartitionedOutput",
       "TableScan",
       "TableWrite"};
-  return kSupportedOperatorTypes.count(operatorType) > 0;
+  if (kSupportedOperatorTypes.count(operatorType) > 0 ||
+      traceNodeRegistry().count(operatorType) > 0) {
+    return true;
+  }
+  return false;
+}
+
+core::PlanNodePtr getTraceNode(
+    const core::PlanNodePtr& plan,
+    core::PlanNodeId nodeId) {
+  const auto* traceNode = core::PlanNode::findFirstNode(
+      plan.get(),
+      [&nodeId](const core::PlanNode* node) { return node->id() == nodeId; });
+  VELOX_CHECK_NOT_NULL(traceNode, "Failed to find node with id {}", nodeId);
+  if (const auto* hashJoinNode =
+          dynamic_cast<const core::HashJoinNode*>(traceNode)) {
+    return std::make_shared<core::HashJoinNode>(
+        nodeId,
+        hashJoinNode->joinType(),
+        hashJoinNode->isNullAware(),
+        hashJoinNode->leftKeys(),
+        hashJoinNode->rightKeys(),
+        hashJoinNode->filter(),
+        std::make_shared<DummySourceNode>(
+            hashJoinNode->sources()[0]->outputType()),
+        std::make_shared<DummySourceNode>(
+            hashJoinNode->sources()[1]->outputType()),
+        hashJoinNode->outputType());
+  }
+
+  if (const auto* filterNode =
+          dynamic_cast<const core::FilterNode*>(traceNode)) {
+    // Single FilterNode.
+    return std::make_shared<core::FilterNode>(
+        nodeId,
+        filterNode->filter(),
+        std::make_shared<DummySourceNode>(
+            filterNode->sources().front()->outputType()));
+  }
+
+  if (const auto* projectNode =
+          dynamic_cast<const core::ProjectNode*>(traceNode)) {
+    // A standalone ProjectNode.
+    if (projectNode->sources().empty() ||
+        projectNode->sources().front()->name() != "Filter") {
+      return std::make_shared<core::ProjectNode>(
+          nodeId,
+          projectNode->names(),
+          projectNode->projections(),
+          std::make_shared<DummySourceNode>(
+              projectNode->sources().front()->outputType()));
+    }
+
+    // -- ProjectNode [nodeId]
+    //   -- FilterNode [nodeId - 1]
+    const auto originalFilterNode =
+        std::dynamic_pointer_cast<const core::FilterNode>(
+            projectNode->sources().front());
+    VELOX_CHECK_NOT_NULL(originalFilterNode);
+
+    auto filterNode = std::make_shared<core::FilterNode>(
+        originalFilterNode->id(),
+        originalFilterNode->filter(),
+        std::make_shared<DummySourceNode>(
+            originalFilterNode->sources().front()->outputType()));
+    return std::make_shared<core::ProjectNode>(
+        nodeId,
+        projectNode->names(),
+        projectNode->projections(),
+        std::move(filterNode));
+  }
+
+  if (const auto* aggregationNode =
+          dynamic_cast<const core::AggregationNode*>(traceNode)) {
+    return std::make_shared<core::AggregationNode>(
+        nodeId,
+        aggregationNode->step(),
+        aggregationNode->groupingKeys(),
+        aggregationNode->preGroupedKeys(),
+        aggregationNode->aggregateNames(),
+        aggregationNode->aggregates(),
+        aggregationNode->globalGroupingSets(),
+        aggregationNode->groupId(),
+        aggregationNode->ignoreNullKeys(),
+        std::make_shared<DummySourceNode>(
+            aggregationNode->sources().front()->outputType()));
+  }
+
+  if (const auto* partitionedOutputNode =
+          dynamic_cast<const core::PartitionedOutputNode*>(traceNode)) {
+    return std::make_shared<core::PartitionedOutputNode>(
+        nodeId,
+        partitionedOutputNode->kind(),
+        partitionedOutputNode->keys(),
+        partitionedOutputNode->numPartitions(),
+        partitionedOutputNode->isReplicateNullsAndAny(),
+        partitionedOutputNode->partitionFunctionSpecPtr(),
+        partitionedOutputNode->outputType(),
+        VectorSerde::Kind::kPresto,
+        std::make_shared<DummySourceNode>(
+            partitionedOutputNode->sources().front()->outputType()));
+  }
+
+  if (const auto* indexLookupJoinNode =
+          dynamic_cast<const core::IndexLookupJoinNode*>(traceNode)) {
+    return std::make_shared<core::IndexLookupJoinNode>(
+        nodeId,
+        indexLookupJoinNode->joinType(),
+        indexLookupJoinNode->leftKeys(),
+        indexLookupJoinNode->rightKeys(),
+        indexLookupJoinNode->joinConditions(),
+        indexLookupJoinNode->includeMatchColumn(),
+        std::make_shared<DummySourceNode>(
+            indexLookupJoinNode->sources().front()->outputType()), // Probe side
+        indexLookupJoinNode->lookupSource(), // Index side
+        indexLookupJoinNode->outputType());
+  }
+
+  if (const auto* tableScanNode =
+          dynamic_cast<const core::TableScanNode*>(traceNode)) {
+    return std::make_shared<core::TableScanNode>(
+        nodeId,
+        tableScanNode->outputType(),
+        tableScanNode->tableHandle(),
+        tableScanNode->assignments());
+  }
+
+  if (const auto* tableWriteNode =
+          dynamic_cast<const core::TableWriteNode*>(traceNode)) {
+    return std::make_shared<core::TableWriteNode>(
+        nodeId,
+        tableWriteNode->columns(),
+        tableWriteNode->columnNames(),
+        tableWriteNode->columnStatsSpec(),
+        tableWriteNode->insertTableHandle(),
+        tableWriteNode->hasPartitioningScheme(),
+        TableWriteTraits::outputType(tableWriteNode->columnStatsSpec()),
+        tableWriteNode->commitStrategy(),
+        std::make_shared<DummySourceNode>(
+            tableWriteNode->sources().front()->outputType()));
+  }
+
+  if (const auto* unnestNode =
+          dynamic_cast<const core::UnnestNode*>(traceNode)) {
+    return std::make_shared<core::UnnestNode>(
+        nodeId,
+        unnestNode->replicateVariables(),
+        unnestNode->unnestVariables(),
+        unnestNode->unnestNames(),
+        unnestNode->ordinalityName(),
+        unnestNode->emptyUnnestValueName(),
+        std::make_shared<DummySourceNode>(
+            unnestNode->sources().front()->outputType()));
+  }
+
+  for (const auto& factory : traceNodeRegistry()) {
+    if (auto node = factory.second(traceNode, nodeId)) {
+      return node;
+    }
+  }
+
+  VELOX_UNSUPPORTED(
+      fmt::format("Unsupported trace node: {}", traceNode->name()));
+}
+
+void registerTraceNodeFactory(
+    const std::string& operatorType,
+    TraceNodeFactory&& factory) {
+  auto& registry = traceNodeRegistry();
+  VELOX_CHECK_EQ(registry.count(operatorType), 0);
+  registry.emplace(operatorType, std::move(factory));
+}
+
+void registerDummySourceSerDe() {
+  auto& registry = DeserializationWithContextRegistryForSharedPtr();
+  registry.Register("DummySource", DummySourceNode::create);
 }
 } // namespace facebook::velox::exec::trace

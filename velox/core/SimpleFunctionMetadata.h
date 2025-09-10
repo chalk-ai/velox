@@ -15,7 +15,6 @@
  */
 #pragma once
 
-#include <boost/algorithm/string.hpp>
 #include <folly/Likely.h>
 #include <optional>
 
@@ -28,7 +27,6 @@
 #include "velox/expression/SignatureBinder.h"
 #include "velox/type/SimpleFunctionApi.h"
 #include "velox/type/Type.h"
-#include "velox/type/Variant.h"
 
 namespace facebook::velox::core {
 
@@ -122,22 +120,24 @@ struct TypeAnalysisResults {
     size_t concreteCount = 0;
 
     // Set a priority based on the collected information. Lower priorities are
-    // picked first during function resolution. Each signature get a rank out
-    // of 4, those ranks form a Lattice ordering.
+    // picked first during function resolution. Each signature receives a rank
+    // from 1 to 4. Those ranks provice a lattice ordering.
+    //
     // rank 1: generic free and variadic free.
-    //    e.g: int, int, int -> int.
+    //          e.g: int, int, int -> int.
     // rank 2: has variadic but generic free.
-    //    e.g: Variadic<int> -> int.
+    //          e.g: Variadic<int> -> int.
     // rank 3: has generic but no variadic of generic.
-    //    e.g: Any, Any, -> int.
+    //          e.g: Any, Any, -> int.
     // rank 4: has variadic of generic.
-    //    e.g: Variadic<Any> -> int.
-
+    //          e.g: Variadic<Any> -> int.
+    //
     // If two functions have the same rank, then concreteCount is used to
     // to resolve the ordering.
-    // e.g: consider the two functions:
-    //    1. int, Any, Variadic<int> -> has rank 3. concreteCount =2
-    //    2. int, Any, Any     -> has rank 3. concreteCount =1
+    //
+    // E.g. consider the two functions:
+    //    1. int, Any, Variadic<int> -> rank 3; concreteCount 2
+    //    2. int, Any, Any           -> rank 3; concreteCount 1
     // in this case (1) is picked.
     // e.g: (Any, int) will be picked before (Any, Any)
     // e.g: Variadic<Array<Any>> is picked before Variadic<Any>.
@@ -288,6 +288,32 @@ struct TypeAnalysis<LongDecimal<P, S>> {
   }
 };
 
+template <typename E>
+struct TypeAnalysis<facebook::velox::BigintEnumT<E>> {
+  void run(TypeAnalysisResults& results) {
+    results.stats.concreteCount++;
+
+    const auto e = E::name();
+    results.out << fmt::format("bigint_enum({})", e);
+    results.addVariable(exec::SignatureVariable(
+        e, std::nullopt, exec::ParameterType::kEnumParameter));
+    results.physicalType = BIGINT();
+  }
+};
+
+template <typename E>
+struct TypeAnalysis<facebook::velox::VarcharEnumT<E>> {
+  void run(TypeAnalysisResults& results) {
+    results.stats.concreteCount++;
+
+    const auto e = E::name();
+    results.out << fmt::format("varchar_enum({})", e);
+    results.addVariable(exec::SignatureVariable(
+        e, std::nullopt, exec::ParameterType::kEnumParameter));
+    results.physicalType = VARCHAR();
+  }
+};
+
 template <typename K, typename V>
 struct TypeAnalysis<Map<K, V>> {
   void run(TypeAnalysisResults& results) {
@@ -374,6 +400,24 @@ struct TypeAnalysis<CustomType<T, providesCustomComparison>> {
     TypeAnalysisResults tmp;
     TypeAnalysis<typename T::type>().run(tmp);
     results.physicalType = tmp.physicalType;
+  }
+};
+
+template <typename E>
+struct TypeAnalysis<BigintEnum<E>> {
+  void run(TypeAnalysisResults& results) {
+    // Need to call the TypeAnalysis on T, not T::type for BigintEnum type (on
+    // BigintEnumT, not Bigint).
+    TypeAnalysis<facebook::velox::BigintEnumT<E>>().run(results);
+  }
+};
+
+template <typename E>
+struct TypeAnalysis<VarcharEnum<E>> {
+  void run(TypeAnalysisResults& results) {
+    // Need to call the TypeAnalysis on T, not T::type for VarcharEnum type (on
+    // VarcharEnumT, not Varchar).
+    TypeAnalysis<facebook::velox::VarcharEnumT<E>>().run(results);
   }
 };
 
@@ -598,11 +642,12 @@ class SimpleFunctionMetadata : public ISimpleFunctionMetadata {
         ...);
 
     for (const auto& constraint : constraints) {
-      VELOX_CHECK(
-          !constraint.constraint().empty(),
-          "Constraint must be set for variable {}",
-          constraint.name());
-
+      if (constraint.isIntegerParameter()) {
+        VELOX_CHECK(
+            !constraint.constraint().empty(),
+            "Constraint must be set for variable {}",
+            constraint.name());
+      }
       results.variablesInformation.erase(constraint.name());
       results.variablesInformation.emplace(constraint.name(), constraint);
     }

@@ -49,6 +49,10 @@ class HiveConfig {
   static constexpr const char* kMaxPartitionsPerWritersSession =
       "max_partitions_per_writers";
 
+  /// Maximum number of buckets allowed to output by the table writers.
+  static constexpr const char* kMaxBucketCount = "hive.max-bucket-count";
+  static constexpr const char* kMaxBucketCountSession = "hive.max_bucket_count";
+
   /// Whether new data can be inserted into an unpartition table.
   /// Velox currently does not support appending data to existing partitions.
   static constexpr const char* kImmutablePartitions =
@@ -66,6 +70,9 @@ class HiveConfig {
 
   /// The GCS maximum time allowed to retry transient errors.
   static constexpr const char* kGcsMaxRetryTime = "hive.gcs.max-retry-time";
+
+  static constexpr const char* kGcsAuthAccessTokenProvider =
+      "hive.gcs.auth.access-token-provider";
 
   /// Maps table field names to file field names using names, not indices.
   // TODO: remove hive_orc_use_column_names since it doesn't exist in presto,
@@ -183,10 +190,19 @@ class HiveConfig {
   static constexpr const char* kLocalDataPath = "hive_local_data_path";
   static constexpr const char* kLocalFileFormat = "hive_local_file_format";
 
+  /// Whether to preserve flat maps in memory as FlatMapVectors instead of
+  /// converting them to MapVectors.
+  static constexpr const char* kPreserveFlatMapsInMemory =
+      "hive.preserve-flat-maps-in-memory";
+  static constexpr const char* kPreserveFlatMapsInMemorySession =
+      "hive.preserve_flat_maps_in_memory";
+
   InsertExistingPartitionsBehavior insertExistingPartitionsBehavior(
       const config::ConfigBase* session) const;
 
   uint32_t maxPartitionsPerWriters(const config::ConfigBase* session) const;
+
+  uint32_t maxBucketCount(const config::ConfigBase* session) const;
 
   bool immutablePartitions() const;
 
@@ -197,6 +213,8 @@ class HiveConfig {
   std::optional<int> gcsMaxRetryCount() const;
 
   std::optional<std::string> gcsMaxRetryTime() const;
+
+  std::optional<std::string> gcsAuthAccessTokenProvider() const;
 
   bool isOrcUseColumnNames(const config::ConfigBase* session) const;
 
@@ -260,6 +278,10 @@ class HiveConfig {
   /// Returns the name of the file format to use in interpreting the contents of
   /// hiveLocalDataPath().
   std::string hiveLocalFileFormat() const;
+
+  /// Whether to preserve flat maps in memory as FlatMapVectors instead of
+  /// converting them to MapVectors.
+  bool preserveFlatMapsInMemory(const config::ConfigBase* session) const;
 
   HiveConfig(std::shared_ptr<const config::ConfigBase> config) {
     VELOX_CHECK_NOT_NULL(

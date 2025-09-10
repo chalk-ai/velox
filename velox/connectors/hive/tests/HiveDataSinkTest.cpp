@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "velox/common/caching/AsyncDataCache.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
 #include <folly/init/Init.h>
@@ -22,6 +23,7 @@
 #include "velox/common/base/Fs.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
@@ -1138,7 +1140,7 @@ TEST_F(HiveDataSinkTest, insertTableHandleToString) {
       bucketProperty);
   ASSERT_EQ(
       insertTableHandle->toString(),
-      "HiveInsertTableHandle [dwrf zstd], [inputColumns: [ HiveColumnHandle [name: c0, columnType: Regular, dataType: BIGINT, requiredSubfields: [ ]] HiveColumnHandle [name: c1, columnType: Regular, dataType: INTEGER, requiredSubfields: [ ]] HiveColumnHandle [name: c2, columnType: Regular, dataType: SMALLINT, requiredSubfields: [ ]] HiveColumnHandle [name: c3, columnType: Regular, dataType: REAL, requiredSubfields: [ ]] HiveColumnHandle [name: c4, columnType: Regular, dataType: DOUBLE, requiredSubfields: [ ]] HiveColumnHandle [name: c5, columnType: PartitionKey, dataType: VARCHAR, requiredSubfields: [ ]] HiveColumnHandle [name: c6, columnType: PartitionKey, dataType: BOOLEAN, requiredSubfields: [ ]] ], locationHandle: LocationHandle [targetPath: /path/to/test, writePath: /path/to/test, tableType: kNew, tableFileName: ], bucketProperty: \nHiveBucketProperty[<HIVE_COMPATIBLE 4>\n\tBucket Columns:\n\t\tc5\n\tBucket Types:\n\t\tVARCHAR\n\tSortedBy Columns:\n\t\t[COLUMN[c5] ORDER[DESC NULLS LAST]]\n]\n]");
+      "HiveInsertTableHandle [dwrf zstd], [inputColumns: [ HiveColumnHandle [name: c0, columnType: Regular, dataType: BIGINT, requiredSubfields: [ ]] HiveColumnHandle [name: c1, columnType: Regular, dataType: INTEGER, requiredSubfields: [ ]] HiveColumnHandle [name: c2, columnType: Regular, dataType: SMALLINT, requiredSubfields: [ ]] HiveColumnHandle [name: c3, columnType: Regular, dataType: REAL, requiredSubfields: [ ]] HiveColumnHandle [name: c4, columnType: Regular, dataType: DOUBLE, requiredSubfields: [ ]] HiveColumnHandle [name: c5, columnType: PartitionKey, dataType: VARCHAR, requiredSubfields: [ ]] HiveColumnHandle [name: c6, columnType: PartitionKey, dataType: BOOLEAN, requiredSubfields: [ ]] ], locationHandle: LocationHandle [targetPath: /path/to/test, writePath: /path/to/test, tableType: kNew, tableFileName: ], bucketProperty: \nHiveBucketProperty[<HIVE_COMPATIBLE 4>\n\tBucket Columns:\n\t\tc5\n\tBucket Types:\n\t\tVARCHAR\n\tSortedBy Columns:\n\t\t[COLUMN[c5] ORDER[DESC NULLS LAST]]\n]\n, fileNameGenerator: HiveInsertFileNameGenerator]");
 }
 
 #ifdef VELOX_ENABLE_PARQUET
@@ -1314,6 +1316,65 @@ TEST_F(HiveDataSinkTest, ensureFilesUnsupported) {
           ),
       "ensureFiles is not supported with bucketing");
 }
+
+TEST_F(HiveDataSinkTest, raceWithCacheEviction) {
+  /// This test ensures that LRU cache staleness and StringIdMap cache
+  /// eviction do not cause issues with file reads.
+  std::atomic<bool> stop{false};
+  auto cacheCleaner = std::async(std::launch::async, [&] {
+    auto cache = cache::AsyncDataCache::getInstance();
+    auto hiveConnector = std::dynamic_pointer_cast<HiveConnector>(
+        getConnector(exec::test::kHiveConnectorId));
+    while (!stop) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      cache->clear();
+      hiveConnector->clearFileHandleCache();
+    }
+  });
+
+  const auto outputDirectory = TempDirectoryPath::create();
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+  const auto vectors = createVectors(500 /*vectorSize*/, 10 /*numVectors*/);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+  ASSERT_TRUE(dataSink->finish());
+  ASSERT_FALSE(dataSink->close().empty());
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath());
+
+  stop = true;
+  cacheCleaner.get();
+}
+
+#ifdef VELOX_ENABLE_PARQUET
+TEST_F(HiveDataSinkTest, lazyVectorForParquet) {
+  // This test ensures that lazy vector is handled correctly in HiveDataSink.
+  VectorFuzzer::Options options{.vectorSize = 100};
+  VectorFuzzer fuzzer(options, pool());
+
+  auto lazyVector = fuzzer.wrapInLazyVector(fuzzer.fuzzFlat(BIGINT(), 100));
+  auto lazyMapVector = fuzzer.wrapInLazyVector(fuzzer.fuzzMap(
+      fuzzer.fuzzFlat(BIGINT(), 100), fuzzer.fuzzFlat(VARCHAR(), 100), 100));
+
+  auto rowType = ROW({"c0", "c1"}, {BIGINT(), MAP(BIGINT(), VARCHAR())});
+  std::vector<VectorPtr> children;
+  children.emplace_back(lazyVector);
+  children.emplace_back(lazyMapVector);
+  auto row = std::make_shared<RowVector>(
+      pool(), rowType, nullptr, 100, std::move(children));
+
+  const auto outputDirectory = TempDirectoryPath::create();
+  auto dataSink = createDataSink(
+      rowType, outputDirectory->getPath(), dwio::common::FileFormat::PARQUET);
+
+  dataSink->appendData(row);
+  ASSERT_TRUE(dataSink->finish());
+  dataSink->close();
+}
+#endif
+
 } // namespace
 } // namespace facebook::velox::connector::hive
 

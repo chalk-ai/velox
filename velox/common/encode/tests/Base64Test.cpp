@@ -49,44 +49,52 @@ TEST_F(Base64Test, fromBase64) {
 }
 
 TEST_F(Base64Test, calculateDecodedSizeProperSize) {
-  size_t encoded_size{0};
-
-  encoded_size = 20;
+  size_t encodedSize = 20;
   EXPECT_EQ(
-      13, Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ==", encoded_size));
-  EXPECT_EQ(18, encoded_size);
+      13,
+      Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ==", encodedSize)
+          .value());
+  EXPECT_EQ(18, encodedSize);
 
-  encoded_size = 18;
+  encodedSize = 18;
   EXPECT_EQ(
-      13, Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ", encoded_size));
-  EXPECT_EQ(18, encoded_size);
+      13,
+      Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ", encodedSize).value());
+  EXPECT_EQ(18, encodedSize);
 
-  encoded_size = 21;
-  VELOX_ASSERT_THROW(
-      Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ==", encoded_size),
-      "Base64::decode() - invalid input string: string length cannot be 1 more than a multiple of 4.");
-
-  encoded_size = 32;
+  encodedSize = 21;
   EXPECT_EQ(
-      23,
-      Base64::calculateDecodedSize(
-          "QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4=", encoded_size));
-  EXPECT_EQ(31, encoded_size);
+      Status::UserError(
+          "Base64::decode() - invalid input string: string length is not a multiple of 4."),
+      Base64::calculateDecodedSize("SGVsbG8sIFdvcmxkIQ===", encodedSize)
+          .error());
 
-  encoded_size = 31;
+  encodedSize = 32;
   EXPECT_EQ(
       23,
       Base64::calculateDecodedSize(
-          "QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4", encoded_size));
-  EXPECT_EQ(31, encoded_size);
+          "QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4=", encodedSize)
+          .value());
+  EXPECT_EQ(31, encodedSize);
 
-  encoded_size = 16;
-  EXPECT_EQ(10, Base64::calculateDecodedSize("MTIzNDU2Nzg5MA==", encoded_size));
-  EXPECT_EQ(14, encoded_size);
+  encodedSize = 31;
+  EXPECT_EQ(
+      23,
+      Base64::calculateDecodedSize(
+          "QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4", encodedSize)
+          .value());
+  EXPECT_EQ(31, encodedSize);
 
-  encoded_size = 14;
-  EXPECT_EQ(10, Base64::calculateDecodedSize("MTIzNDU2Nzg5MA", encoded_size));
-  EXPECT_EQ(14, encoded_size);
+  encodedSize = 16;
+  EXPECT_EQ(
+      10,
+      Base64::calculateDecodedSize("MTIzNDU2Nzg5MA==", encodedSize).value());
+  EXPECT_EQ(14, encodedSize);
+
+  encodedSize = 14;
+  EXPECT_EQ(
+      10, Base64::calculateDecodedSize("MTIzNDU2Nzg5MA", encodedSize).value());
+  EXPECT_EQ(14, encodedSize);
 }
 
 TEST_F(Base64Test, checksPadding) {
@@ -99,4 +107,75 @@ TEST_F(Base64Test, countsPaddingCorrectly) {
   EXPECT_EQ(1, Base64::numPadding("ABC=", 4));
   EXPECT_EQ(2, Base64::numPadding("AB==", 4));
 }
+
+TEST_F(Base64Test, calculateMimeDecodedSize) {
+  EXPECT_EQ(0, Base64::calculateMimeDecodedSize("", 0).value());
+  EXPECT_EQ(0, Base64::calculateMimeDecodedSize("#", 1).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("TWFu", 4).value());
+  EXPECT_EQ(1, Base64::calculateMimeDecodedSize("AQ==", 4).value());
+  EXPECT_EQ(2, Base64::calculateMimeDecodedSize("TWE=", 4).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("TWFu\r\n", 6).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("!TW!Fu!", 7).value());
+  EXPECT_EQ(1, Base64::calculateMimeDecodedSize("TQ", 2).value());
+  EXPECT_EQ(
+      Base64::calculateMimeDecodedSize("A", 1).error(),
+      Status::UserError(
+          "Input should at least have 2 bytes for base64 bytes."));
+}
+
+TEST_F(Base64Test, decodeMime) {
+  auto decodeMime = [](const std::string& in) {
+    size_t decSize =
+        Base64::calculateMimeDecodedSize(in.data(), in.size()).value();
+    std::string out(decSize, '\0');
+    auto result = Base64::decodeMime(in.data(), in.size(), out.data());
+    if (!result.ok()) {
+      VELOX_USER_FAIL(result.message());
+    }
+    return out;
+  };
+  EXPECT_EQ("", decodeMime(""));
+  EXPECT_EQ("Man", decodeMime("TWFu"));
+  EXPECT_EQ("ManMan", decodeMime("TWFu\r\nTWFu"));
+  EXPECT_EQ("\x01", decodeMime("AQ=="));
+  EXPECT_EQ("\xff\xee", decodeMime("/+4="));
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("QUFBx"), "Last unit does not have enough valid bits");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("xx=y"), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("xx="), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("QUFB="), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("AQ==y"), "Input byte array has incorrect ending");
+}
+
+TEST_F(Base64Test, calculateMimeEncodedSize) {
+  EXPECT_EQ(0, Base64::calculateMimeEncodedSize(0));
+  EXPECT_EQ(8, Base64::calculateMimeEncodedSize(4));
+  EXPECT_EQ(76, Base64::calculateMimeEncodedSize(57));
+  EXPECT_EQ(82, Base64::calculateMimeEncodedSize(58));
+  EXPECT_EQ(274, Base64::calculateMimeEncodedSize(200));
+}
+
+TEST_F(Base64Test, encodeMime) {
+  auto encodeMime = [](const std::string& in) {
+    size_t len = Base64::calculateMimeEncodedSize(in.size());
+    std::string out(len, '\0');
+    Base64::encodeMime(in.data(), in.size(), out.data());
+    return out;
+  };
+  EXPECT_EQ("", encodeMime(""));
+  EXPECT_EQ("TWFu", encodeMime("Man"));
+  EXPECT_EQ("AQ==", encodeMime("\x01"));
+  EXPECT_EQ("/+4=", encodeMime("\xff\xee"));
+  EXPECT_EQ(
+      "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      encodeMime(std::string(57, 'A')));
+  EXPECT_EQ(
+      "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\r\nQQ==",
+      encodeMime(std::string(58, 'A')));
+}
+
 } // namespace facebook::velox::encoding

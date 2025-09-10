@@ -135,4 +135,19 @@ folly::dynamic getTaskMetadata(
 
 /// Checks whether the operator can be traced.
 bool canTrace(const std::string& operatorType);
+
+/// Gets the specified the trace node from 'plan'. In the returned trace node,
+/// we replace its source nodes with DummySourceNode for replay.
+core::PlanNodePtr getTraceNode(
+    const core::PlanNodePtr& plan,
+    core::PlanNodeId nodeId);
+
+using TraceNodeFactory = std::function<
+    core::PlanNodePtr(const core::PlanNode*, const core::PlanNodeId&)>;
+
+void registerTraceNodeFactory(
+    const std::string& operatorType,
+    TraceNodeFactory&& factory);
+
+void registerDummySourceSerDe();
 } // namespace facebook::velox::exec::trace

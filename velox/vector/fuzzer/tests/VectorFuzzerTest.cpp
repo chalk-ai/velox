@@ -22,6 +22,8 @@
 #include "velox/common/memory/Memory.h"
 #include "velox/functions/prestosql/types/JsonRegistration.h"
 #include "velox/functions/prestosql/types/JsonType.h"
+#include "velox/functions/prestosql/types/QDigestRegistration.h"
+#include "velox/functions/prestosql/types/QDigestType.h"
 #include "velox/type/TypeEncodingUtil.h"
 #include "velox/vector/DictionaryVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
@@ -37,8 +39,9 @@ using facebook::velox::fuzzer::SetConstrainedGenerator;
 class VectorFuzzerTest : public testing::Test {
  public:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     registerJsonType();
+    registerQDigestType();
   }
 
   memory::MemoryPool* pool() const {
@@ -414,6 +417,24 @@ TEST_F(VectorFuzzerTest, array) {
   ASSERT_EQ(arraySize, vector->size());
   ASSERT_GE(
       100, vector->offsetAt(arraySize - 1) + vector->sizeAt(arraySize - 1));
+
+  // Test fuzzArray with given element type. Check that element size doesn't
+  // exceed opts.complexElementsMaxSize.
+  const auto kElementMaxSize = 100;
+  opts.complexElementsMaxSize = kElementMaxSize;
+  fuzzer.setOptions(opts);
+
+  auto checkElementSize = [&](size_t arraySize) {
+    vector = fuzzer.fuzzArray(BIGINT(), arraySize);
+    ASSERT_TRUE(vector->type()->childAt(0)->isBigint());
+    ASSERT_EQ(arraySize, vector->size());
+    ASSERT_LE(
+        vector->offsetAt(arraySize - 1) + vector->sizeAt(arraySize - 1),
+        kElementMaxSize);
+  };
+  checkElementSize(kElementMaxSize);
+  checkElementSize(kElementMaxSize - 70);
+  checkElementSize(kElementMaxSize + 50);
 }
 
 TEST_F(VectorFuzzerTest, map) {
@@ -975,14 +996,14 @@ TEST_F(VectorFuzzerTest, randTypeByWidth) {
       {INTEGER(), ARRAY(BIGINT()), MAP(VARCHAR(), DOUBLE()), ROW({TINYINT()})});
   ASSERT_EQ(approximateTypeEncodingwidth(type), 7);
 
-  // Test randType by width. Results should be at least a RowType with one
-  // field, so the minimal type width is 2.
+  // Test randType by width. Results should has at least one field, so the
+  // minimal type width is 1.
   type = fuzzer.randRowTypeByWidth(-1);
-  ASSERT_GE(approximateTypeEncodingwidth(type), 2);
+  ASSERT_GE(approximateTypeEncodingwidth(type), 1);
   type = fuzzer.randRowTypeByWidth(0);
-  ASSERT_GE(approximateTypeEncodingwidth(type), 2);
+  ASSERT_GE(approximateTypeEncodingwidth(type), 1);
   type = fuzzer.randRowTypeByWidth(1);
-  ASSERT_GE(approximateTypeEncodingwidth(type), 2);
+  ASSERT_GE(approximateTypeEncodingwidth(type), 1);
 
   folly::Random::DefaultGenerator rng;
   rng.seed(0);
@@ -993,13 +1014,14 @@ TEST_F(VectorFuzzerTest, randTypeByWidth) {
   }
 }
 
-TEST_F(VectorFuzzerTest, json) {
+TEST_F(VectorFuzzerTest, customTypeGenerator) {
+  // Verify that the fuzzer automatically pick up the custom type generator for
+  // a registered custom type. In this case, we pick json type for verification.
   VectorFuzzer::Options opts;
   VectorFuzzer fuzzer(opts, pool());
 
   const uint32_t kSize = 10;
-  for (auto i = 0; i < 10; ++i) {
-    auto result = fuzzer.fuzz(JSON(), kSize);
+  auto verifyJson = [&](const VectorPtr& result) {
     EXPECT_TRUE(result != nullptr);
     EXPECT_TRUE(isJsonType(result->type()));
     EXPECT_EQ(result->size(), kSize);
@@ -1021,6 +1043,14 @@ TEST_F(VectorFuzzerTest, json) {
         EXPECT_TRUE(false);
       }
     }
+  };
+  for (int i = 0; i < 5; i++) {
+    // We verify all the public APIs of the fuzzer.
+    verifyJson(fuzzer.fuzz(JSON(), kSize));
+    verifyJson(fuzzer.fuzzNotNull(JSON(), kSize));
+    verifyJson(fuzzer.fuzzConstant(JSON(), kSize));
+    verifyJson(fuzzer.fuzzFlat(JSON(), kSize));
+    verifyJson(fuzzer.fuzzFlatNotNull(JSON(), kSize));
   }
 }
 
@@ -1070,6 +1100,41 @@ TEST_F(VectorFuzzerTest, setConstrained) {
   for (auto i = 0; i < kSize; ++i) {
     std::string value = decoded.valueAt<StringView>(i);
     EXPECT_TRUE(value == "a" || value == "b");
+  }
+}
+
+TEST_F(VectorFuzzerTest, qdigestTypeGeneration) {
+  VectorFuzzer::Options opts;
+  opts.nullRatio = 0.2;
+  opts.vectorSize = 10;
+  VectorFuzzer fuzzer(opts, pool());
+
+  const auto qdigestRealType = QDIGEST(REAL());
+  const auto qdigestDoulbeType = QDIGEST(DOUBLE());
+  const auto qdigestBigIntType = QDIGEST(BIGINT());
+
+  // Test QDigest with BIGINT parameter
+  {
+    auto vector = fuzzer.fuzz(QDIGEST(BIGINT()));
+    ASSERT_NE(vector, nullptr);
+    EXPECT_TRUE(vector->type()->equivalent(*qdigestBigIntType));
+    EXPECT_EQ(vector->size(), opts.vectorSize);
+  }
+
+  // Test QDigest with REAL parameter
+  {
+    auto vector = fuzzer.fuzz(QDIGEST(REAL()));
+    ASSERT_NE(vector, nullptr);
+    EXPECT_TRUE(vector->type()->equivalent(*qdigestRealType));
+    EXPECT_EQ(vector->size(), opts.vectorSize);
+  }
+
+  // Test QDigest with DOUBLE parameter
+  {
+    auto vector = fuzzer.fuzz(QDIGEST(BIGINT()));
+    ASSERT_NE(vector, nullptr);
+    EXPECT_TRUE(vector->type()->equivalent(*qdigestBigIntType));
+    EXPECT_EQ(vector->size(), opts.vectorSize);
   }
 }
 } // namespace

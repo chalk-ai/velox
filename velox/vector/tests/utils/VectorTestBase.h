@@ -196,6 +196,13 @@ class VectorTestBase {
   }
 
   template <typename T>
+  FlatVectorPtr<EvalType<T>> makeFlatVector(
+      const std::initializer_list<T>& data,
+      const TypePtr& type = CppToType<T>::create()) {
+    return vectorMaker_.flatVector<T>(data, type);
+  }
+
+  template <typename T>
   FlatVectorPtr<EvalType<T>> makeNullableFlatVector(
       const std::vector<std::optional<T>>& data,
       const TypePtr& type = CppToType<T>::create()) {
@@ -251,16 +258,16 @@ class VectorTestBase {
   // Create an ArrayVector<ROW> from nested std::vectors of variants.
   // Example:
   //   auto arrayVector = makeArrayOfRowVector({
-  //       {variant::row({1, "red"}), variant::row({1, "blue"})},
+  //       {Variant::row({1, "red"}), Variant::row({1, "blue"})},
   //       {},
-  //       {variant::row({3, "green"})},
+  //       {Variant::row({3, "green"})},
   //   });
   //   EXPECT_EQ(3, arrayVector->size());
   //
-  // Use variant(TypeKind::ROW) to specify a null array element.
+  // Use Variant(TypeKind::ROW) to specify a null array element.
   ArrayVectorPtr makeArrayOfRowVector(
       const RowTypePtr& rowType,
-      const std::vector<std::vector<variant>>& data) {
+      const std::vector<std::vector<Variant>>& data) {
     return vectorMaker_.arrayOfRowVector(rowType, data);
   }
 
@@ -597,12 +604,41 @@ class VectorTestBase {
   /// @tparam V Type of map value. Can be an integer or a floating point number.
   /// @param jsonMaps A list of JSON maps. JSON map cannot be an empty
   /// string.
-  template <typename K, typename V>
+  template <typename TKey, typename TValue>
   MapVectorPtr makeMapVectorFromJson(
       const std::vector<std::string>& jsonMaps,
       const TypePtr& mapType =
-          MAP(CppToType<K>::create(), CppToType<V>::create())) {
-    return vectorMaker_.mapVectorFromJson<K, V>(jsonMaps, mapType);
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return vectorMaker_.mapVectorFromJson<TKey, TValue>(jsonMaps, mapType);
+  }
+
+  /// Same as above but constructs a FlatMapVector instead of a MapVector.
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr makeFlatMapVector(
+      const std::vector<std::vector<std::pair<TKey, std::optional<TValue>>>>&
+          maps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return vectorMaker_.flatMapVector(maps, mapType);
+  }
+
+  // Create nullabe flat map vector from nested std::vector representation.
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr makeNullableFlatMapVector(
+      const std::vector<std::optional<
+          std::vector<std::pair<TKey, std::optional<TValue>>>>>& maps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return vectorMaker_.flatMapVectorNullable(maps, mapType);
+  }
+
+  /// Same as above but constructs a FlatMapVector instead of a MapVector.
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr makeFlatMapVectorFromJson(
+      const std::vector<std::string>& jsonMaps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return vectorMaker_.flatMapVectorFromJson<TKey, TValue>(jsonMaps, mapType);
   }
 
   // Convenience function to create vector from vectors of keys and values.
@@ -633,7 +669,7 @@ class VectorTestBase {
     return vectorMaker_.allNullMapVector(size, keyType, valueType);
   }
 
-  VectorPtr makeConstant(const variant& value, vector_size_t size) {
+  VectorPtr makeConstant(const Variant& value, vector_size_t size) {
     return BaseVector::createConstant(value.inferType(), value, size, pool());
   }
 
@@ -664,7 +700,7 @@ class VectorTestBase {
   /// Create constant vector of type ROW from a Variant.
   VectorPtr makeConstantRow(
       const RowTypePtr& rowType,
-      variant value,
+      Variant value,
       vector_size_t size) {
     return vectorMaker_.constantRow(rowType, value, size);
   }
@@ -781,7 +817,7 @@ class VectorTestBase {
         pool(),
         CppToType<T>::create(),
         size,
-        std::make_unique<SimpleVectorLoader>([=](RowSet rows) {
+        std::make_unique<SimpleVectorLoader>([=, this](RowSet rows) {
           if (expectedSize.has_value()) {
             VELOX_CHECK_EQ(rows.size(), *expectedSize);
           }
@@ -799,7 +835,7 @@ class VectorTestBase {
         pool(),
         vector->type(),
         vector->size(),
-        std::make_unique<SimpleVectorLoader>([=](RowSet /*rows*/) {
+        std::make_unique<SimpleVectorLoader>([=, this](RowSet /*rows*/) {
           auto indices =
               makeIndices(vector->size(), [](auto row) { return row; });
           return wrapInDictionary(indices, vector->size(), vector);

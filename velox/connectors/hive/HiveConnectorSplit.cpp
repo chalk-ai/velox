@@ -30,6 +30,10 @@ std::string HiveConnectorSplit::toString() const {
   return fmt::format("Hive: {} {} - {}", filePath, start, length);
 }
 
+uint64_t HiveConnectorSplit::size() const {
+  return length;
+}
+
 std::string HiveConnectorSplit::getFileName() const {
   const auto i = filePath.rfind('/');
   return i == std::string::npos ? filePath : filePath.substr(i + 1);
@@ -86,12 +90,6 @@ folly::dynamic HiveConnectorSplit::serialize() const {
     serdeParametersObj[key] = value;
   }
   obj["serdeParameters"] = serdeParametersObj;
-
-  folly::dynamic storageParametersObj = folly::dynamic::object;
-  for (const auto& [key, value] : storageParameters) {
-    storageParametersObj[key] = value;
-  }
-  obj["storageParameters"] = storageParametersObj;
 
   folly::dynamic infoColumnsObj = folly::dynamic::object;
   for (const auto& [key, value] : infoColumns) {
@@ -173,10 +171,6 @@ std::shared_ptr<HiveConnectorSplit> HiveConnectorSplit::create(
   for (const auto& [key, value] : obj["serdeParameters"].items()) {
     serdeParameters[key.asString()] = value.asString();
   }
-  std::unordered_map<std::string, std::string> storageParameters;
-  for (const auto& [key, value] : obj["storageParameters"].items()) {
-    storageParameters[key.asString()] = value.asString();
-  }
 
   std::unordered_map<std::string, std::string> infoColumns;
   for (const auto& [key, value] : obj["infoColumns"].items()) {
@@ -215,7 +209,6 @@ std::shared_ptr<HiveConnectorSplit> HiveConnectorSplit::create(
       customSplitInfo,
       extraFileInfo,
       serdeParameters,
-      storageParameters,
       splitWeight,
       cacheable,
       infoColumns,

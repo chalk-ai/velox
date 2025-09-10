@@ -24,8 +24,6 @@
 
 namespace facebook::velox::exec {
 namespace {
-static constexpr int32_t kNextRowVectorSize = sizeof(NextRowVector);
-
 template <TypeKind Kind>
 static int32_t kindSize() {
   return sizeof(typename KindToFlatVector<Kind>::HashRowType);
@@ -176,17 +174,17 @@ RowContainer::RowContainer(
   // bits. 'numRowsWithNormalizedKey_' gives the number of rows with
   // the extra field.
   int32_t offset = 0;
-  int32_t nullOffset = 0;
+  int32_t flagOffset = 0;
   bool isVariableWidth = false;
   for (auto& type : keyTypes_) {
     typeKinds_.push_back(type->kind());
     types_.push_back(type);
     offsets_.push_back(offset);
     offset += typeKindSize(type->kind());
-    nullOffsets_.push_back(nullOffset);
+    nullOffsets_.push_back(flagOffset);
     isVariableWidth |= !type->isFixedWidth();
     if (nullableKeys_) {
-      ++nullOffset;
+      ++flagOffset;
     }
   }
   // Make offset at least sizeof pointer so that there is space for a
@@ -194,18 +192,16 @@ RowContainer::RowContainer(
   offset = std::max<int32_t>(offset, sizeof(void*));
   const int32_t firstAggregateOffset = offset;
   if (!accumulators.empty()) {
-    // This moves nullOffset to the start of the next byte.
+    // This moves flagOffset to the start of the next byte.
     // This is to guarantee the null and initialized bits for an aggregate
     // always appear in the same byte.
-    nullOffset = (nullOffset + 7) & -8;
+    flagOffset = (flagOffset + 7) & -8;
   }
   for (const auto& accumulator : accumulators) {
-    // Initialized bit.  Set when the accumulator is initialized.
-    nullOffsets_.push_back(nullOffset);
-    ++nullOffset;
     // Null bit.
-    nullOffsets_.push_back(nullOffset);
-    ++nullOffset;
+    nullOffsets_.push_back(flagOffset);
+    // Increment for two bits: null bit and following initialized bit.
+    flagOffset += kNumAccumulatorFlags;
     isVariableWidth |= !accumulator.isFixedSize();
     usesExternalMemory_ |= accumulator.usesExternalMemory();
     alignment_ = combineAlignments(accumulator.alignment(), alignment_);
@@ -213,21 +209,19 @@ RowContainer::RowContainer(
   for (auto& type : dependentTypes) {
     types_.push_back(type);
     typeKinds_.push_back(type->kind());
-    nullOffsets_.push_back(nullOffset);
-    ++nullOffset;
+    nullOffsets_.push_back(flagOffset);
+    ++flagOffset;
     isVariableWidth |= !type->isFixedWidth();
   }
   if (hasProbedFlag) {
-    nullOffsets_.push_back(nullOffset);
-    probedFlagOffset_ = nullOffset + firstAggregateOffset * 8;
-    ++nullOffset;
+    probedFlagOffset_ = flagOffset + firstAggregateOffset * 8;
+    ++flagOffset;
   }
   // Free flag.
-  nullOffsets_.push_back(nullOffset);
-  freeFlagOffset_ = nullOffset + firstAggregateOffset * 8;
-  ++nullOffset;
+  freeFlagOffset_ = flagOffset + firstAggregateOffset * 8;
+  ++flagOffset;
   // Add 1 to the last null offset to get the number of bits.
-  flagBytes_ = bits::nbytes(nullOffsets_.back() + 1);
+  flagBytes_ = bits::nbytes(flagOffset);
   // Fixup 'nullOffsets_' to be the bit number from the start of the row.
   for (int32_t i = 0; i < nullOffsets_.size(); ++i) {
     nullOffsets_[i] += firstAggregateOffset * 8;
@@ -252,14 +246,6 @@ RowContainer::RowContainer(
     offset += sizeof(void*);
   }
   fixedRowSize_ = bits::roundUp(offset, alignment_);
-  // A distinct hash table has no aggregates and if the hash table has
-  // no nulls, it may be that there are no null flags.
-  if (!nullOffsets_.empty()) {
-    // All flags like free and probed flags and null flags for keys and non-keys
-    // start as 0. This is also used to mark aggregates as uninitialized on row
-    // creation.
-    initialNulls_.resize(flagBytes_, 0x0);
-  }
   originalNormalizedKeySize_ = hasNormalizedKeys_
       ? bits::roundUp(sizeof(normalized_key_t), alignment_)
       : 0;
@@ -270,16 +256,7 @@ RowContainer::RowContainer(
         offsets_[i],
         (nullableKeys_ || i >= keyTypes_.size()) ? nullOffsets_[nullOffsetsPos]
                                                  : RowColumn::kNotNullOffset);
-
-    // offsets_ contains the offsets for keys, then accumulators, then dependent
-    // columns.  This captures the case where i is the index of an accumulator.
-    if (!accumulators.empty() && i >= keyTypes_.size() &&
-        i < keyTypes_.size() + accumulators.size()) {
-      // Aggregates have null flags and initialized flags.
-      nullOffsetsPos += kNumAccumulatorFlags;
-    } else {
-      ++nullOffsetsPos;
-    }
+    ++nullOffsetsPos;
   }
   rowColumnsStats_.resize(types_.size());
 }
@@ -307,6 +284,16 @@ char* RowContainer::newRow() {
   return initializeRow(row, false /* reuse */);
 }
 
+void RowContainer::setAllNull(char* row) {
+  VELOX_CHECK(!bits::isBitSet(row, freeFlagOffset_));
+  removeOrUpdateRowColumnStats(row, /*setToNull=*/true);
+  if (!nullOffsets_.empty()) {
+    for (auto i : nullOffsets_) {
+      row[nullByte(i)] |= nullMask(i);
+    }
+  }
+}
+
 char* RowContainer::initializeRow(char* row, bool reuse) {
   if (reuse) {
     auto rows = folly::Range<char**>(&row, 1);
@@ -319,16 +306,12 @@ char* RowContainer::initializeRow(char* row, bool reuse) {
     ::memset(row, 0, fixedRowSize_);
   }
   if (!nullOffsets_.empty()) {
-    ::memcpy(
-        row + nullByte(nullOffsets_[0]),
-        initialNulls_.data(),
-        initialNulls_.size());
+    // Sets all null and initialized bits to 0 (for each accumulator,
+    // initialized bit follows the null bit).
+    ::memset(row + nullByte(nullOffsets_[0]), 0x0, flagBytes_);
   }
   if (rowSizeOffset_) {
     variableRowSize(row) = 0;
-  }
-  if (nextOffset_) {
-    getNextRowVector(row) = nullptr;
   }
   bits::clearBit(row, freeFlagOffset_);
   return row;
@@ -353,7 +336,7 @@ void RowContainer::removeOrUpdateRowColumnStats(
 }
 
 void RowContainer::eraseRows(folly::Range<char**> rows) {
-  freeRowsExtraMemory(rows, /*freeNextRowVector=*/true);
+  freeRowsExtraMemory(rows);
   for (auto* row : rows) {
     VELOX_CHECK(!bits::isBitSet(row, freeFlagOffset_), "Double free of row");
     removeOrUpdateRowColumnStats(row, /*setToNull=*/false);
@@ -366,7 +349,7 @@ void RowContainer::eraseRows(folly::Range<char**> rows) {
 }
 
 int32_t RowContainer::findRows(folly::Range<char**> rows, char** result) const {
-  raw_vector<folly::Range<char*>> ranges;
+  raw_vector<folly::Range<char*>> ranges(pool());
   ranges.resize(rows_.numRanges());
   for (auto i = 0; i < rows_.numRanges(); ++i) {
     ranges[i] = rows_.rangeAt(i);
@@ -375,8 +358,8 @@ int32_t RowContainer::findRows(folly::Range<char**> rows, char** result) const {
       ranges.begin(), ranges.end(), [](const auto& left, const auto& right) {
         return left.data() < right.data();
       });
-  raw_vector<uint64_t> starts;
-  raw_vector<uint64_t> sizes;
+  raw_vector<uint64_t> starts(pool());
+  raw_vector<uint64_t> sizes(pool());
   starts.reserve(ranges.size());
   sizes.reserve(ranges.size());
   for (const auto& range : ranges) {
@@ -408,22 +391,6 @@ int32_t RowContainer::findRows(folly::Range<char**> rows, char** result) const {
   return numRows;
 }
 
-void RowContainer::appendNextRow(
-    char* current,
-    char* nextRow,
-    HashStringAllocator* allocator) {
-  VELOX_CHECK(getNextRowVector(nextRow) == nullptr);
-  NextRowVector*& nextRowArrayPtr = getNextRowVector(current);
-  if (nextRowArrayPtr == nullptr) {
-    nextRowArrayPtr = new (allocator->allocate(kNextRowVectorSize)->begin())
-        NextRowVector(StlAllocator<char*>(allocator));
-    hasDuplicateRows_ = true;
-    nextRowArrayPtr->emplace_back(current);
-  }
-  nextRowArrayPtr->emplace_back(nextRow);
-  getNextRowVector(nextRow) = nextRowArrayPtr;
-}
-
 void RowContainer::freeVariableWidthFields(folly::Range<char**> rows) {
   for (auto i = 0; i < types_.size(); ++i) {
     switch (typeKinds_[i]) {
@@ -449,37 +416,9 @@ void RowContainer::freeAggregates(folly::Range<char**> rows) {
   }
 }
 
-void RowContainer::freeNextRowVectors(folly::Range<char**> rows) {
-  if (!nextOffset_ || !hasDuplicateRows_) {
-    return;
-  }
-
-  for (auto row : rows) {
-    auto vector = getNextRowVector(row);
-    if (vector) {
-      // If 'clear' is false, the caller must ensure that all rows with same
-      // keys appear in the 'rows'.
-      for (auto& next : *vector) {
-        VELOX_CHECK(
-            std::find(rows.begin(), rows.end(), next) != rows.end(),
-            "All rows with the same keys must be present in 'rows'");
-        getNextRowVector(next) = nullptr;
-      }
-      auto allocator = vector->get_allocator().allocator();
-      std::destroy_at(vector);
-      allocator->free(HashStringAllocator::headerOf(vector));
-    }
-  }
-}
-
-void RowContainer::freeRowsExtraMemory(
-    folly::Range<char**> rows,
-    bool freeNextRowVector) {
+void RowContainer::freeRowsExtraMemory(folly::Range<char**> rows) {
   freeVariableWidthFields(rows);
   freeAggregates(rows);
-  if (freeNextRowVector) {
-    freeNextRowVectors(rows);
-  }
   numRows_ -= rows.size();
 }
 
@@ -1020,9 +959,7 @@ void RowContainer::clear() {
     std::vector<char*> rows(kBatch);
     RowContainerIterator iter;
     while (auto numRows = listRows(&iter, kBatch, rows.data())) {
-      freeRowsExtraMemory(
-          folly::Range<char**>(rows.data(), numRows),
-          /*freeNextRowVector=*/false);
+      freeRowsExtraMemory(folly::Range<char**>(rows.data(), numRows));
     }
   }
   hasDuplicateRows_ = false;
@@ -1326,9 +1263,9 @@ RowComparator::RowComparator(
   }
 }
 
-bool RowComparator::operator()(const char* lhs, const char* rhs) {
+int32_t RowComparator::compare(const char* lhs, const char* rhs) {
   if (lhs == rhs) {
-    return false;
+    return 0;
   }
   for (auto& key : keyInfo_) {
     if (auto result = rowContainer_->compare(
@@ -1336,26 +1273,37 @@ bool RowComparator::operator()(const char* lhs, const char* rhs) {
             rhs,
             key.first,
             {key.second.isNullsFirst(), key.second.isAscending(), false})) {
-      return result < 0;
+      return result;
     }
   }
-  return false;
+  return 0;
+}
+
+bool RowComparator::operator()(const char* lhs, const char* rhs) {
+  return compare(lhs, rhs) < 0;
+}
+
+int32_t RowComparator::compare(
+    const std::vector<DecodedVector>& decodedVectors,
+    vector_size_t index,
+    const char* other) {
+  for (auto& key : keyInfo_) {
+    if (auto result = rowContainer_->compare(
+            other,
+            rowContainer_->columnAt(key.first),
+            decodedVectors[key.first],
+            index,
+            {key.second.isNullsFirst(), key.second.isAscending(), false})) {
+      return -result;
+    }
+  }
+  return 0;
 }
 
 bool RowComparator::operator()(
     const std::vector<DecodedVector>& decodedVectors,
     vector_size_t index,
-    const char* rhs) {
-  for (auto& key : keyInfo_) {
-    if (auto result = rowContainer_->compare(
-            rhs,
-            rowContainer_->columnAt(key.first),
-            decodedVectors[key.first],
-            index,
-            {key.second.isNullsFirst(), key.second.isAscending(), false})) {
-      return result > 0;
-    }
-  }
-  return false;
+    const char* other) {
+  return compare(decodedVectors, index, other) < 0;
 }
 } // namespace facebook::velox::exec

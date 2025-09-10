@@ -325,7 +325,7 @@ class HashTableListJoinResultBenchmark : public VectorTestBase {
 
   void copyVectorsToTable(RowVectorPtr batch, BaseHashTable* table) {
     int32_t batchSize = batch->size();
-    raw_vector<uint64_t> dummy(batchSize);
+    raw_vector<uint64_t> dummy(batchSize, pool());
     auto rowContainer = table->rows();
     auto& hashers = table->hashers();
     auto numKeys = hashers.size();
@@ -480,7 +480,6 @@ class HashTableListJoinResultBenchmark : public VectorTestBase {
     auto lookup =
         std::make_unique<HashLookup>(topTable_->hashers(), pool_.get());
     auto batchSize = 10000;
-    auto mode = topTable_->hashMode();
     BufferPtr outputRowMapping;
     auto outputBatchSize = topTable_->rows()->numRows() + 2;
     std::vector<char*> outputTableRows;
@@ -529,7 +528,7 @@ void combineResults(
 
 int main(int argc, char** argv) {
   folly::Init init{&argc, &argv};
-  memory::MemoryManagerOptions options;
+  memory::MemoryManager::Options options;
   options.useMmapAllocator = true;
   options.allocatorCapacity = 10UL << 30;
   options.useMmapArena = true;

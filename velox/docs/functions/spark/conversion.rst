@@ -2,6 +2,38 @@
 Conversion Functions
 ====================
 
+.. spark:function:: cast(value AS type) -> type
+
+    Explicitly cast a ``value`` to a specified ``type``.
+    Follows the behavior when Spark ANSI mode is disabled, and does not support
+    the behavior when ANSI is turned on:
+
+    * If the ``value`` exceeds the range of the ``type``, no error is raised.
+      Instead, the ``value`` is "wrapped" around.
+
+    * If the ``value`` has an invalid format or contains characters incompatible
+      with the target ``type``, the cast function returns NULL. ::
+
+        SELECT cast(128 as tinyint); -- -128
+        SELECT cast('2012-Oct-23' as date); -- NULL
+
+.. spark:function:: try_cast(value AS type) -> type
+
+    Returns the ``value`` cast to ``type`` if possible, or NULL if not possible.
+    Its behavior is independent of the ANSI mode setting, and it acts identically
+    to cast with ANSI mode enabled but returns NULL rather than throwing errors
+    for failure to cast.
+    ``try_cast`` differs from ``cast`` function with ANSI mode disabled in following case:
+
+    * If the ``value`` cannot fit within the domain of ``type``, the result is NULL. ::
+
+        SELECT try_cast(128 as tinyint); -- NULL
+        SELECT try_cast(cast(550000.0 as DECIMAL(8, 1)) as smallint); -- NULL
+        SELECT try_cast(1e12 as int); -- NULL
+
+Cast from UNKNOWN Type
+----------------------
+
 Casting from UNKNOWN type to all other scalar types is supported, e.g., cast(NULL as int).
 
 Cast to Integral Types
@@ -74,13 +106,13 @@ Invalid examples
 
 ::
 
-  SELECT cast('1234567' as tinyint); -- Out of range
-  SELECT cast('1a' as tinyint); -- Invalid argument
-  SELECT cast('' as tinyint); -- Invalid argument
-  SELECT cast('1,234,567' as bigint); -- Invalid argument
-  SELECT cast('1'234'567' as bigint); -- Invalid argument
-  SELECT cast('nan' as bigint); -- Invalid argument
-  SELECT cast('infinity' as bigint); -- Invalid argument
+  SELECT cast('1234567' as tinyint); -- NULL // Reason: Out of range
+  SELECT cast('1a' as tinyint); -- NULL // Invalid argument
+  SELECT cast('' as tinyint); -- NULL // Invalid argument
+  SELECT cast('1,234,567' as bigint); -- NULL // Invalid argument
+  SELECT cast('1'234'567' as bigint); -- NULL // Invalid argument
+  SELECT cast('nan' as bigint); -- NULL // Invalid argument
+  SELECT cast('infinity' as bigint); -- NULL // Invalid argument
 
 From decimal
 ^^^^^^^^^^^^
@@ -98,6 +130,24 @@ Valid examples
   SELECT cast(cast(2147483648.90 as DECIMAL(12, 2)) as tinyint); -- 0
   SELECT cast(cast(2147483648.90 as DECIMAL(12, 2)) as integer); -- -2147483648
   SELECT cast(cast(2147483648.90 as DECIMAL(12, 2)) as bigint); -- 2147483648
+
+From timestamp
+^^^^^^^^^^^^^
+
+Casting timestamp as integral types returns the number of seconds by converting timestamp as microseconds, dividing by the number of microseconds in a second, and then rounding down to the nearest second since the epoch (1970-01-01 00:00:00 UTC).
+
+Valid examples
+
+::
+
+  SELECT cast(cast('1970-01-01 00:00:00' as timestamp) as bigint); -- 0
+  SELECT cast(cast('1970-01-01 00:00:00' as timestamp) as smallint); -- 0
+  SELECT cast(cast('1970-01-01 00:00:00' as timestamp) as tinyint); -- 0
+  SELECT cast(cast('2000-01-01 12:21:56' as timestamp) as bigint); -- 946684916
+  SELECT cast(cast('2025-02-25 08:00:26.88' as timestamp) as bigint); -- 1740470426
+  SELECT cast(cast('2025-02-25 08:00:26.88' as timestamp) as integer); -- 1740470426
+  SELECT cast(cast('2025-02-25 08:00:26.88' as timestamp) as smallint); -- 30874
+  SELECT cast(cast('2025-02-25 08:00:26.88' as timestamp) as tinyint); -- -102
 
 Cast to Boolean
 ---------------
@@ -127,13 +177,13 @@ Invalid examples
 
 ::
 
-  SELECT cast('1.7E308' as boolean); -- Invalid argument
-  SELECT cast('nan' as boolean); -- Invalid argument
-  SELECT cast('infinity' as boolean); -- Invalid argument
-  SELECT cast('12' as boolean); -- Invalid argument
-  SELECT cast('-1' as boolean); -- Invalid argument
-  SELECT cast('tr' as boolean); -- Invalid argument
-  SELECT cast('tru' as boolean); -- Invalid argument
+  SELECT cast('1.7E308' as boolean); -- NULL // Invalid argument
+  SELECT cast('nan' as boolean); -- NULL // Invalid argument
+  SELECT cast('infinity' as boolean); -- NULL // Invalid argument
+  SELECT cast('12' as boolean); -- NULL // Invalid argument
+  SELECT cast('-1' as boolean); -- NULL // Invalid argument
+  SELECT cast('tr' as boolean); -- NULL // Invalid argument
+  SELECT cast('tru' as boolean); -- NULL // Invalid argument
 
 Cast to String
 --------------
@@ -165,7 +215,7 @@ From strings
 ^^^^^^^^^^^^
 
 All Spark supported patterns are allowed:
-  
+
   * ``[+-](YYYY-MM-DD)``
   * ``[+-]yyyy*``
   * ``[+-]yyyy*-[m]m``
@@ -175,10 +225,10 @@ All Spark supported patterns are allowed:
 
 The asterisk ``*`` in ``yyyy*`` stands for any numbers.
 For the last two patterns, the trailing ``*`` can represent none or any sequence of characters, e.g:
-  
+
   * "1970-01-01 123"
   * "1970-01-01 (BC)"
-  
+
 All leading and trailing UTF8 white-spaces will be trimmed before cast.
 Casting from invalid input values throws.
 
@@ -197,9 +247,9 @@ Invalid examples
 
 ::
 
-  SELECT cast('2012-Oct-23' as date); -- Invalid argument
-  SELECT cast('2012/10/23' as date); -- Invalid argument
-  SELECT cast('2012.10.23' as date); -- Invalid argument
+  SELECT cast('2012-Oct-23' as date); -- NULL // Invalid argument
+  SELECT cast('2012/10/23' as date); -- NULL // Invalid argument
+  SELECT cast('2012.10.23' as date); -- NULL // Invalid argument
 
 Cast to Decimal
 ---------------
@@ -277,4 +327,18 @@ Valid examples
   SELECT cast(cast(1.79769e+308 as double) as timestamp); -- 294247-01-10 04:00:54.775807
   SELECT cast(cast('inf' as double) as timestamp); -- NULL
   SELECT cast(cast('nan' as double) as timestamp); -- NULL
-  
+
+From boolean
+^^^^^^^^^^^^
+
+Casting from boolean to timestamp is supported.
+
+* ``true`` - cast to **1970-01-01 00:00:00.000001**
+* ``false`` - cast to **1970-01-01 00:00:00** (epoch)
+
+Valid examples
+
+::
+
+  SELECT cast(true as timestamp); -- 1970-01-01 00:00:00.000001
+  SELECT cast(false as timestamp); -- 1970-01-01 00:00:00

@@ -70,7 +70,7 @@ common::Subfield* CompileState::toSubfield(const std::string& name) {
 
 // true if expr translates to Subfield path.
 bool isField(const Expr& expr) {
-  if (auto* field = dynamic_cast<const exec::FieldReference*>(&expr)) {
+  if (dynamic_cast<const exec::FieldReference*>(&expr)) {
     return (expr.inputs().empty());
   }
   return false;
@@ -252,4 +252,9 @@ void registerWave() {
   exec::DriverFactory::registerAdapter(waveAdapter);
   registerWaveFunctions();
 }
+
+std::string planToString(const core::PlanNode* plan) {
+  return plan->toString(true, true);
+}
+
 } // namespace facebook::velox::wave

@@ -67,6 +67,11 @@ uint32_t HiveConfig::maxPartitionsPerWriters(
       config_->get<uint32_t>(kMaxPartitionsPerWriters, 128));
 }
 
+uint32_t HiveConfig::maxBucketCount(const config::ConfigBase* session) const {
+  return session->get<uint32_t>(
+      kMaxBucketCountSession, config_->get<uint32_t>(kMaxBucketCount, 100'000));
+}
+
 bool HiveConfig::immutablePartitions() const {
   return config_->get<bool>(kImmutablePartitions, false);
 }
@@ -86,6 +91,11 @@ std::optional<int> HiveConfig::gcsMaxRetryCount() const {
 std::optional<std::string> HiveConfig::gcsMaxRetryTime() const {
   return static_cast<std::optional<std::string>>(
       config_->get<std::string>(kGcsMaxRetryTime));
+}
+
+std::optional<std::string> HiveConfig::gcsAuthAccessTokenProvider() const {
+  return static_cast<std::optional<std::string>>(
+      config_->get<std::string>(kGcsAuthAccessTokenProvider));
 }
 
 bool HiveConfig::isOrcUseColumnNames(const config::ConfigBase* session) const {
@@ -231,6 +241,13 @@ std::string HiveConfig::hiveLocalDataPath() const {
 
 std::string HiveConfig::hiveLocalFileFormat() const {
   return config_->get<std::string>(kLocalFileFormat, "");
+}
+
+bool HiveConfig::preserveFlatMapsInMemory(
+    const config::ConfigBase* session) const {
+  return session->get<bool>(
+      kPreserveFlatMapsInMemorySession,
+      config_->get<bool>(kPreserveFlatMapsInMemory, false));
 }
 
 } // namespace facebook::velox::connector::hive

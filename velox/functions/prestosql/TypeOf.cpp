@@ -14,15 +14,19 @@
  * limitations under the License.
  */
 #include "velox/expression/VectorFunction.h"
+#include "velox/functions/prestosql/types/BigintEnumType.h"
 #include "velox/functions/prestosql/types/BingTileType.h"
 #include "velox/functions/prestosql/types/GeometryType.h"
 #include "velox/functions/prestosql/types/HyperLogLogType.h"
 #include "velox/functions/prestosql/types/IPAddressType.h"
 #include "velox/functions/prestosql/types/IPPrefixType.h"
 #include "velox/functions/prestosql/types/JsonType.h"
+#include "velox/functions/prestosql/types/P4HyperLogLogType.h"
+#include "velox/functions/prestosql/types/QDigestType.h"
 #include "velox/functions/prestosql/types/TDigestType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/functions/prestosql/types/UuidType.h"
+#include "velox/functions/prestosql/types/VarcharEnumType.h"
 
 namespace facebook::velox::functions {
 namespace {
@@ -58,7 +62,11 @@ std::string typeName(const TypePtr& type) {
       if (isBingTileType(type)) {
         return "bingtile";
       }
+      if (isBigintEnumType(*type)) {
+        return asBigintEnum(type)->enumName();
+      }
       return "bigint";
+
     case TypeKind::HUGEINT: {
       if (isUuidType(type)) {
         return "uuid";
@@ -81,16 +89,31 @@ std::string typeName(const TypePtr& type) {
       if (isJsonType(type)) {
         return "json";
       }
+      if (isVarcharEnumType(*type)) {
+        return asVarcharEnum(type)->enumName();
+      }
       return "varchar";
     case TypeKind::VARBINARY:
       if (isHyperLogLogType(type)) {
         return "HyperLogLog";
+      }
+      if (isP4HyperLogLogType(type)) {
+        return "P4HyperLogLog";
       }
       if (isGeometryType(type)) {
         return "geometry";
       }
       if (*type == *TDIGEST(DOUBLE())) {
         return "tdigest(double)";
+      }
+      if (*type == *QDIGEST(BIGINT())) {
+        return "qdigest(bigint)";
+      }
+      if (*type == *QDIGEST(REAL())) {
+        return "qdigest(real)";
+      }
+      if (*type == *QDIGEST(DOUBLE())) {
+        return "qdigest(double)";
       }
       return "varbinary";
     case TypeKind::TIMESTAMP:

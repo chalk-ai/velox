@@ -12,6 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# shellcheck source-path=SCRIPT_DIR
+# shellcheck disable=SC2076
 
 # This script documents setting up a Ubuntu host for Velox
 # development.  Running it should make you ready to compile.
@@ -27,30 +29,25 @@
 
 # Minimal setup for Ubuntu 22.04.
 set -eufx -o pipefail
-SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
-source $SCRIPTDIR/setup-helper-functions.sh
+SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
+source "$SCRIPT_DIR"/setup-common.sh
 
-# Folly must be built with the same compiler flags so that some low level types
-# are the same size.
-COMPILER_FLAGS=$(get_cxx_flags)
-export COMPILER_FLAGS
-NPROC=${BUILD_THREADS:-$(getconf _NPROCESSORS_ONLN)}
-BUILD_DUCKDB="${BUILD_DUCKDB:-true}"
-BUILD_GEOS="${BUILD_GEOS:-true}"
-export CMAKE_BUILD_TYPE=Release
-VELOX_BUILD_SHARED=${VELOX_BUILD_SHARED:-"OFF"} #Build folly shared for use in libvelox.so.
 SUDO="${SUDO:-"sudo --preserve-env"}"
 USE_CLANG="${USE_CLANG:-false}"
 export INSTALL_PREFIX=${INSTALL_PREFIX:-"/usr/local"}
 DEPENDENCY_DIR=${DEPENDENCY_DIR:-$(pwd)/deps-download}
 VERSION=$(cat /etc/os-release | grep VERSION_ID)
-PYTHON_VENV=${PYTHON_VENV:-"${SCRIPTDIR}/../.venv"}
+PYTHON_VENV=${PYTHON_VENV:-"${SCRIPT_DIR}/../.venv"}
 
 # On Ubuntu 20.04 dependencies need to be built using gcc11.
 # On Ubuntu 22.04 gcc11 is already the system gcc installed.
 if [[ ${VERSION} =~ "20.04" ]]; then
   export CC=/usr/bin/gcc-11
   export CXX=/usr/bin/g++-11
+fi
+
+if lscpu | grep -q "sve"; then
+  $SUDO apt install -y gcc-12 g++-12
 fi
 
 function install_clang15 {
@@ -73,16 +70,6 @@ function install_gcc11_if_needed {
   fi
 }
 
-FB_OS_VERSION="v2024.07.01.00"
-FMT_VERSION="10.1.1"
-BOOST_VERSION="boost-1.84.0"
-THRIFT_VERSION="v0.16.0"
-# Note: when updating arrow check if thrift needs an update as well.
-ARROW_VERSION="15.0.0"
-STEMMER_VERSION="2.2.0"
-DUCKDB_VERSION="v0.8.1"
-GEOS_VERSION="3.13.0"
-
 # Install packages required for build.
 function install_build_prerequisites {
   ${SUDO} apt update
@@ -101,13 +88,8 @@ function install_build_prerequisites {
     libtool \
     wget
 
-  if [ ! -f ${PYTHON_VENV}/pyvenv.cfg ]; then
-    echo "Creating Python Virtual Environment at ${PYTHON_VENV}"
-    python3 -m venv ${PYTHON_VENV}
-  fi
-  source ${PYTHON_VENV}/bin/activate;
-  # Install to /usr/local to make it available to all users.
-  ${SUDO} pip3 install cmake==3.28.3
+  install_uv
+  uv_install cmake==3.28.3
 
   install_gcc11_if_needed
 
@@ -115,14 +97,6 @@ function install_build_prerequisites {
     install_clang15
   fi
 
-}
-
-# Install packages required to fix format
-function install_format_prerequisites {
-  pip3 install regex
-  ${SUDO} apt install -y \
-    clang-format \
-    cmake-format
 }
 
 # Install packages required for build.
@@ -137,6 +111,7 @@ function install_velox_deps_from_apt {
     libgoogle-glog-dev \
     libbz2-dev \
     libgflags-dev \
+    libgtest-dev \
     libgmock-dev \
     libevent-dev \
     liblz4-dev \
@@ -144,71 +119,18 @@ function install_velox_deps_from_apt {
     libre2-dev \
     libsnappy-dev \
     libsodium-dev \
-    liblzo2-dev \
     libelf-dev \
     libdwarf-dev \
     bison \
     flex \
     libfl-dev \
-    tzdata
-}
-
-function install_fmt {
-  wget_and_untar https://github.com/fmtlib/fmt/archive/${FMT_VERSION}.tar.gz fmt
-  cmake_install_dir fmt -DFMT_TEST=OFF
-}
-
-function install_boost {
-  wget_and_untar https://github.com/boostorg/boost/releases/download/${BOOST_VERSION}/${BOOST_VERSION}.tar.gz boost
-  (
-    cd ${DEPENDENCY_DIR}/boost
-    if [[ ${USE_CLANG} != "false" ]]; then
-      ./bootstrap.sh --prefix=${INSTALL_PREFIX} --with-toolset="clang-15"
-      # Switch the compiler from the clang-15 toolset which doesn't exist (clang-15.jam) to
-      # clang of version 15 when toolset clang-15 is used.
-      # This reconciles the project-config.jam generation with what the b2 build system allows for customization.
-      sed -i 's/using clang-15/using clang : 15/g' project-config.jam
-      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi toolset=clang-15 --without-python
-    else
-      ./bootstrap.sh --prefix=${INSTALL_PREFIX}
-      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi --without-python
-    fi
-  )
-}
-
-function install_protobuf {
-  wget_and_untar https://github.com/protocolbuffers/protobuf/releases/download/v21.8/protobuf-all-21.8.tar.gz protobuf
-  cmake_install_dir protobuf -Dprotobuf_BUILD_TESTS=OFF
-}
-
-function install_folly {
-  wget_and_untar https://github.com/facebook/folly/archive/refs/tags/${FB_OS_VERSION}.tar.gz folly
-  cmake_install_dir folly -DBUILD_TESTS=OFF -DBUILD_SHARED_LIBS="$VELOX_BUILD_SHARED" -DFOLLY_HAVE_INT128_T=ON
-}
-
-function install_fizz {
-  wget_and_untar https://github.com/facebookincubator/fizz/archive/refs/tags/${FB_OS_VERSION}.tar.gz fizz
-  cmake_install_dir fizz/fizz -DBUILD_TESTS=OFF
-}
-
-function install_wangle {
-  wget_and_untar https://github.com/facebook/wangle/archive/refs/tags/${FB_OS_VERSION}.tar.gz wangle
-  cmake_install_dir wangle/wangle -DBUILD_TESTS=OFF
-}
-
-function install_mvfst {
-  wget_and_untar https://github.com/facebook/mvfst/archive/refs/tags/${FB_OS_VERSION}.tar.gz mvfst
-  cmake_install_dir mvfst -DBUILD_TESTS=OFF
-}
-
-function install_fbthrift {
-  wget_and_untar https://github.com/facebook/fbthrift/archive/refs/tags/${FB_OS_VERSION}.tar.gz fbthrift
-  cmake_install_dir fbthrift -Denable_tests=OFF -DBUILD_TESTS=OFF -DBUILD_SHARED_LIBS=OFF
+    tzdata \
+    libxxhash-dev
 }
 
 function install_conda {
   MINICONDA_PATH="${HOME:-/opt}/miniconda-for-velox"
-  if [ -e ${MINICONDA_PATH} ]; then
+  if [ -e "${MINICONDA_PATH}" ]; then
     echo "File or directory already exists: ${MINICONDA_PATH}"
     return
   fi
@@ -219,98 +141,90 @@ function install_conda {
   fi
   (
     mkdir -p conda && cd conda
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-$ARCH.sh -O Miniconda3-latest-Linux-$ARCH.sh
-    bash Miniconda3-latest-Linux-$ARCH.sh -b -p $MINICONDA_PATH
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-"$ARCH".sh -O Miniconda3-latest-Linux-"$ARCH".sh
+    bash Miniconda3-latest-Linux-"$ARCH".sh -b -p "$MINICONDA_PATH"
   )
-}
-
-function install_duckdb {
-  if [[ "$BUILD_DUCKDB" == "true" ]]; then
-    echo 'Building DuckDB'
-    wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz duckdb
-    cmake_install_dir duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release
-  fi
-}
-
-function install_stemmer {
-  wget_and_untar https://snowballstem.org/dist/libstemmer_c-${STEMMER_VERSION}.tar.gz stemmer
-  (
-    cd ${DEPENDENCY_DIR}/stemmer
-    sed -i '/CPPFLAGS=-Iinclude/ s/$/ -fPIC/' Makefile
-    make clean && make "-j${NPROC}"
-    ${SUDO} cp libstemmer.a ${INSTALL_PREFIX}/lib/
-    ${SUDO} cp include/libstemmer.h ${INSTALL_PREFIX}/include/
-  )
-}
-
-function install_thrift {
-  wget_and_untar https://github.com/apache/thrift/archive/${THRIFT_VERSION}.tar.gz thrift
-
-  EXTRA_CXXFLAGS="-O3 -fPIC"
-  # Clang will generate warnings and they need to be suppressed, otherwise the build will fail.
-  if [[ ${USE_CLANG} != "false" ]]; then
-    EXTRA_CXXFLAGS="-O3 -fPIC -Wno-inconsistent-missing-override -Wno-unused-but-set-variable"
-  fi
-
-  CXX_FLAGS="$EXTRA_CXXFLAGS" cmake_install_dir thrift \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_COMPILER=ON \
-    -DBUILD_EXAMPLES=OFF \
-    -DBUILD_TUTORIALS=OFF \
-    -DCMAKE_DEBUG_POSTFIX= \
-    -DWITH_AS3=OFF \
-    -DWITH_CPP=ON \
-    -DWITH_C_GLIB=OFF \
-    -DWITH_JAVA=OFF \
-    -DWITH_JAVASCRIPT=OFF \
-    -DWITH_LIBEVENT=OFF \
-    -DWITH_NODEJS=OFF \
-    -DWITH_PYTHON=OFF \
-    -DWITH_QT5=OFF \
-    -DWITH_ZLIB=OFF
-}
-
-function install_arrow {
-  wget_and_untar https://github.com/apache/arrow/archive/apache-arrow-${ARROW_VERSION}.tar.gz arrow
-  cmake_install_dir arrow/cpp \
-    -DARROW_PARQUET=OFF \
-    -DARROW_WITH_THRIFT=ON \
-    -DARROW_WITH_LZ4=ON \
-    -DARROW_WITH_SNAPPY=ON \
-    -DARROW_WITH_ZLIB=ON \
-    -DARROW_WITH_ZSTD=ON \
-    -DARROW_JEMALLOC=OFF \
-    -DARROW_SIMD_LEVEL=NONE \
-    -DARROW_RUNTIME_SIMD_LEVEL=NONE \
-    -DARROW_WITH_UTF8PROC=OFF \
-    -DARROW_TESTING=ON \
-    -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DARROW_BUILD_STATIC=ON \
-    -DBOOST_ROOT=${INSTALL_PREFIX}
 }
 
 function install_cuda {
   # See https://developer.nvidia.com/cuda-downloads
+  local arch
+  arch=$(uname -m)
+  local os_ver
+
+  if [[ ${VERSION} =~ "24.04" ]]; then
+    os_ver="ubuntu2404"
+  elif [[ ${VERSION} =~ "22.04" ]]; then
+    os_ver="ubuntu2204"
+  elif [[ ${VERSION} =~ "20.04" ]]; then
+    os_ver="ubuntu2004"
+  else
+    echo "Unsupported Ubuntu version: ${VERSION}" >&2
+    return 1
+  fi
+
+  local cuda_repo
+  if [[ $arch == "x86_64" ]]; then
+    cuda_repo="${os_ver}/x86_64"
+  elif [[ $arch == "aarch64" ]]; then
+    cuda_repo="${os_ver}/sbsa"
+  else
+    echo "Unsupported architecture: $arch" >&2
+    return 1
+  fi
+
   if ! dpkg -l cuda-keyring 1>/dev/null; then
-    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+    wget https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/cuda-keyring_1.1-1_all.deb
     $SUDO dpkg -i cuda-keyring_1.1-1_all.deb
     rm cuda-keyring_1.1-1_all.deb
     $SUDO apt update
   fi
-  local dashed="$(echo $1 | tr '.' '-')"
+
+  local dashed
+  dashed="$(echo "$1" | tr '.' '-')"
+
   $SUDO apt install -y \
-    cuda-compat-$dashed \
-    cuda-driver-dev-$dashed \
-    cuda-minimal-build-$dashed \
-    cuda-nvrtc-dev-$dashed
+    cuda-compat-"$dashed" \
+    cuda-driver-dev-"$dashed" \
+    cuda-minimal-build-"$dashed" \
+    cuda-nvrtc-dev-"$dashed" \
+    libcufile-dev-"$dashed" \
+    libnuma1
 }
 
-function install_geos {
-  if [[ "$BUILD_GEOS" == "true" ]]; then
-    wget_and_untar https://github.com/libgeos/geos/archive/${GEOS_VERSION}.tar.gz geos
-    cmake_install_dir geos -DBUILD_TESTING=OFF
-  fi
+function install_s3 {
+  install_aws_deps
+
+  local MINIO_OS="linux"
+  install_minio ${MINIO_OS}
+}
+
+function install_gcs {
+  # Dependencies of GCS, probably a workaround until the docker image is rebuilt
+  apt install -y --no-install-recommends libc-ares-dev libcurl4-openssl-dev
+  install_gcs-sdk-cpp
+}
+
+function install_abfs {
+  # Dependencies of Azure Storage Blob cpp
+  apt install -y openssl libxml2-dev
+  install_azure-storage-sdk-cpp
+}
+
+function install_hdfs {
+  apt install -y --no-install-recommends libxml2-dev libgsasl7-dev uuid-dev openjdk-8-jdk
+  install_hdfs_deps
+}
+
+function install_adapters {
+  run_and_time install_s3
+  run_and_time install_gcs
+  run_and_time install_abfs
+  run_and_time install_hdfs
+}
+
+function install_faiss_deps {
+  sudo apt-get install -y libopenblas-dev libomp-dev
 }
 
 function install_velox_deps {
@@ -318,6 +232,7 @@ function install_velox_deps {
   run_and_time install_fmt
   run_and_time install_protobuf
   run_and_time install_boost
+  run_and_time install_fast_float
   run_and_time install_folly
   run_and_time install_fizz
   run_and_time install_wangle
@@ -328,16 +243,18 @@ function install_velox_deps {
   run_and_time install_stemmer
   run_and_time install_thrift
   run_and_time install_arrow
+  run_and_time install_xsimd
+  run_and_time install_simdjson
   run_and_time install_geos
+  run_and_time install_faiss
 }
 
 function install_apt_deps {
   install_build_prerequisites
-  install_format_prerequisites
   install_velox_deps_from_apt
 }
 
-(return 2> /dev/null) && return # If script was sourced, don't run commands.
+(return 2>/dev/null) && return # If script was sourced, don't run commands.
 
 (
   if [[ ${USE_CLANG} != "false" ]]; then

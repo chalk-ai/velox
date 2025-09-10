@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(velox_row_test CompactRowTest.cpp UnsafeRowFuzzTest.cpp)
+add_executable(velox_row_test CompactRowTest.cpp UnsafeRowTest.cpp)
 
 add_test(velox_row_test velox_row_test)
 
@@ -20,10 +20,9 @@ target_link_libraries(
   velox_row_test
   PRIVATE
     velox_exception
-    velox_row_fast
-    velox_vector
     velox_vector_fuzzer
     velox_vector_test_lib
     Folly::folly
     GTest::gtest
-    GTest::gtest_main)
+    GTest::gtest_main
+)

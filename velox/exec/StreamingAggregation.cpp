@@ -30,7 +30,17 @@ StreamingAggregation::StreamingAggregation(
           aggregationNode->step() == core::AggregationNode::Step::kPartial
               ? "PartialAggregation"
               : "Aggregation"),
-      outputBatchSize_{outputBatchRows()},
+      maxOutputBatchSize_{outputBatchRows()},
+      minOutputBatchSize_{
+          operatorCtx_->driverCtx()
+                      ->queryConfig()
+                      .streamingAggregationMinOutputBatchRows() > 0
+              ? std::min(
+                    maxOutputBatchSize_,
+                    operatorCtx_->driverCtx()
+                        ->queryConfig()
+                        .streamingAggregationMinOutputBatchRows())
+              : maxOutputBatchSize_},
       aggregationNode_{aggregationNode},
       step_{aggregationNode->step()} {
   if (aggregationNode_->ignoreNullKeys()) {
@@ -75,6 +85,15 @@ void StreamingAggregation::initialize() {
     }
   }
 
+  if (isRawInput(step_)) {
+    for (column_index_t i = 0; i < aggregates_.size(); ++i) {
+      if (aggregates_[i].sortingKeys.empty() && !aggregates_[i].distinct) {
+        // Must be set before we initialize row container, because it could
+        // change the type and size of accumulator.
+        aggregates_[i].function->setClusteredInput(true);
+      }
+    }
+  }
   masks_ = std::make_unique<AggregationMasks>(extractMaskChannels(aggregates_));
   rows_ = makeRowContainer(groupingKeyTypes);
 
@@ -116,7 +135,7 @@ bool equalKeys(
 
 char* StreamingAggregation::startNewGroup(vector_size_t index) {
   if (numGroups_ < groups_.size()) {
-    auto group = groups_[numGroups_++];
+    auto* group = groups_[numGroups_++];
     rows_->initializeRow(group, true);
     storeKeys(group, index);
     return group;
@@ -143,7 +162,7 @@ RowVectorPtr StreamingAggregation::createOutput(size_t numGroups) {
     rows_->extractColumn(groups_.data(), numGroups, i, output->childAt(i));
   }
 
-  auto numKeys = groupingKeys_.size();
+  const auto numKeys = groupingKeys_.size();
   for (auto i = 0; i < aggregates_.size(); ++i) {
     const auto& aggregate = aggregates_.at(i);
     if (!aggregate.sortingKeys.empty()) {
@@ -175,21 +194,27 @@ RowVectorPtr StreamingAggregation::createOutput(size_t numGroups) {
     }
   }
 
+  std::rotate(groups_.begin(), groups_.begin() + numGroups, groups_.end());
+  numGroups_ -= numGroups;
+
   return output;
 }
 
-void StreamingAggregation::assignGroups() {
-  auto numInput = input_->size();
+bool StreamingAggregation::assignGroups() {
+  const auto numInput = input_->size();
+  VELOX_CHECK_GT(numInput, 0);
 
   inputGroups_.resize(numInput);
 
+  bool prevGroupAssigned{false};
   // Look for the end of the last group.
   vector_size_t index = 0;
-  if (prevInput_) {
-    auto prevIndex = prevInput_->size() - 1;
+  if (prevInput_ != nullptr) {
+    const auto prevIndex = prevInput_->size() - 1;
     auto* prevGroup = groups_[numGroups_ - 1];
     for (; index < numInput; ++index) {
       if (equalKeys(groupingKeys_, prevInput_, prevIndex, input_, index)) {
+        prevGroupAssigned = true;
         inputGroups_[index] = prevGroup;
       } else {
         break;
@@ -215,6 +240,15 @@ void StreamingAggregation::assignGroups() {
       }
     }
   }
+
+  groupBoundaries_.clear();
+  for (vector_size_t i = 1; i < numInput; ++i) {
+    if (inputGroups_[i] != inputGroups_[i - 1]) {
+      groupBoundaries_.push_back(i);
+    }
+  }
+  groupBoundaries_.push_back(numInput);
+  return prevGroupAssigned;
 }
 
 const SelectivityVector& StreamingAggregation::getSelectivityVector(
@@ -249,14 +283,20 @@ void StreamingAggregation::evaluateAggregates() {
     std::vector<VectorPtr> args;
     for (auto j = 0; j < inputs.size(); ++j) {
       if (inputs[j] == kConstantChannel) {
-        args.push_back(constantInputs[j]);
+        args.push_back(
+            BaseVector::wrapInConstant(input_->size(), 0, constantInputs[j]));
       } else {
         args.push_back(input_->childAt(inputs[j]));
       }
     }
 
     if (isRawInput(step_)) {
-      function->addRawInput(inputGroups_.data(), rows, args, false);
+      if (function->supportsAddRawClusteredInput()) {
+        function->addRawClusteredInput(
+            inputGroups_.data(), rows, args, groupBoundaries_);
+      } else {
+        function->addRawInput(inputGroups_.data(), rows, args, false);
+      }
     } else {
       function->addIntermediateResults(inputGroups_.data(), rows, args, false);
     }
@@ -267,51 +307,73 @@ void StreamingAggregation::evaluateAggregates() {
   }
 }
 
+bool StreamingAggregation::startDrain() {
+  VELOX_CHECK(isDraining());
+  VELOX_CHECK(!noMoreInput_);
+  if (!input_ && numGroups_ == 0) {
+    return false;
+  }
+  return true;
+}
+
+void StreamingAggregation::maybeFinishDrain() {
+  if (FOLLY_LIKELY((numGroups_ != 0) || !isDraining())) {
+    return;
+  }
+  prevInput_ = nullptr;
+  Operator::finishDrain();
+}
+
 bool StreamingAggregation::isFinished() {
   return noMoreInput_ && input_ == nullptr && numGroups_ == 0;
 }
 
 RowVectorPtr StreamingAggregation::getOutput() {
   if (!input_) {
-    if (noMoreInput_ && numGroups_ > 0) {
-      auto output = createOutput(numGroups_);
-      numGroups_ = 0;
-      return output;
+    SCOPE_EXIT {
+      outputFirstGroup_ = false;
+    };
+    if ((noMoreInput_ || isDraining()) && numGroups_ > 0) {
+      return createOutput(numGroups_);
     }
+    if (outputFirstGroup_) {
+      VELOX_CHECK_GT(numGroups_, 1);
+      return createOutput(1);
+    }
+    maybeFinishDrain();
     return nullptr;
   }
+  VELOX_CHECK(!outputFirstGroup_);
 
-  auto numInput = input_->size();
+  const auto numInput = input_->size();
   inputRows_.resize(numInput);
   inputRows_.setAll();
 
   masks_->addInput(input_, inputRows_);
 
-  auto numPrevGroups = numGroups_;
-
-  assignGroups();
+  const auto numPrevGroups = numGroups_;
+  const bool prevGroupAssigned = assignGroups();
   initializeNewGroups(numPrevGroups);
   evaluateAggregates();
 
   RowVectorPtr output;
-  if (numGroups_ > outputBatchSize_) {
-    output = createOutput(outputBatchSize_);
 
-    // Rotate the entries in the groups_ vector to move the remaining groups to
-    // the beginning and place re-usable groups at the end.
-    std::vector<char*> copy(groups_.size());
-    std::copy(groups_.begin() + outputBatchSize_, groups_.end(), copy.begin());
-    std::copy(
-        groups_.begin(),
-        groups_.begin() + outputBatchSize_,
-        copy.begin() + groups_.size() - outputBatchSize_);
-    groups_ = std::move(copy);
-    numGroups_ -= outputBatchSize_;
+  if ((numPrevGroups != 0) && (numGroups_ > minOutputBatchSize_)) {
+    size_t numOutputGroups{0};
+    // NOTE: we only want to apply the single group output optimization if
+    // 'minOutputBatchSize_' is set to one for eagerly streaming output
+    // producing.
+    if (!prevGroupAssigned || numPrevGroups == 1 || minOutputBatchSize_ != 1) {
+      numOutputGroups = std::min(numGroups_ - 1, numPrevGroups);
+    } else {
+      numOutputGroups = std::min(numGroups_ - 1, numPrevGroups - 1);
+      outputFirstGroup_ = (numGroups_ - numOutputGroups) > 1;
+    }
+    VELOX_CHECK_GT(numOutputGroups, 0);
+    output = createOutput(numOutputGroups);
   }
-
   prevInput_ = input_;
   input_ = nullptr;
-
   return output;
 }
 

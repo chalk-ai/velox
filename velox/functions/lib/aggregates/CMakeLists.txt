@@ -17,13 +17,15 @@ velox_add_library(
   AverageAggregateBase.cpp
   CentralMomentsAggregatesBase.cpp
   Compare.cpp
+  CovarianceAggregatesBase.cpp
   MinMaxAggregateBase.cpp
   SingleValueAccumulator.cpp
   ValueList.cpp
-  ValueSet.cpp)
+  ValueSet.cpp
+  VarianceAggregatesBase.cpp
+)
 
-velox_link_libraries(velox_functions_aggregates velox_exec
-                     velox_presto_serializer Folly::folly)
+velox_link_libraries(velox_functions_aggregates velox_exec velox_presto_serializer Folly::folly)
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)

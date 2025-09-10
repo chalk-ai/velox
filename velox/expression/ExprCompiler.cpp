@@ -15,18 +15,15 @@
  */
 
 #include "velox/expression/ExprCompiler.h"
-#include "velox/expression/CastExpr.h"
-#include "velox/expression/CoalesceExpr.h"
-#include "velox/expression/ConjunctExpr.h"
 #include "velox/expression/ConstantExpr.h"
 #include "velox/expression/Expr.h"
+#include "velox/expression/ExprConstants.h"
+#include "velox/expression/ExprUtils.h"
 #include "velox/expression/FieldReference.h"
 #include "velox/expression/LambdaExpr.h"
 #include "velox/expression/RowConstructor.h"
 #include "velox/expression/SimpleFunctionRegistry.h"
 #include "velox/expression/SpecialFormRegistry.h"
-#include "velox/expression/SwitchExpr.h"
-#include "velox/expression/TryExpr.h"
 #include "velox/expression/VectorFunction.h"
 
 namespace facebook::velox::exec {
@@ -35,9 +32,6 @@ namespace {
 
 using core::ITypedExpr;
 using core::TypedExprPtr;
-
-const char* const kAnd = "and";
-const char* const kOr = "or";
 
 struct ITypedExprHasher {
   size_t operator()(const ITypedExpr* expr) const {
@@ -86,7 +80,7 @@ struct Scope {
   std::vector<TypedExprPtr> rewrittenExpressions;
 
   Scope(std::vector<std::string>&& _locals, Scope* _parent, ExprSet* _exprSet)
-      : locals(_locals), parent(_parent), exprSet(_exprSet) {}
+      : locals(std::move(_locals)), parent(_parent), exprSet(_exprSet) {}
 
   void addCapture(FieldReference* reference, const ITypedExpr* fieldAccess) {
     capture.emplace_back(reference->field());
@@ -95,66 +89,20 @@ struct Scope {
   }
 };
 
-// Utility method to check eligibility for flattening.
-bool allInputTypesEquivalent(const TypedExprPtr& expr) {
-  const auto& inputs = expr->inputs();
-  for (int i = 1; i < inputs.size(); i++) {
-    if (!inputs[0]->type()->equivalent(*inputs[i]->type())) {
-      return false;
-    }
-  }
-  return true;
-}
-
 std::optional<std::string> shouldFlatten(
     const TypedExprPtr& expr,
     const std::unordered_set<std::string>& flatteningCandidates) {
-  if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
+  if (expr->isCallKind()) {
+    const auto* call = expr->asUnchecked<core::CallTypedExpr>();
     // Currently only supports the most common case for flattening where all
     // inputs are of the same type.
-    if (call->name() == kAnd || call->name() == kOr ||
+    if (call->name() == expression::kAnd || call->name() == expression::kOr ||
         (flatteningCandidates.count(call->name()) &&
-         allInputTypesEquivalent(expr))) {
+         expression::utils::allInputTypesEquivalent(expr))) {
       return call->name();
     }
   }
   return std::nullopt;
-}
-
-bool isCall(const TypedExprPtr& expr, const std::string& name) {
-  if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
-    return call->name() == name;
-  }
-  return false;
-}
-
-// Recursively flattens nested ANDs, ORs or eligible callable expressions into a
-// vector of their inputs. Recursive flattening ceases exploring an input branch
-// if it encounters either an expression different from 'flattenCall' or its
-// inputs are not the same type.
-// Examples:
-// flattenCall: AND
-// in: a AND (b AND (c AND d))
-// out: [a, b, c, d]
-//
-// flattenCall: OR
-// in: (a OR b) OR (c OR d)
-// out: [a, b, c, d]
-//
-// flattenCall: concat
-// in: (array1, concat(array2, concat(array2, intVal))
-// out: [array1, array2, concat(array2, intVal)]
-void flattenInput(
-    const TypedExprPtr& input,
-    const std::string& flattenCall,
-    std::vector<TypedExprPtr>& flat) {
-  if (isCall(input, flattenCall) && allInputTypesEquivalent(input)) {
-    for (auto& child : input->inputs()) {
-      flattenInput(child, flattenCall, flat);
-    }
-  } else {
-    flat.emplace_back(input);
-  }
 }
 
 ExprPtr getAlreadyCompiled(const ITypedExpr* expr, ExprDedupMap* visited) {
@@ -180,14 +128,14 @@ std::vector<ExprPtr> compileInputs(
   std::vector<ExprPtr> compiledInputs;
   auto flattenIf = shouldFlatten(expr, flatteningCandidates);
   for (auto& input : expr->inputs()) {
-    if (dynamic_cast<const core::InputTypedExpr*>(input.get())) {
+    if (input->isInputKind()) {
       VELOX_CHECK(
-          dynamic_cast<const core::FieldAccessTypedExpr*>(expr.get()),
+          expr->isFieldAccessKind(),
           "An InputReference can only occur under a FieldReference");
     } else {
       if (flattenIf.has_value()) {
         std::vector<TypedExprPtr> flat;
-        flattenInput(input, flattenIf.value(), flat);
+        expression::utils::flattenInput(input, flattenIf.value(), flat);
         for (auto& input_2 : flat) {
           compiledInputs.push_back(compileExpression(
               input_2,
@@ -300,17 +248,16 @@ std::shared_ptr<Expr> compileLambda(
 }
 
 ExprPtr tryFoldIfConstant(const ExprPtr& expr, Scope* scope) {
-  if (expr->isConstant() && scope->exprSet->execCtx()) {
+  if (expr->isConstantExpr() && scope->exprSet->execCtx()) {
     try {
       auto rowType = ROW({}, {});
       auto execCtx = scope->exprSet->execCtx();
-      auto row = BaseVector::create(rowType, 1, execCtx->pool());
-      EvalCtx context(
-          execCtx, scope->exprSet, dynamic_cast<RowVector*>(row.get()));
+      auto row = BaseVector::create<RowVector>(rowType, 1, execCtx->pool());
+      EvalCtx context(execCtx, scope->exprSet, row.get());
       VectorPtr result;
       SelectivityVector rows(1);
       expr->eval(rows, context, result);
-      auto constantVector = BaseVector::wrapInConstant(1, 0, result);
+      auto constantVector = BaseVector::wrapInConstant(1, 0, std::move(result));
 
       auto resultExpr = std::make_shared<ConstantExpr>(constantVector);
       if (expr->stats().defaultNullRowsSkipped ||
@@ -348,7 +295,8 @@ std::vector<VectorPtr> getConstantInputs(const std::vector<ExprPtr>& exprs) {
   std::vector<VectorPtr> constants;
   constants.reserve(exprs.size());
   for (auto& expr : exprs) {
-    if (auto constantExpr = std::dynamic_pointer_cast<ConstantExpr>(expr)) {
+    if (expr->isConstant()) {
+      auto* constantExpr = dynamic_cast<ConstantExpr*>(expr.get());
       constants.emplace_back(constantExpr->value());
     } else {
       constants.emplace_back(nullptr);
@@ -364,6 +312,107 @@ core::TypedExprPtr rewriteExpression(const core::TypedExprPtr& expr) {
     }
   }
   return expr;
+}
+
+ExprPtr compileCall(
+    const TypedExprPtr& expr,
+    std::vector<ExprPtr> inputs,
+    bool trackCpuUsage,
+    const core::QueryConfig& config) {
+  const auto* call = expr->asUnchecked<core::CallTypedExpr>();
+  const auto& resultType = expr->type();
+
+  const auto inputTypes = getTypes(inputs);
+
+  if (auto specialForm = specialFormRegistry().getSpecialForm(call->name())) {
+    return specialForm->constructSpecialForm(
+        resultType, std::move(inputs), trackCpuUsage, config);
+  }
+
+  if (auto functionWithMetadata = getVectorFunctionWithMetadata(
+          call->name(), inputTypes, getConstantInputs(inputs), config)) {
+    return std::make_shared<Expr>(
+        resultType,
+        std::move(inputs),
+        functionWithMetadata->first,
+        functionWithMetadata->second,
+        call->name(),
+        trackCpuUsage);
+  }
+
+  if (auto simpleFunctionEntry =
+          simpleFunctions().resolveFunction(call->name(), inputTypes)) {
+    VELOX_USER_CHECK(
+        resultType->equivalent(*simpleFunctionEntry->type().get()),
+        "Found incompatible return types for '{}' ({} vs. {}) "
+        "for input types ({}).",
+        call->name(),
+        simpleFunctionEntry->type(),
+        resultType,
+        folly::join(", ", inputTypes));
+
+    auto func = simpleFunctionEntry->createFunction()->createVectorFunction(
+        inputTypes, getConstantInputs(inputs), config);
+    return std::make_shared<Expr>(
+        resultType,
+        std::move(inputs),
+        std::move(func),
+        simpleFunctionEntry->metadata(),
+        call->name(),
+        trackCpuUsage);
+  }
+
+  const auto& functionName = call->name();
+  auto vectorFunctionSignatures = getVectorFunctionSignatures(functionName);
+  auto simpleFunctionSignatures =
+      simpleFunctions().getFunctionSignatures(functionName);
+  std::vector<std::string> signatures;
+
+  if (vectorFunctionSignatures.has_value()) {
+    for (const auto& signature : vectorFunctionSignatures.value()) {
+      signatures.push_back(fmt::format("({})", signature->toString()));
+    }
+  }
+
+  for (const auto& signature : simpleFunctionSignatures) {
+    signatures.push_back(fmt::format("({})", signature->toString()));
+  }
+
+  if (signatures.empty()) {
+    VELOX_USER_FAIL(
+        "Scalar function name not registered: {}, called with arguments: ({}).",
+        call->name(),
+        folly::join(", ", inputTypes));
+  } else {
+    VELOX_USER_FAIL(
+        "Scalar function {} not registered with arguments: ({}). "
+        "Found function registered with the following signatures:\n{}",
+        call->name(),
+        folly::join(", ", inputTypes),
+        folly::join("\n", signatures));
+  }
+}
+
+ExprPtr compileCast(
+    const TypedExprPtr& expr,
+    std::vector<ExprPtr> inputs,
+    bool trackCpuUsage,
+    const core::QueryConfig& config) {
+  VELOX_CHECK_EQ(1, inputs.size());
+
+  const auto& resultType = expr->type();
+
+  if (FOLLY_UNLIKELY(*resultType == *inputs[0]->type())) {
+    return inputs[0];
+  }
+
+  const auto* cast = expr->asUnchecked<core::CastTypedExpr>();
+  return getSpecialForm(
+      config,
+      cast->isTryCast() ? expression::kTryCast : expression::kCast,
+      resultType,
+      std::move(inputs),
+      trackCpuUsage);
 }
 
 ExprPtr compileRewrittenExpression(
@@ -388,144 +437,87 @@ ExprPtr compileRewrittenExpression(
 
   const bool trackCpuUsage = config.exprTrackCpuUsage();
 
-  ExprPtr result;
-  auto resultType = expr->type();
+  const auto& resultType = expr->type();
   auto compiledInputs = compileInputs(
       expr, scope, config, pool, flatteningCandidates, enableConstantFolding);
-  auto inputTypes = getTypes(compiledInputs);
-  bool isConstantExpr = false;
-  if (dynamic_cast<const core::ConcatTypedExpr*>(expr.get())) {
-    result = getSpecialForm(
-        config,
-        RowConstructorCallToSpecialForm::kRowConstructor,
-        resultType,
-        std::move(compiledInputs),
-        trackCpuUsage);
-  } else if (auto cast = dynamic_cast<const core::CastTypedExpr*>(expr.get())) {
-    VELOX_CHECK(!compiledInputs.empty());
-    if (FOLLY_UNLIKELY(*resultType == *compiledInputs[0]->type())) {
-      result = compiledInputs[0];
-    } else {
+
+  ExprPtr result;
+  switch (expr->kind()) {
+    case core::ExprKind::kConcat: {
       result = getSpecialForm(
           config,
-          cast->nullOnFailure() ? "try_cast" : "cast",
+          RowConstructorCallToSpecialForm::kRowConstructor,
           resultType,
           std::move(compiledInputs),
           trackCpuUsage);
+      break;
     }
-  } else if (auto call = dynamic_cast<const core::CallTypedExpr*>(expr.get())) {
-    if (auto specialForm = specialFormRegistry().getSpecialForm(call->name())) {
-      result = specialForm->constructSpecialForm(
-          resultType, std::move(compiledInputs), trackCpuUsage, config);
-    } else if (
-        auto functionWithMetadata = getVectorFunctionWithMetadata(
-            call->name(),
-            inputTypes,
-            getConstantInputs(compiledInputs),
-            config)) {
-      result = std::make_shared<Expr>(
-          resultType,
-          std::move(compiledInputs),
-          functionWithMetadata->first,
-          functionWithMetadata->second,
-          call->name(),
-          trackCpuUsage);
-    } else if (
-        auto simpleFunctionEntry =
-            simpleFunctions().resolveFunction(call->name(), inputTypes)) {
-      VELOX_USER_CHECK(
-          resultType->equivalent(*simpleFunctionEntry->type().get()),
-          "Found incompatible return types for '{}' ({} vs. {}) "
-          "for input types ({}).",
-          call->name(),
-          simpleFunctionEntry->type(),
-          resultType,
-          folly::join(", ", inputTypes));
-
-      auto func = simpleFunctionEntry->createFunction()->createVectorFunction(
-          inputTypes, getConstantInputs(compiledInputs), config);
-      result = std::make_shared<Expr>(
-          resultType,
-          std::move(compiledInputs),
-          std::move(func),
-          simpleFunctionEntry->metadata(),
-          call->name(),
-          trackCpuUsage);
-    } else {
-      const auto& functionName = call->name();
-      auto vectorFunctionSignatures = getVectorFunctionSignatures(functionName);
-      auto simpleFunctionSignatures =
-          simpleFunctions().getFunctionSignatures(functionName);
-      std::vector<std::string> signatures;
-
-      if (vectorFunctionSignatures.has_value()) {
-        for (const auto& signature : vectorFunctionSignatures.value()) {
-          signatures.push_back(fmt::format("({})", signature->toString()));
-        }
-      }
-
-      for (const auto& signature : simpleFunctionSignatures) {
-        signatures.push_back(fmt::format("({})", signature->toString()));
-      }
-
-      if (signatures.empty()) {
-        VELOX_USER_FAIL(
-            "Scalar function name not registered: {}, called with arguments: ({}).",
-            call->name(),
-            folly::join(", ", inputTypes));
-      } else {
-        VELOX_USER_FAIL(
-            "Scalar function {} not registered with arguments: ({}). "
-            "Found function registered with the following signatures:\n{}",
-            call->name(),
-            folly::join(", ", inputTypes),
-            folly::join("\n", signatures));
-      }
+    case core::ExprKind::kCast: {
+      result = compileCast(expr, compiledInputs, trackCpuUsage, config);
+      break;
     }
-  } else if (
-      auto access =
-          dynamic_cast<const core::FieldAccessTypedExpr*>(expr.get())) {
-    auto fieldReference = std::make_shared<FieldReference>(
-        expr->type(), std::move(compiledInputs), access->name());
-    if (access->isInputColumn()) {
-      // We only want to capture references to top level fields, not struct
-      // fields.
-      captureFieldReference(fieldReference.get(), expr.get(), scope);
+    case core::ExprKind::kCall: {
+      result = compileCall(expr, compiledInputs, trackCpuUsage, config);
+      break;
     }
-    result = fieldReference;
-  } else if (
-      auto dereference =
-          dynamic_cast<const core::DereferenceTypedExpr*>(expr.get())) {
-    result = std::make_shared<FieldReference>(
-        expr->type(), std::move(compiledInputs), dereference->index());
-  } else if (auto row = dynamic_cast<const core::InputTypedExpr*>(expr.get())) {
-    VELOX_UNSUPPORTED("InputTypedExpr '{}' is not supported", row->toString());
-  } else if (
-      auto constant =
-          dynamic_cast<const core::ConstantTypedExpr*>(expr.get())) {
-    result = std::make_shared<ConstantExpr>(constant->toConstantVector(pool));
-    isConstantExpr = true;
-  } else if (
-      auto lambda = dynamic_cast<const core::LambdaTypedExpr*>(expr.get())) {
-    result = compileLambda(
-        lambda,
-        scope,
-        config,
-        pool,
-        flatteningCandidates,
-        enableConstantFolding);
-  } else {
-    VELOX_UNSUPPORTED("Unknown typed expression");
+    case core::ExprKind::kFieldAccess: {
+      const auto* access = expr->asUnchecked<core::FieldAccessTypedExpr>();
+      auto fieldReference = std::make_shared<FieldReference>(
+          expr->type(), std::move(compiledInputs), access->name());
+      if (access->isInputColumn()) {
+        // We only want to capture references to top level fields, not struct
+        // fields.
+        captureFieldReference(fieldReference.get(), expr.get(), scope);
+      }
+      result = fieldReference;
+      break;
+    }
+    case core::ExprKind::kDereference: {
+      const auto* dereference = expr->asUnchecked<core::DereferenceTypedExpr>();
+      result = std::make_shared<FieldReference>(
+          expr->type(), std::move(compiledInputs), dereference->index());
+      break;
+    }
+    case core::ExprKind::kInput: {
+      VELOX_UNSUPPORTED("InputTypedExpr is not supported");
+    }
+    case core::ExprKind::kConstant: {
+      const auto* constant = expr->asUnchecked<core::ConstantTypedExpr>();
+      result = std::make_shared<ConstantExpr>(constant->toConstantVector(pool));
+      break;
+    }
+    case core::ExprKind::kLambda: {
+      result = compileLambda(
+          expr->asUnchecked<core::LambdaTypedExpr>(),
+          scope,
+          config,
+          pool,
+          flatteningCandidates,
+          enableConstantFolding);
+      break;
+    }
+    default: {
+      VELOX_UNSUPPORTED("Unknown typed expression");
+    }
   }
 
   result->computeMetadata();
 
+  ExprPtr compiled;
   // If the expression is constant folding it is redundant.
-  auto folded = enableConstantFolding && !isConstantExpr
-      ? tryFoldIfConstant(result, scope)
-      : result;
-  scope->visited[expr.get()] = folded;
-  return folded;
+  if (enableConstantFolding && !result->isConstant()) {
+    compiled = tryFoldIfConstant(result, scope);
+    // Constant folding uses an uninitialized ExprSet for eval. This breaks the
+    // invariant that 'memoizingExprs_' relies on, which is that the Expr
+    // pointers will be alive for the lifetime of the ExprSet. Clear the
+    // execution state of the ExprSet to avoid this.
+    scope->exprSet->clear();
+  } else {
+    compiled = result;
+  }
+
+  scope->visited[expr.get()] = compiled;
+  return compiled;
 }
 
 ExprPtr compileExpression(
@@ -553,8 +545,8 @@ ExprPtr compileExpression(
 void collectCallNames(
     const TypedExprPtr& expr,
     std::unordered_set<std::string>& names) {
-  if (auto call = std::dynamic_pointer_cast<const core::CallTypedExpr>(expr)) {
-    names.insert(call->name());
+  if (expr->isCallKind()) {
+    names.insert(expr->asUnchecked<core::CallTypedExpr>()->name());
   }
 
   for (const auto& input : expr->inputs()) {

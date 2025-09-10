@@ -295,39 +295,30 @@ std::unique_ptr<Aggregate> Aggregate::create(
     const std::vector<TypePtr>& argTypes,
     const TypePtr& resultType,
     const core::QueryConfig& config) {
+  // TODO(timaou, kletkavrubashku): Reneable the validation once "regr_slope"
+  // signature is fixed
+  //
+  // Validate the result type. if (isPartialOutput(step)) {
+  //   auto intermediateType = Aggregate::intermediateType(name, argTypes);
+  //   VELOX_CHECK(
+  //       resultType->equivalent(*intermediateType),
+  //       "Intermediate type mismatch. Expected: {}, actual: {}",
+  //       intermediateType->toString(),
+  //       resultType->toString());
+  // } else {
+  //   auto finalType = Aggregate::finalType(name, argTypes);
+  //   VELOX_CHECK(
+  //       resultType->equivalent(*finalType),
+  //       "Final type mismatch. Expected: {}, actual: {}",
+  //       finalType->toString(),
+  //       resultType->toString());
+  // }
   // Lookup the function in the new registry first.
   if (auto func = getAggregateFunctionEntry(name)) {
     return func->factory(step, argTypes, resultType, config);
   }
 
   VELOX_USER_FAIL("Aggregate function not registered: {}", name);
-}
-
-// static
-TypePtr Aggregate::intermediateType(
-    const std::string& name,
-    const std::vector<TypePtr>& argTypes) {
-  auto signatures = getAggregateFunctionSignatures(name);
-  if (!signatures.has_value()) {
-    VELOX_USER_FAIL("Aggregate function not registered: {}", name);
-  }
-  for (auto& signature : signatures.value()) {
-    SignatureBinder binder(*signature, argTypes);
-    if (binder.tryBind()) {
-      auto type = binder.tryResolveType(signature->intermediateType());
-      VELOX_USER_CHECK(
-          type,
-          "Cannot resolve intermediate type for aggregate function {}",
-          toString(name, argTypes));
-      return type;
-    }
-  }
-
-  std::stringstream error;
-  error << "Aggregate function signature is not supported: "
-        << toString(name, argTypes)
-        << ". Supported signatures: " << toString(signatures.value()) << ".";
-  VELOX_USER_FAIL(error.str());
 }
 
 void Aggregate::setLambdaExpressions(

@@ -16,6 +16,9 @@
 
 #include "velox/functions/prestosql/types/IPPrefixRegistration.h"
 
+#include <limits>
+
+#include "velox/common/fuzzer/ConstrainedGenerators.h"
 #include "velox/expression/CastExpr.h"
 #include "velox/functions/prestosql/types/IPPrefixType.h"
 
@@ -180,7 +183,7 @@ class IPPrefixCastOperator : public exec::CastOperator {
   }
 };
 
-class IPPrefixTypeFactories : public CustomTypeFactories {
+class IPPrefixTypeFactory : public CustomTypeFactory {
  public:
   TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
     VELOX_CHECK(parameters.empty());
@@ -192,14 +195,19 @@ class IPPrefixTypeFactories : public CustomTypeFactories {
   }
 
   AbstractInputGeneratorPtr getInputGenerator(
-      const InputGeneratorConfig& /*config*/) const override {
-    return nullptr;
+      const InputGeneratorConfig& config) const override {
+    std::vector<std::unique_ptr<AbstractInputGenerator>> fields(2);
+    fields[0] = std::make_unique<fuzzer::RangeConstrainedGenerator<int128_t>>(
+        config.seed_, IPADDRESS(), 0, 0, std::numeric_limits<int128_t>::max());
+    fields[1] = std::make_unique<fuzzer::RangeConstrainedGenerator<int8_t>>(
+        config.seed_, TINYINT(), 0, 0, 127);
+    return std::make_shared<fuzzer::RandomInputGenerator<RowType>>(
+        config.seed_, IPPREFIX(), std::move(fields), config.nullRatio_);
   }
 };
 } // namespace
 
 void registerIPPrefixType() {
-  registerCustomType(
-      "ipprefix", std::make_unique<const IPPrefixTypeFactories>());
+  registerCustomType("ipprefix", std::make_unique<const IPPrefixTypeFactory>());
 }
 } // namespace facebook::velox

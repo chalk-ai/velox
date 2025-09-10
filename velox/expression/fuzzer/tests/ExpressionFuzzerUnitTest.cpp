@@ -18,12 +18,18 @@
 
 #include "velox/expression/fuzzer/ExpressionFuzzer.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
+#include "velox/functions/prestosql/types/QDigestRegistration.h"
+#include "velox/functions/prestosql/types/QDigestType.h"
+#include "velox/functions/prestosql/types/TDigestRegistration.h"
+#include "velox/functions/prestosql/types/TDigestType.h"
 
 namespace facebook::velox::fuzzer::test {
 class ExpressionFuzzerUnitTest : public testing::Test {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    registerTDigestType();
+    registerQDigestType();
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   uint32_t countLevelOfNesting(core::TypedExprPtr expression) {
@@ -50,7 +56,11 @@ class ExpressionFuzzerUnitTest : public testing::Test {
         DOUBLE(),
         TIMESTAMP(),
         DATE(),
-        INTERVAL_DAY_TIME()};
+        INTERVAL_DAY_TIME(),
+        TDIGEST(DOUBLE()),
+        QDIGEST(DOUBLE()),
+        QDIGEST(BIGINT()),
+        QDIGEST(REAL())};
     auto index = folly::Random::rand32(kSupportedTypes.size(), seed);
     return kSupportedTypes[index];
   }

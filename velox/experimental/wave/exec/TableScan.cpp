@@ -27,7 +27,9 @@ std::atomic<uint64_t> TableScan::ioWaitNanos_;
 
 using exec::BlockingReason;
 
-BlockingReason TableScan::isBlocked(ContinueFuture* future) {
+BlockingReason TableScan::isBlocked(
+    WaveStream& /*stream*/,
+    ContinueFuture* future) {
   if (!dataSource_ || needNewSplit_) {
     nextSplit(future);
     isNewSplit_ = true;
@@ -148,10 +150,6 @@ BlockingReason TableScan::nextSplit(ContinueFuture* future) {
   }
   ++stats().wlock()->numSplits;
 
-  for (const auto& entry : pendingDynamicFilters_) {
-    waveDataSource_->addDynamicFilter(entry.first, entry.second);
-  }
-  pendingDynamicFilters_.clear();
   return BlockingReason::kNotBlocked;
 }
 
@@ -197,8 +195,8 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
 }
 
 void TableScan::checkPreload() {
-  auto executor = connector_->executor();
-  if (maxPreloadedSplits_ == 0 || !executor ||
+  auto ioExecutor = connector_->ioExecutor();
+  if (maxPreloadedSplits_ == 0 || !ioExecutor ||
       !connector_->supportsSplitPreload()) {
     return;
   }
@@ -207,10 +205,10 @@ void TableScan::checkPreload() {
         maxSplitPreloadPerDriver_;
     if (!splitPreloader_) {
       splitPreloader_ =
-          [executor, this](std::shared_ptr<connector::ConnectorSplit> split) {
+          [ioExecutor, this](std::shared_ptr<connector::ConnectorSplit> split) {
             preload(split);
 
-            executor->add(
+            ioExecutor->add(
                 [taskHolder = driver_->operatorCtx()->task(), split]() mutable {
                   split->dataSource->prepare();
                   split.reset();
@@ -222,17 +220,6 @@ void TableScan::checkPreload() {
 
 bool TableScan::isFinished() const {
   return noMoreSplits_;
-}
-
-void TableScan::addDynamicFilter(
-    const core::PlanNodeId& producer,
-    column_index_t outputChannel,
-    const std::shared_ptr<common::Filter>& filter) {
-  if (dataSource_) {
-    dataSource_->addDynamicFilter(outputChannel, filter);
-  } else {
-    pendingDynamicFilters_.emplace(outputChannel, filter);
-  }
 }
 
 } // namespace facebook::velox::wave

@@ -293,6 +293,7 @@ class VectorHasher {
       case TypeKind::BIGINT:
       case TypeKind::VARCHAR:
       case TypeKind::VARBINARY:
+      case TypeKind::TIMESTAMP:
         return true;
       default:
         return false;
@@ -330,6 +331,10 @@ class VectorHasher {
   template <typename T>
   inline int64_t toInt64(T value) const {
     return value;
+  }
+
+  inline int64_t toInt64(Timestamp timestamp) const {
+    return timestamp.toMillis();
   }
 
   // Sets the data statistics from 'other'. Does not set the mapping mode.
@@ -662,8 +667,27 @@ inline uint64_t VectorHasher::lookupValueId(StringView value) const {
 }
 
 template <>
+inline uint64_t VectorHasher::lookupValueId(Timestamp timestamp) const {
+  return timestamp.getNanos() % 1'000'000 != 0
+      ? kUnmappable
+      : lookupValueId(timestamp.toMillis());
+}
+
+template <>
 inline uint64_t VectorHasher::valueId(bool value) {
   return value ? 2 : 1;
+}
+template <>
+inline uint64_t VectorHasher::valueId(Timestamp value) {
+  if (FOLLY_UNLIKELY(
+          value.getNanos() % Timestamp::kNanosecondsInMillisecond != 0)) {
+    // The timestamp is in nanosecond or microsecond precision. The values are
+    // not mappable to milliseconds without precision loss.
+    setRangeOverflow();
+    setDistinctOverflow();
+    return kUnmappable;
+  }
+  return valueId(value.toMillis());
 }
 
 template <>

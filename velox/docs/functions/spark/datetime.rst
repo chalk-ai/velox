@@ -1,6 +1,6 @@
-=====================================
+=======================
 Date and Time Functions
-=====================================
+=======================
 
 Convenience Extraction Functions
 --------------------------------
@@ -183,35 +183,6 @@ These functions support TIMESTAMP and DATE input types.
     ``day`` need to be from 1 to 31, and matches the number of days in each month.
     days of ``year-month-day - 1970-01-01`` need to be in the range of INTEGER type.
 
-.. spark:function:: make_ym_interval([years[, months]]) -> interval year to month
-
-    Make year-month interval from ``years`` and ``months`` fields.
-    Returns the actual year-month with month in the range of [0, 11].
-    Both ``years`` and ``months`` can be zero, positive or negative.
-    Throws an error when inputs lead to int overflow,
-    e.g., make_ym_interval(178956970, 8). ::
-
-        SELECT make_ym_interval(1, 2); -- 1-2
-        SELECT make_ym_interval(1, 0); -- 1-0
-        SELECT make_ym_interval(-1, 1); -- -0-11
-        SELECT make_ym_interval(1, 100); -- 9-4
-        SELECT make_ym_interval(1, 12); -- 2-0
-        SELECT make_ym_interval(1, -12); -- 0-0
-        SELECT make_ym_interval(2); -- 2-0
-        SELECT make_ym_interval(); -- 0-0
-
-.. spark:function:: minute(timestamp) -> integer
-
-    Returns the minutes of ``timestamp``.::
-
-        SELECT minute('2009-07-30 12:58:59'); -- 58
-
-.. spark:function:: quarter(date) -> integer
-
-    Returns the quarter of ``date``. The value ranges from ``1`` to ``4``. ::
-
-        SELECT quarter('2009-07-30'); -- 3
-
 .. spark:function:: make_timestamp(year, month, day, hour, minute, second[, timezone]) -> timestamp
 
     Create timestamp from ``year``, ``month``, ``day``, ``hour``, ``minute`` and ``second`` fields.
@@ -244,6 +215,29 @@ These functions support TIMESTAMP and DATE input types.
         SELECT make_timestamp(2014, 12, 28, 6, 30, 60.000001); -- NULL
         SELECT make_timestamp(2014, 13, 28, 6, 30, 45.887); -- NULL
 
+.. spark:function:: make_ym_interval([years[, months]]) -> interval year to month
+
+    Make year-month interval from ``years`` and ``months`` fields.
+    Returns the actual year-month with month in the range of [0, 11].
+    Both ``years`` and ``months`` can be zero, positive or negative.
+    Throws an error when inputs lead to int overflow,
+    e.g., make_ym_interval(178956970, 8). ::
+
+        SELECT make_ym_interval(1, 2); -- 1-2
+        SELECT make_ym_interval(1, 0); -- 1-0
+        SELECT make_ym_interval(-1, 1); -- -0-11
+        SELECT make_ym_interval(1, 100); -- 9-4
+        SELECT make_ym_interval(1, 12); -- 2-0
+        SELECT make_ym_interval(1, -12); -- 0-0
+        SELECT make_ym_interval(2); -- 2-0
+        SELECT make_ym_interval(); -- 0-0
+
+.. spark:function:: minute(timestamp) -> integer
+
+    Returns the minutes of ``timestamp``.::
+
+        SELECT minute('2009-07-30 12:58:59'); -- 58
+
 .. spark:function:: month(date) -> integer
 
     Returns the month of ``date``. ::
@@ -265,11 +259,46 @@ These functions support TIMESTAMP and DATE input types.
         SELECT next_day('2015-07-23', "tu"); -- '2015-07-28'
         SELECT next_day('2015-07-23', "we"); -- '2015-07-29'
 
+.. spark:function:: quarter(date) -> integer
+
+    Returns the quarter of ``date``. The value ranges from ``1`` to ``4``. ::
+
+        SELECT quarter('2009-07-30'); -- 3
+
 .. spark:function:: second(timestamp) -> integer
 
     Returns the seconds of ``timestamp``. ::
 
         SELECT second('2009-07-30 12:58:59'); -- 59
+
+.. spark:function:: timestampadd(unit, value, timestamp) -> timestamp
+
+    Adds an interval ``value`` of type ``unit`` to ``timestamp``.
+    Subtraction can be performed by using a negative ``value``.
+    Throws exception if ``unit`` is invalid.
+    ``unit`` is case insensitive and must be one of the following:
+    ``YEAR``, ``QUARTER``, ``MONTH``, ``WEEK``, ``DAY``, ``DAYOFYEAR``, ``HOUR``, ``MINUTE``, ``SECOND``,
+    ``MILLISECOND``, ``MICROSECOND``. ::
+
+        SELECT timestampadd(YEAR, 1, '2030-02-28 10:00:00.500'); -- 2031-02-28 10:00:00.500
+        SELECT timestampadd(DAY, 1, '2020-02-29 10:00:00.500'); -- 2020-03-01 10:00:00.500
+        SELECT timestampadd(DAYOFYEAR, 1, '2020-02-29 10:00:00.500'); -- 2020-03-01 10:00:00.500
+        SELECT timestampadd(SECOND, 10, '2019-03-01 10:00:00.500'); -- 2019-03-01 10:00:10.500
+        SELECT timestampadd(MICROSECOND, 500, '2019-02-28 10:01:00.500999'); -- 2019-02-28 10:01:00.501499
+
+.. spark:function:: timestampdiff(unit, timestamp1, timestamp2) -> bigint
+
+    Returns ``timestamp2`` - ``timestamp1`` expressed in terms of ``unit``, the fraction
+    part is truncated.
+    Throws exception if ``unit`` is invalid.
+    ``unit`` is case insensitive and must be one of the following:
+    ``YEAR``, ``QUARTER``, ``MONTH``, ``WEEK``, ``DAY``, ``HOUR``, ``MINUTE``, ``SECOND``,
+    ``MILLISECOND``, ``MICROSECOND``. ::
+
+        SELECT timestampdiff(YEAR, '2020-02-29 10:00:00.500', '2030-02-28 10:00:00.500'); -- 9
+        SELECT timestampdiff(DAY, '2019-01-30 10:00:00.500', '2020-02-29 10:00:00.500'); -- 395
+        SELECT timestampdiff(SECOND, '2019-02-28 10:00:00.500', '2019-03-01 10:00:00.500'); -- 86400
+        SELECT timestampdiff(MICROSECOND, '2019-02-28 10:00:00.000000', '2019-02-28 10:01:00.500999'); -- 60500999
 
 .. spark:function:: timestamp_micros(x) -> timestamp
 
@@ -285,30 +314,65 @@ These functions support TIMESTAMP and DATE input types.
 
         SELECT timestamp_millis(1230219000123); -- '2008-12-25 15:30:00.123'
 
-.. spark:function:: to_unix_timestamp(date) -> integer
+.. spark:function:: timestamp_seconds(x) -> timestamp
+
+    Returns timestamp from the number of seconds (can be fractional) since UTC epoch.
+    Supported types are: TINYINT, SMALLINT, INTEGER, BIGINT, FLOAT, and DOUBLE.
+    For integral types (TINYINT, SMALLINT, INTEGER, BIGINT), the function directly
+    converts the number of seconds to a timestamp. For floating-point types
+    (FLOAT, DOUBLE), the function scales the input to microseconds, truncates
+    towards zero, and saturates the result to the minimum and maximum values allowed
+    in Spark.::
+
+        SELECT timestamp_seconds(1230219000); -- '2008-12-25 15:30:00'
+        SELECT timestamp_seconds(1230219000.123); -- '2008-12-25 15:30:00.123'
+        SELECT timestamp_seconds(double(1.1234567)); -- '1970-01-01 00:00:01.123456'
+        SELECT timestamp_seconds(float(3.4028235E+38)); -- '+294247-01-10 04:00:54.775807'
+
+.. spark:function:: to_unix_timestamp(date) -> bigint
    :noindex:
 
-    Alias for ``unix_timestamp(date) -> integer``.
+    Alias for ``unix_timestamp(date) -> bigint``.
 
-.. spark:function:: to_unix_timestamp(string) -> integer
+.. spark:function:: to_unix_timestamp(string) -> bigint
 
-    Alias for ``unix_timestamp(string) -> integer``.
+    Alias for ``unix_timestamp(string) -> bigint``.
 
-.. spark:function:: to_unix_timestamp(string, format) -> integer
+.. spark:function:: to_unix_timestamp(string, format) -> bigint
    :noindex:
 
-    Alias for ``unix_timestamp(string, format) -> integer``.
+    Alias for ``unix_timestamp(string, format) -> bigint``.
 
-.. spark:function:: to_unix_timestamp(timestamp) -> integer
+.. spark:function:: to_unix_timestamp(timestamp) -> bigint
    :noindex:
 
-    Alias for ``unix_timestamp(timestamp) -> integer``.
+    Alias for ``unix_timestamp(timestamp) -> bigint``.
 
 .. spark:function:: to_utc_timestamp(timestamp, string) -> timestamp
 
     Returns the timestamp value from the given timezone to UTC timezone. ::
 
         SELECT to_utc_timestamp('2015-07-24 00:00:00', 'America/Los_Angeles'); -- '2015-07-24 07:00:00'
+
+.. spark:function:: trunc(date, fmt) -> date
+
+    Returns ``date`` truncated to the unit specified by the format model ``fmt``.
+    Returns NULL if ``fmt`` is invalid.
+
+    ``fmt`` is case insensitive and must be one of the following:
+        * "YEAR", "YYYY", "YY" - truncate to the first date of the year that the ``date`` falls in
+        * "QUARTER" - truncate to the first date of the quarter that the ``date`` falls in
+        * "MONTH", "MM", "MON" - truncate to the first date of the month that the ``date`` falls in
+        * "WEEK" - truncate to the Monday of the week that the ``date`` falls in
+
+    ::
+
+        SELECT trunc('2019-08-04', 'week'); -- 2019-07-29
+        SELECT trunc('2019-08-04', 'quarter'); -- 2019-07-01
+        SELECT trunc('2009-02-12', 'MM'); -- 2009-02-01
+        SELECT trunc('2015-10-27', 'YEAR'); -- 2015-01-01
+        SELECT trunc('2015-10-27', ''); -- NULL
+        SELECT trunc('2015-10-27', 'day'); -- NULL
 
 .. spark:function:: unix_date(date) -> integer
 
@@ -337,11 +401,11 @@ These functions support TIMESTAMP and DATE input types.
 
         SELECT unix_seconds('1970-01-01 00:00:01'); -- 1
 
-.. spark:function:: unix_timestamp() -> integer
+.. spark:function:: unix_timestamp() -> bigint
 
     Returns the current UNIX timestamp in seconds.
 
-.. spark:function:: unix_timestamp(date) -> integer
+.. spark:function:: unix_timestamp(date) -> bigint
 
     Converts the time represented by ``date`` at the configured session timezone to the GMT time, and extracts the seconds. ::
 
@@ -349,14 +413,14 @@ These functions support TIMESTAMP and DATE input types.
         SELECT unix_timestamp('2024-10-01'); -- 1727740800
         SELECT unix_timestamp('-2025-02-18'); -- -126065894400
 
-.. spark:function:: unix_timestamp(string) -> integer
+.. spark:function:: unix_timestamp(string) -> bigint
    :noindex:
 
     Returns the UNIX timestamp of time specified by ``string``. Assumes the
     format ``yyyy-MM-dd HH:mm:ss``. Returns null if ``string`` does not match
     ``format``.
 
-.. spark:function:: unix_timestamp(string, format) -> integer
+.. spark:function:: unix_timestamp(string, format) -> bigint
    :noindex:
 
     Returns the UNIX timestamp of time specified by ``string`` using the
@@ -366,7 +430,7 @@ These functions support TIMESTAMP and DATE input types.
     Returns null if ``string`` does not match ``format`` or if ``format``
     is invalid.
 
-.. spark:function:: unix_timestamp(timestamp) -> integer
+.. spark:function:: unix_timestamp(timestamp) -> bigint
 
     Returns the UNIX timestamp of the given ``timestamp`` in seconds. ::
 
@@ -428,4 +492,3 @@ returned for invalid format; otherwise, exception is thrown. ::
         SELECT from_unixtime(100, '!@#$%^&*'); -- throws exception) (for Joda date formatter)
         SELECT get_timestamp('1970-01-01', '!@#$%^&*'); -- NULL (parsing error) (for Simple date formatter)
         SELECT get_timestamp('1970-01-01', '!@#$%^&*'); -- throws exception) (for Joda date formatter)
-

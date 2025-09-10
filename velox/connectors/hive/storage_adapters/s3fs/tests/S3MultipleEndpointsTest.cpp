@@ -17,6 +17,7 @@
 #include <folly/init/Init.h>
 
 #include "gtest/gtest.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/storage_adapters/s3fs/RegisterS3FileSystem.h"
 #include "velox/connectors/hive/storage_adapters/s3fs/S3Util.h"
 #include "velox/connectors/hive/storage_adapters/s3fs/tests/S3Test.h"
@@ -38,7 +39,7 @@ namespace {
 class S3MultipleEndpoints : public S3Test, public ::test::VectorTestBase {
  public:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
   static void TearDownTestCase() {
     filesystems::finalizeS3FileSystem();
@@ -52,8 +53,6 @@ class S3MultipleEndpoints : public S3Test, public ::test::VectorTestBase {
     minioSecondServer_->addBucket(kBucketName.data());
 
     filesystems::registerS3FileSystem();
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
     parquet::registerParquetReaderFactory();
     parquet::registerParquetWriterFactory();
   }
@@ -63,20 +62,15 @@ class S3MultipleEndpoints : public S3Test, public ::test::VectorTestBase {
       std::string_view connectorId2,
       const std::unordered_map<std::string, std::string> config1Override = {},
       const std::unordered_map<std::string, std::string> config2Override = {}) {
-    auto hiveConnector1 =
-        connector::getConnectorFactory(
-            connector::hive::HiveConnectorFactory::kHiveConnectorName)
-            ->newConnector(
-                std::string(connectorId1),
-                minioServer_->hiveConfig(config1Override),
-                ioExecutor_.get());
-    auto hiveConnector2 =
-        connector::getConnectorFactory(
-            connector::hive::HiveConnectorFactory::kHiveConnectorName)
-            ->newConnector(
-                std::string(connectorId2),
-                minioSecondServer_->hiveConfig(config2Override),
-                ioExecutor_.get());
+    connector::hive::HiveConnectorFactory factory;
+    auto hiveConnector1 = factory.newConnector(
+        std::string(connectorId1),
+        minioServer_->hiveConfig(config1Override),
+        ioExecutor_.get());
+    auto hiveConnector2 = factory.newConnector(
+        std::string(connectorId2),
+        minioSecondServer_->hiveConfig(config2Override),
+        ioExecutor_.get());
     connector::registerConnector(hiveConnector1);
     connector::registerConnector(hiveConnector2);
   }
@@ -84,8 +78,6 @@ class S3MultipleEndpoints : public S3Test, public ::test::VectorTestBase {
   void TearDown() override {
     parquet::unregisterParquetReaderFactory();
     parquet::unregisterParquetWriterFactory();
-    connector::unregisterConnectorFactory(
-        connector::hive::HiveConnectorFactory::kHiveConnectorName);
     S3Test::TearDown();
   }
 

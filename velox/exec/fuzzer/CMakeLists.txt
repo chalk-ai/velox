@@ -16,9 +16,16 @@ add_library(
   velox_fuzzer_util
   ReferenceQueryRunner.cpp
   DuckQueryRunner.cpp
+  DuckQueryRunnerToSqlPlanNodeVisitor.cpp
   PrestoQueryRunner.cpp
+  PrestoQueryRunnerIntermediateTypeTransforms.cpp
+  PrestoQueryRunnerTimestampWithTimeZoneTransform.cpp
+  PrestoQueryRunnerJsonTransform.cpp
+  PrestoQueryRunnerIntervalTransform.cpp
+  PrestoQueryRunnerToSqlPlanNodeVisitor.cpp
   FuzzerUtil.cpp
-  ToSQLUtil.cpp)
+  PrestoSql.cpp
+)
 
 target_link_libraries(
   velox_fuzzer_util
@@ -30,12 +37,13 @@ target_link_libraries(
   velox_presto_types
   cpr::cpr
   Boost::regex
-  velox_type_parser
+  velox_presto_type_parser
   Folly::folly
   velox_hive_connector
   velox_dwio_dwrf_writer
   velox_dwio_catalog_fbhive
-  velox_dwio_faulty_file_sink)
+  velox_dwio_faulty_file_sink
+)
 
 add_library(velox_aggregation_fuzzer_base AggregationFuzzerBase.cpp)
 
@@ -53,7 +61,8 @@ target_link_libraries(
   velox_fuzzer_util
   velox_expression_test_utility
   velox_vector
-  velox_core)
+  velox_core
+)
 
 add_library(velox_aggregation_fuzzer AggregationFuzzer.cpp)
 
@@ -64,7 +73,8 @@ target_link_libraries(
   velox_exec_test_lib
   velox_expression_test_utility
   velox_aggregation_fuzzer_base
-  velox_fuzzer_util)
+  velox_fuzzer_util
+)
 
 add_library(velox_window_fuzzer WindowFuzzer.cpp)
 
@@ -76,7 +86,8 @@ target_link_libraries(
   velox_exec_test_lib
   velox_expression_test_utility
   velox_aggregation_fuzzer_base
-  velox_temp_path)
+  velox_temp_path
+)
 
 add_library(velox_row_number_fuzzer_base_lib RowNumberFuzzerBase.cpp)
 
@@ -85,33 +96,39 @@ target_link_libraries(
   velox_dwio_dwrf_reader
   velox_fuzzer_util
   velox_vector_fuzzer
-  velox_exec_test_lib)
+  velox_exec_test_lib
+)
 
 add_library(velox_row_number_fuzzer_lib RowNumberFuzzer.cpp)
 
 target_link_libraries(
-  velox_row_number_fuzzer_lib velox_row_number_fuzzer_base_lib velox_type
-  velox_expression_test_utility)
+  velox_row_number_fuzzer_lib
+  velox_row_number_fuzzer_base_lib
+  velox_type
+  velox_expression_test_utility
+)
 
 # RowNumber Fuzzer.
 add_executable(velox_row_number_fuzzer RowNumberFuzzerRunner.cpp)
 
-target_link_libraries(
-  velox_row_number_fuzzer velox_row_number_fuzzer_lib)
+target_link_libraries(velox_row_number_fuzzer velox_row_number_fuzzer_lib)
 
 add_library(velox_topn_row_number_fuzzer_lib TopNRowNumberFuzzer.cpp)
 
 target_link_libraries(
-  velox_topn_row_number_fuzzer_lib velox_row_number_fuzzer_base_lib velox_type
-  velox_expression_test_utility)
+  velox_topn_row_number_fuzzer_lib
+  velox_row_number_fuzzer_base_lib
+  velox_type
+  velox_expression_test_utility
+)
 
 # TopNRowNumber Fuzzer.
 add_executable(velox_topn_row_number_fuzzer TopNRowNumberFuzzerRunner.cpp)
 
-target_link_libraries(
-  velox_topn_row_number_fuzzer velox_topn_row_number_fuzzer_lib)
+target_link_libraries(velox_topn_row_number_fuzzer velox_topn_row_number_fuzzer_lib)
 
-add_library(velox_join_fuzzer JoinFuzzer.cpp)
+# Join Fuzzer.
+add_executable(velox_join_fuzzer JoinFuzzerRunner.cpp JoinFuzzer.cpp JoinMaker.cpp)
 
 target_link_libraries(
   velox_join_fuzzer
@@ -119,7 +136,8 @@ target_link_libraries(
   velox_vector_fuzzer
   velox_fuzzer_util
   velox_exec_test_lib
-  velox_expression_test_utility)
+  velox_expression_test_utility
+)
 
 add_library(velox_writer_fuzzer WriterFuzzer.cpp)
 
@@ -133,9 +151,15 @@ target_link_libraries(
   velox_temp_path
   velox_vector_test_lib
   velox_dwio_faulty_file_sink
-  velox_file_test_utils)
+  velox_file_test_utils
+)
 
-add_library(velox_memory_arbitration_fuzzer MemoryArbitrationFuzzer.cpp)
+# Arbitration Fuzzer.
+add_executable(
+  velox_memory_arbitration_fuzzer
+  MemoryArbitrationFuzzerRunner.cpp
+  MemoryArbitrationFuzzer.cpp
+)
 
 target_link_libraries(
   velox_memory_arbitration_fuzzer
@@ -146,16 +170,34 @@ target_link_libraries(
   velox_exec_test_lib
   velox_expression_test_utility
   velox_functions_prestosql
-  velox_aggregates)
+  velox_aggregates
+)
 
 add_library(velox_cache_fuzzer_lib CacheFuzzer.cpp)
 
 # Cache Fuzzer
 add_executable(velox_cache_fuzzer CacheFuzzerRunner.cpp)
 
-target_link_libraries(
-  velox_cache_fuzzer velox_cache_fuzzer_lib velox_fuzzer_util)
+target_link_libraries(velox_cache_fuzzer velox_cache_fuzzer_lib velox_fuzzer_util)
 
 target_link_libraries(
-  velox_cache_fuzzer_lib velox_dwio_common velox_temp_path
-  velox_vector_test_lib)
+  velox_cache_fuzzer_lib
+  velox_dwio_common
+  velox_temp_path
+  velox_vector_test_lib
+)
+
+# Exchange Fuzzer
+add_executable(velox_exchange_fuzzer ExchangeFuzzer.cpp)
+
+target_link_libraries(
+  velox_exchange_fuzzer
+  velox_exec_test_lib
+  velox_aggregates
+  velox_vector_test_lib
+  velox_vector_fuzzer
+)
+
+if(${VELOX_BUILD_TESTING})
+  add_subdirectory(tests)
+endif()

@@ -44,7 +44,8 @@ class DwrfUnit : public LoadUnit {
       uint32_t stripeIndex,
       std::shared_ptr<dwio::common::ColumnSelector> columnSelector,
       const std::shared_ptr<BitSet>& projectedNodes,
-      RowReaderOptions options)
+      RowReaderOptions options,
+      const dwio::common::ColumnReaderOptions& columnReaderOptions)
       : stripeReaderBase_{stripeReaderBase},
         strideIndexProvider_{strideIndexProvider},
         columnReaderStatistics_{&columnReaderStatistics},
@@ -52,6 +53,7 @@ class DwrfUnit : public LoadUnit {
         columnSelector_{std::move(columnSelector)},
         projectedNodes_{projectedNodes},
         options_{std::move(options)},
+        columnReaderOptions_{columnReaderOptions},
         stripeInfo_{
             stripeReaderBase.getReader().footer().stripes(stripeIndex_)} {}
 
@@ -90,6 +92,7 @@ class DwrfUnit : public LoadUnit {
   const std::shared_ptr<dwio::common::ColumnSelector> columnSelector_;
   const std::shared_ptr<BitSet> projectedNodes_;
   const RowReaderOptions options_;
+  const dwio::common::ColumnReaderOptions& columnReaderOptions_;
   const StripeInformationWrapper stripeInfo_;
 
   // Mutables
@@ -160,6 +163,7 @@ void DwrfUnit::ensureDecoders() {
 
   if (scanSpec) {
     selectiveColumnReader_ = SelectiveDwrfReader::build(
+        columnReaderOptions_,
         options_.requestedType() ? options_.requestedType() : fileType->type(),
         fileType,
         *stripeStreams_,
@@ -304,6 +308,9 @@ DwrfRowReader::DwrfRowReader(
   if (!emptyFile()) {
     getReader().loadCache();
   }
+
+  columnReaderOptions_ = dwio::common::makeColumnReaderOptions(
+      readerBaseShared()->readerOptions());
 }
 
 std::unique_ptr<ColumnReader>& DwrfRowReader::getColumnReader() {
@@ -328,7 +335,8 @@ std::unique_ptr<dwio::common::UnitLoader> DwrfRowReader::getUnitLoader() {
         stripe,
         columnSelector_,
         projectedNodes_,
-        options_));
+        options_,
+        columnReaderOptions_));
   }
   std::shared_ptr<UnitLoaderFactory> unitLoaderFactory =
       options_.unitLoaderFactory();
@@ -744,8 +752,10 @@ std::optional<size_t> DwrfRowReader::estimatedRowSizeHelper(
     case TypeKind::ARRAY:
     case TypeKind::MAP:
     case TypeKind::ROW: {
-      // start the estimate with the offsets and hasNulls vectors sizes
-      size_t totalEstimate = valueCount * (sizeof(uint8_t) + sizeof(uint64_t));
+      // Start the estimate with the offsets and sizes buffers.
+      size_t totalEstimate = nodeType.kind() == TypeKind::ROW
+          ? 0
+          : 2 * valueCount * sizeof(vector_size_t);
       for (int32_t i = 0; i < nodeType.subtypesSize(); ++i) {
         if (!shouldReadNode(nodeType.subtypes(i))) {
           continue;
@@ -1028,6 +1038,9 @@ std::unique_ptr<DwrfRowReader> DwrfReader::createDwrfRowReader(
 std::unique_ptr<DwrfReader> DwrfReader::create(
     std::unique_ptr<dwio::common::BufferedInput> input,
     const ReaderOptions& options) {
+  if (options.allowEmptyFile() && input->getReadFile()->size() == 0) {
+    return nullptr;
+  }
   return std::make_unique<DwrfReader>(options, std::move(input));
 }
 

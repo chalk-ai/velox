@@ -82,6 +82,10 @@ class SortedAggregations {
   /// results in the specified 'result' vector.
   void extractValues(folly::Range<char**> groups, const RowVectorPtr& result);
 
+  uint64_t inputRowBytes() const {
+    return inputData_->allocatedBytes();
+  }
+
   /// Clears all data accumulated so far. Used to release memory after spilling.
   void clear();
 
@@ -137,6 +141,8 @@ class SortedAggregations {
       return left == right;
     }
   };
+
+  memory::MemoryPool* const pool_;
 
   // Aggregates grouped by sorting keys and orders.
   folly::

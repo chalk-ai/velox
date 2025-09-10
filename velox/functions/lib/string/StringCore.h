@@ -43,6 +43,30 @@
 #endif
 
 namespace facebook::velox::functions {
+namespace detail {
+
+// Helper function to check if a character is cased. Compatible with the
+// 'isCased' implementation in 'ConditionalSpecialCasting.java' of JDK, which is
+// used by 'toLowerCase' function in Spark SQL.
+FOLLY_ALWAYS_INLINE bool isCased(utf8proc_int32_t ch) {
+  auto type = utf8proc_category(ch);
+  // Lowercase letter, uppercase letter or titlecase letter.
+  if (type == UTF8PROC_CATEGORY_LL || type == UTF8PROC_CATEGORY_LU ||
+      type == UTF8PROC_CATEGORY_LT) {
+    return true;
+  }
+  // Modifier letters and special cases.
+  if ((ch >= 0x02B0 && ch <= 0x02B8) || (ch >= 0x02C0 && ch <= 0x02C1) ||
+      (ch >= 0x02E0 && ch <= 0x02E4) || ch == 0x0345 || ch == 0x037A ||
+      (ch >= 0x1D2C && ch <= 0x1D61) || (ch >= 0x2160 && ch <= 0x217F) ||
+      (ch >= 0x24B6 && ch <= 0x24E9)) {
+    return true;
+  }
+  return false;
+}
+
+} // namespace detail
+
 namespace stringCore {
 
 /// Check if a given string is ascii
@@ -75,19 +99,20 @@ FOLLY_ALWAYS_INLINE bool isAscii(const char* str, size_t length) {
 FOLLY_ALWAYS_INLINE static void
 reverseAscii(char* output, const char* input, size_t length) {
   auto j = length - 1;
-  VECTORIZE_LOOP_IF_POSSIBLE for (auto i = 0; i < length; ++i, --j) {
+  VECTORIZE_LOOP_IF_POSSIBLE for (size_t i = 0; i < length; ++i, --j) {
     output[i] = input[j];
   }
 }
 
 /// Perform reverse for utf8 string input
 FOLLY_ALWAYS_INLINE static void
-reverseUnicode(char* output, const char* input, size_t length) {
-  auto inputIdx = 0;
-  auto outputIdx = length;
+reverseUnicode(char* output, const char* input, int64_t length) {
+  int64_t inputIdx = 0;
+  int64_t outputIdx = static_cast<int64_t>(length);
   while (inputIdx < length) {
     int size = 1;
-    auto valid = utf8proc_codepoint(&input[inputIdx], input + length, size);
+    const auto valid =
+        utf8proc_codepoint(&input[inputIdx], input + length, size);
 
     // if invalid utf8 gets byte sequence with nextCodePoint==-1 and size==1,
     // continue reverse invalid sequence byte by byte.
@@ -107,7 +132,7 @@ reverseUnicode(char* output, const char* input, size_t length) {
 /// Perform upper for ascii string input
 FOLLY_ALWAYS_INLINE static void
 upperAscii(char* output, const char* input, size_t length) {
-  VECTORIZE_LOOP_IF_POSSIBLE for (auto i = 0; i < length; i++) {
+  VECTORIZE_LOOP_IF_POSSIBLE for (size_t i = 0; i < length; i++) {
     if (input[i] >= 'a' && input[i] <= 'z') {
       output[i] = input[i] - 32;
     } else {
@@ -119,7 +144,7 @@ upperAscii(char* output, const char* input, size_t length) {
 /// Perform lower for ascii string input
 FOLLY_ALWAYS_INLINE static void
 lowerAscii(char* output, const char* input, size_t length) {
-  VECTORIZE_LOOP_IF_POSSIBLE for (auto i = 0; i < length; i++) {
+  VECTORIZE_LOOP_IF_POSSIBLE for (size_t i = 0; i < length; i++) {
     if (input[i] >= 'A' && input[i] <= 'Z') {
       output[i] = input[i] + 32;
     } else {
@@ -137,8 +162,8 @@ FOLLY_ALWAYS_INLINE size_t upperUnicode(
     size_t outputLength,
     const char* input,
     size_t inputLength) {
-  auto inputIdx = 0;
-  auto outputIdx = 0;
+  size_t inputIdx = 0;
+  size_t outputIdx = 0;
 
   while (inputIdx < inputLength) {
     utf8proc_int32_t nextCodePoint;
@@ -171,14 +196,20 @@ FOLLY_ALWAYS_INLINE size_t upperUnicode(
 /// Perform lower for utf8 string input, output should be pre-allocated and
 /// large enough for the results outputLength refers to the number of bytes
 /// available in the output buffer, and inputLength is the number of bytes in
-/// the input string
+/// the input string.
+/// @tparam turkishCasing If true, Spark's specific behavior on Turkish casing
+/// is considered. For 'İ' Spark's lower case is 'i̇' and Presto's is 'i'.
+/// @tparam greekFinalSigma If true, Greek final sigma rule is applied. For the
+/// uppercase letter Σ, if it appears at the end of a word, it becomes ς. In all
+/// other positions, it becomes σ. If false, it is always converted to σ.
+template <bool turkishCasing, bool greekFinalSigma>
 FOLLY_ALWAYS_INLINE size_t lowerUnicode(
     char* output,
     size_t outputLength,
     const char* input,
     size_t inputLength) {
-  auto inputIdx = 0;
-  auto outputIdx = 0;
+  size_t inputIdx = 0;
+  size_t outputIdx = 0;
 
   while (inputIdx < inputLength) {
     utf8proc_int32_t nextCodePoint;
@@ -194,6 +225,41 @@ FOLLY_ALWAYS_INLINE size_t lowerUnicode(
     }
 
     inputIdx += size;
+
+    if constexpr (turkishCasing) {
+      // Handle Turkish-specific case for İ (U+0130).
+      if (UNLIKELY(nextCodePoint == 0x0130)) {
+        // Map to i̇ (U+0069 U+0307).
+        output[outputIdx++] = 0x69;
+        output[outputIdx++] = 0xCC;
+        output[outputIdx++] = 0x87;
+        continue;
+      }
+    }
+
+    if constexpr (greekFinalSigma) {
+      // Handle Greek final sigma for Σ (U+03A3).
+      if (nextCodePoint == 0x03A3) {
+        // Look ahead to see if this is the end of a word.
+        bool isFinal = true;
+        if (inputIdx < inputLength) {
+          int lookaheadSize;
+          utf8proc_int32_t lookaheadCodePoint = utf8proc_codepoint(
+              &input[inputIdx], input + inputLength, lookaheadSize);
+          if (lookaheadCodePoint != -1 && detail::isCased(lookaheadCodePoint)) {
+            // If the next code point is cased, not the final.
+            isFinal = false;
+          }
+        }
+        // Convert to ς or σ.
+        utf8proc_int32_t lowerSigma = isFinal ? 0x03C2 : 0x03C3;
+        auto newSize = utf8proc_encode_char(
+            lowerSigma, reinterpret_cast<unsigned char*>(&output[outputIdx]));
+        outputIdx += newSize;
+        continue;
+      }
+    }
+
     auto lowerCodePoint = utf8proc_tolower(nextCodePoint);
 
     assert(
@@ -266,7 +332,7 @@ lengthUnicode(const char* inputBuffer, size_t bufferLength) {
  * @return the number of characters represented by the input utf8 string
  */
 FOLLY_ALWAYS_INLINE int64_t
-cappedLengthUnicode(const char* input, size_t size, size_t maxChars) {
+cappedLengthUnicode(const char* input, size_t size, int64_t maxChars) {
   // First address after the last byte in the input
   auto end = input + size;
   auto currentChar = input;
@@ -300,9 +366,9 @@ cappedLengthUnicode(const char* input, size_t size, size_t maxChars) {
 /// maxChars
 ///
 FOLLY_ALWAYS_INLINE int64_t
-cappedByteLengthUnicode(const char* input, size_t size, int64_t maxChars) {
-  size_t utf8Position = 0;
-  size_t numCharacters = 0;
+cappedByteLengthUnicode(const char* input, int64_t size, int64_t maxChars) {
+  int64_t utf8Position = 0;
+  int64_t numCharacters = 0;
   while (utf8Position < size && numCharacters < maxChars) {
     auto charSize = utf8proc_char_length(input + utf8Position);
     utf8Position += UNLIKELY(charSize < 0) ? 1 : charSize;
@@ -482,7 +548,7 @@ inline static size_t replace(
     }
 
     // add replacement before and after each char in inputString
-    for (auto i = 0; i < inputString.size(); i++) {
+    for (size_t i = 0; i < inputString.size(); i++) {
       writeReplacement();
 
       outputString[writePosition] = inputString[i];
@@ -567,7 +633,7 @@ static inline std::pair<size_t, size_t> getByteRange(
     skipContBytes();
 
     // Find startByteIndex
-    for (auto i = 0; nextCharOffset < strLength && i < startCharPosition - 1;
+    for (size_t i = 0; nextCharOffset < strLength && i < startCharPosition - 1;
          i++) {
       nextCharOffset++;
 
@@ -578,7 +644,7 @@ static inline std::pair<size_t, size_t> getByteRange(
     size_t charCountInRange = 0;
 
     // Find endByteIndex
-    for (auto i = 0; nextCharOffset < strLength && i < length; i++) {
+    for (size_t i = 0; nextCharOffset < strLength && i < length; i++) {
       nextCharOffset++;
       charCountInRange++;
 

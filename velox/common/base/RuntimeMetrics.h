@@ -19,9 +19,6 @@
 #include <fmt/format.h>
 #include <folly/CppAttributes.h>
 #include <limits>
-#include <sstream>
-
-#include "velox/common/base/SuccinctPrinter.h"
 
 namespace facebook::velox {
 
@@ -57,7 +54,7 @@ struct RuntimeMetric {
   /// positive.
   void aggregate();
 
-  void printMetric(std::stringstream& stream) const;
+  void printMetric(std::ostream& stream) const;
 
   void merge(const RuntimeMetric& other);
 
@@ -81,11 +78,10 @@ class BaseRuntimeStatWriter {
 /// thread.
 /// NOTE: This is only used by the Velox Driver at the moment, which ensures the
 /// active Operator is being used by the writer.
-void setThreadLocalRunTimeStatWriter(
-    BaseRuntimeStatWriter* FOLLY_NULLABLE writer);
+void setThreadLocalRunTimeStatWriter(BaseRuntimeStatWriter* writer);
 
 /// Retrives the current runtime stats writer.
-BaseRuntimeStatWriter* FOLLY_NULLABLE getThreadLocalRunTimeStatWriter();
+BaseRuntimeStatWriter* getThreadLocalRunTimeStatWriter();
 
 /// Writes runtime counter to the current Operator running on that thread.
 void addThreadLocalRuntimeStat(
@@ -95,8 +91,7 @@ void addThreadLocalRuntimeStat(
 /// Scope guard to conveniently set and revert back the current stat writer.
 class RuntimeStatWriterScopeGuard {
  public:
-  explicit RuntimeStatWriterScopeGuard(
-      BaseRuntimeStatWriter* FOLLY_NULLABLE writer)
+  explicit RuntimeStatWriterScopeGuard(BaseRuntimeStatWriter* writer)
       : prevWriter_(getThreadLocalRunTimeStatWriter()) {
     setThreadLocalRunTimeStatWriter(writer);
   }
@@ -106,7 +101,7 @@ class RuntimeStatWriterScopeGuard {
   }
 
  private:
-  BaseRuntimeStatWriter* const FOLLY_NULLABLE prevWriter_;
+  BaseRuntimeStatWriter* const prevWriter_;
 };
 
 } // namespace facebook::velox

@@ -20,6 +20,7 @@
 
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/Memory.h"
+#include "velox/common/memory/SharedArbitrator.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveDataSink.h"
@@ -43,10 +44,12 @@
 #include "velox/tool/trace/AggregationReplayer.h"
 #include "velox/tool/trace/FilterProjectReplayer.h"
 #include "velox/tool/trace/HashJoinReplayer.h"
+#include "velox/tool/trace/IndexLookupJoinReplayer.h"
 #include "velox/tool/trace/OperatorReplayerBase.h"
 #include "velox/tool/trace/PartitionedOutputReplayer.h"
 #include "velox/tool/trace/TableScanReplayer.h"
 #include "velox/tool/trace/TableWriterReplayer.h"
+#include "velox/tool/trace/UnnestReplayer.h"
 #include "velox/type/Type.h"
 
 #ifdef VELOX_ENABLE_PARQUET
@@ -92,7 +95,7 @@ DEFINE_int32(
     "Specify the shuffle serialization format, 0: presto columnar, 1: compact row, 2: spark unsafe row.");
 DEFINE_string(
     memory_arbitrator_type,
-    "shared",
+    "SHARED",
     "Specify the memory arbitrator type.");
 DEFINE_uint64(
     query_memory_capacity_mb,
@@ -243,13 +246,14 @@ TraceReplayRunner::TraceReplayRunner()
 
 void TraceReplayRunner::init() {
   VELOX_USER_CHECK(!FLAGS_root_dir.empty(), "--root_dir must be provided");
-  VELOX_USER_CHECK(!FLAGS_query_id.empty(), "--query_id must be provided");
   VELOX_USER_CHECK(!FLAGS_node_id.empty(), "--node_id must be provided");
 
   if (!memory::MemoryManager::testInstance()) {
-    memory::MemoryManagerOptions options;
+    velox::memory::SharedArbitrator::registerFactory();
+
+    memory::MemoryManager::Options options;
     options.arbitratorKind = FLAGS_memory_arbitrator_type;
-    memory::initializeMemoryManager({});
+    memory::initializeMemoryManager(options);
   }
   filesystems::registerLocalFileSystem();
   filesystems::registerS3FileSystem();
@@ -267,6 +271,7 @@ void TraceReplayRunner::init() {
 #endif
 
   core::PlanNode::registerSerDe();
+  velox::exec::trace::registerDummySourceSerDe();
   core::ITypedExpr::registerSerDe();
   common::Filter::registerSerDe();
   Type::registerSerDe();
@@ -283,22 +288,12 @@ void TraceReplayRunner::init() {
   if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kUnsafeRow)) {
     serializer::spark::UnsafeRowVectorSerde::registerNamedVectorSerde();
   }
-  connector::hive::HiveTableHandle::registerSerDe();
-  connector::hive::LocationHandle::registerSerDe();
-  connector::hive::HiveColumnHandle::registerSerDe();
-  connector::hive::HiveInsertTableHandle::registerSerDe();
-  connector::hive::HiveConnectorSplit::registerSerDe();
-  connector::hive::registerHivePartitionFunctionSerDe();
-  connector::hive::HiveBucketProperty::registerSerDe();
+
+  connector::hive::HiveConnector::registerSerDe();
 
   functions::prestosql::registerAllScalarFunctions(FLAGS_function_prefix);
   aggregate::prestosql::registerAllAggregateFunctions(FLAGS_function_prefix);
   parse::registerTypeResolver();
-
-  if (!facebook::velox::connector::hasConnectorFactory("hive")) {
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
-  }
 
   fs_ = filesystems::getFileSystem(FLAGS_root_dir, nullptr);
   const auto taskTraceDir = exec::trace::getTaskTraceDirectory(
@@ -353,14 +348,15 @@ TraceReplayRunner::createReplayer() const {
   } else if (traceNodeName == "TableScan") {
     const auto connectorId =
         taskTraceMetadataReader_->connectorId(FLAGS_node_id);
-    if (const auto& collectors = connector::getAllConnectors();
-        collectors.find(connectorId) == collectors.end()) {
-      const auto hiveConnector =
-          connector::getConnectorFactory("hive")->newConnector(
-              connectorId,
-              std::make_shared<config::ConfigBase>(
-                  std::unordered_map<std::string, std::string>()),
-              ioExecutor_.get());
+    VELOX_CHECK(connectorId.has_value());
+
+    if (!connector::hasConnector(connectorId.value())) {
+      connector::hive::HiveConnectorFactory factory;
+      const auto hiveConnector = factory.newConnector(
+          connectorId.value(),
+          std::make_shared<config::ConfigBase>(
+              std::unordered_map<std::string, std::string>()),
+          ioExecutor_.get());
       connector::registerConnector(hiveConnector);
     }
     replayer = std::make_unique<tool::trace::TableScanReplayer>(
@@ -384,6 +380,26 @@ TraceReplayRunner::createReplayer() const {
         cpuExecutor_.get());
   } else if (traceNodeName == "HashJoin") {
     replayer = std::make_unique<tool::trace::HashJoinReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "IndexLookupJoin") {
+    replayer = std::make_unique<tool::trace::IndexLookupJoinReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "Unnest") {
+    replayer = std::make_unique<tool::trace::UnnestReplayer>(
         FLAGS_root_dir,
         FLAGS_query_id,
         FLAGS_task_id,

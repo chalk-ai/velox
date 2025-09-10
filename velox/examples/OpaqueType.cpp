@@ -15,6 +15,7 @@
  */
 
 #include "velox/common/memory/Memory.h"
+#include "velox/core/Expressions.h"
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/Udf.h"
 #include "velox/type/Type.h"
@@ -187,7 +188,7 @@ int main(int argc, char** argv) {
   VELOX_REGISTER_VECTOR_FUNCTION(
       udf_map_resolver_vector, "map_resolver_vector");
 
-  memory::MemoryManager::initialize({});
+  memory::MemoryManager::initialize(memory::MemoryManager::Options{});
   // Create memory pool and other query-related structures.
   auto queryCtx = core::QueryCtx::create();
   auto pool = memory::memoryManager()->addLeafPool();
@@ -323,9 +324,9 @@ VectorPtr evaluate(
 
   auto exprPlan = std::make_shared<core::CallTypedExpr>(
       OPAQUE<UserDefinedOutput>(),
-      std::vector<core::TypedExprPtr>{
-          fieldAccessExprNode1, fieldAccessExprNode2},
-      functionName);
+      functionName,
+      fieldAccessExprNode1,
+      fieldAccessExprNode2);
 
   exec::ExprSet exprSet({exprPlan}, &execCtx);
   exec::EvalCtx evalCtx(&execCtx, &exprSet, rowVector.get());

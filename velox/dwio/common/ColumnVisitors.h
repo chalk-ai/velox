@@ -21,7 +21,6 @@
 #include "velox/dwio/common/DecoderUtil.h"
 #include "velox/dwio/common/SelectiveColumnReader.h"
 #include "velox/dwio/common/TypeUtil.h"
-
 namespace facebook::velox::dwio::common {
 
 // structs for extractValues in ColumnVisitor.
@@ -144,7 +143,12 @@ template <typename TFilter, typename ExtractValues, bool isDense>
 class StringDictionaryColumnVisitor;
 
 // Template parameter for controlling filtering and action on a set of rows.
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath = true>
 class ColumnVisitor {
  public:
   using FilterType = TFilter;
@@ -152,14 +156,14 @@ class ColumnVisitor {
   using HookType = typename Extract::HookType;
   using DataType = T;
   static constexpr bool dense = isDense;
-  static constexpr bool kHasBulkPath = true;
+  static constexpr bool kHasBulkPath = hasBulkPath;
   static constexpr bool kHasFilter =
       !std::is_same_v<FilterType, velox::common::AlwaysTrue>;
   static constexpr bool kHasHook = !std::is_same_v<HookType, NoHook>;
   static constexpr bool kFilterOnly = std::is_same_v<Extract, DropValues>;
 
   ColumnVisitor(
-      TFilter& filter,
+      const TFilter& filter,
       SelectiveColumnReader* reader,
       const RowSet& rows,
       ExtractValues values)
@@ -343,13 +347,6 @@ class ColumnVisitor {
     return currentRow() - rowAt(rowIndex_ - 1) - 1;
   }
 
-  // Returns space for 'size' items of T for a scan to fill. The scan
-  // calls addResults and related to mark which elements are part of
-  // the result.
-  inline T* mutableValues(int32_t size) {
-    return reader_->mutableValues<T>(size);
-  }
-
   SelectiveColumnReader& reader() const {
     return *reader_;
   }
@@ -411,7 +408,7 @@ class ColumnVisitor {
   inline void addNull();
   inline void addOutputRow(vector_size_t row);
 
-  TFilter& filter() {
+  const TFilter& filter() {
     return filter_;
   }
 
@@ -493,7 +490,7 @@ class ColumnVisitor {
   }
 
  protected:
-  TFilter& filter_;
+  const TFilter& filter_;
   SelectiveColumnReader* reader_;
   const bool allowNulls_;
   const vector_size_t* rows_;
@@ -503,9 +500,14 @@ class ColumnVisitor {
   ExtractValues values_;
 };
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
 FOLLY_ALWAYS_INLINE void
-ColumnVisitor<T, TFilter, ExtractValues, isDense>::filterFailed() {
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::filterFailed() {
   const auto preceding = filter_.getPrecedingPositionsToFail();
   const auto succeeding = filter_.getSucceedingPositionsToFail();
   if (preceding) {
@@ -516,19 +518,37 @@ ColumnVisitor<T, TFilter, ExtractValues, isDense>::filterFailed() {
   }
 }
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
-inline void ColumnVisitor<T, TFilter, ExtractValues, isDense>::addResult(
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
+inline void
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::addResult(
     T value) {
   values_.addValue(rowIndex_ + numValuesBias_, value);
 }
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
-inline void ColumnVisitor<T, TFilter, ExtractValues, isDense>::addNull() {
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
+inline void
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::addNull() {
   values_.template addNull<T>(rowIndex_ + numValuesBias_);
 }
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
-inline void ColumnVisitor<T, TFilter, ExtractValues, isDense>::addOutputRow(
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
+inline void
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::addOutputRow(
     vector_size_t row) {
   reader_->addOutputRow(row);
 }
@@ -703,7 +723,15 @@ inline xsimd::batch<int64_t> cvtU32toI64(
     xsimd::batch<int32_t, xsimd::sse2> values) {
   return _mm256_cvtepu32_epi64(values);
 }
-#elif XSIMD_WITH_SSE2 || XSIMD_WITH_NEON
+#elif (XSIMD_WITH_SVE && SVE_BITS == 256)
+inline xsimd::batch<int64_t> cvtU32toI64(simd::Batch128<int32_t> values) {
+  int64_t element_1 = static_cast<uint32_t>(values.data[0]);
+  int64_t element_2 = static_cast<uint32_t>(values.data[1]);
+  int64_t element_3 = static_cast<uint32_t>(values.data[2]);
+  int64_t element_4 = static_cast<uint32_t>(values.data[3]);
+  return xsimd::batch<int64_t>(element_1, element_2, element_3, element_4);
+}
+#elif XSIMD_WITH_SSE2 || XSIMD_WITH_NEON || (XSIMD_WITH_SVE && SVE_BITS == 128)
 inline xsimd::batch<int64_t> cvtU32toI64(simd::Batch64<int32_t> values) {
   int64_t lo = static_cast<uint32_t>(values.data[0]);
   int64_t hi = static_cast<uint32_t>(values.data[1]);
@@ -720,7 +748,7 @@ class DictionaryColumnVisitor
 
  public:
   DictionaryColumnVisitor(
-      TFilter& filter,
+      const TFilter& filter,
       SelectiveColumnReader* reader,
       const RowSet& rows,
       ExtractValues values)
@@ -892,10 +920,19 @@ class DictionaryColumnVisitor
           dictMask,
           reinterpret_cast<const int32_t*>(filterCache() - 3),
           indices);
+#ifdef SVE_BITS
+      auto unknowns = simd::toBitMask(
+          simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1) !=
+          xsimd::batch<uint32_t>(0));
+      auto passed = simd::toBitMask(
+          (simd::reinterpretBatch<uint32_t>(cache) &
+           xsimd::batch<uint32_t>(1)) != xsimd::batch<uint32_t>(0));
+#else
       auto unknowns = simd::toBitMask(xsimd::batch_bool<int32_t>(
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1)));
       auto passed = simd::toBitMask(
           xsimd::batch_bool<int32_t>(simd::reinterpretBatch<uint32_t>(cache)));
+#endif
       if (UNLIKELY(unknowns)) {
         uint16_t bits = unknowns;
         // Ranges only over inputs that are in dictionary, the not in dictionary
@@ -1122,19 +1159,40 @@ class DictionaryColumnVisitor
   RawScanState state_;
 };
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
 DictionaryColumnVisitor<T, TFilter, ExtractValues, isDense>
-ColumnVisitor<T, TFilter, ExtractValues, isDense>::toDictionaryColumnVisitor() {
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::
+    toDictionaryColumnVisitor() {
+  if constexpr (!kHasBulkPath) {
+    // Only DWRF integer dictionary is using this, which should not disable bulk
+    // path at decoder level.
+    VELOX_UNREACHABLE();
+  }
   auto result = DictionaryColumnVisitor<T, TFilter, ExtractValues, isDense>(
       filter_, reader_, RowSet(rows_ + rowIndex_, numRows_), values_);
   result.numValuesBias_ = numValuesBias_;
   return result;
 }
 
-template <typename T, typename TFilter, typename ExtractValues, bool isDense>
+template <
+    typename T,
+    typename TFilter,
+    typename ExtractValues,
+    bool isDense,
+    bool hasBulkPath>
 StringDictionaryColumnVisitor<TFilter, ExtractValues, isDense>
-ColumnVisitor<T, TFilter, ExtractValues, isDense>::
+ColumnVisitor<T, TFilter, ExtractValues, isDense, hasBulkPath>::
     toStringDictionaryColumnVisitor() {
+  if constexpr (!kHasBulkPath) {
+    // Only DWRF string dictionary is using this, which should not disable bulk
+    // path at decoder level.
+    VELOX_UNREACHABLE();
+  }
   auto result = StringDictionaryColumnVisitor<TFilter, ExtractValues, isDense>(
       filter_, reader_, RowSet(rows_ + rowIndex_, numRows_), values_);
   result.setNumValuesBias(numValuesBias_);
@@ -1150,7 +1208,7 @@ class StringDictionaryColumnVisitor
 
  public:
   StringDictionaryColumnVisitor(
-      TFilter& filter,
+      const TFilter& filter,
       SelectiveColumnReader* reader,
       RowSet rows,
       ExtractValues values)
@@ -1263,10 +1321,19 @@ class StringDictionaryColumnVisitor
       } else {
         cache = simd::gather<int32_t, int32_t, 1>(base, indices);
       }
+#ifdef SVE_BITS
+      auto unknowns = simd::toBitMask(
+          simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1) !=
+          xsimd::batch<uint32_t>(0));
+      auto passed = simd::toBitMask(
+          (simd::reinterpretBatch<uint32_t>(cache) &
+           xsimd::batch<uint32_t>(1)) != xsimd::batch<uint32_t>(0));
+#else
       auto unknowns = simd::toBitMask(xsimd::batch_bool<int32_t>(
           simd::reinterpretBatch<uint32_t>((cache & (kUnknown << 24)) << 1)));
       auto passed = simd::toBitMask(
           xsimd::batch_bool<int32_t>(simd::reinterpretBatch<uint32_t>(cache)));
+#endif
       if (UNLIKELY(unknowns)) {
         uint16_t bits = unknowns;
         while (bits) {
@@ -1370,7 +1437,7 @@ class DirectRleColumnVisitor
 
  public:
   DirectRleColumnVisitor(
-      TFilter& filter,
+      const TFilter& filter,
       SelectiveColumnReader* reader,
       RowSet rows,
       ExtractValues values)
@@ -1505,12 +1572,15 @@ class StringColumnReadWithVisitorHelper {
  private:
   template <typename TFilter, bool kIsDense, typename ExtractValues, typename F>
   void readHelper(
-      velox::common::Filter* filter,
+      const velox::common::Filter* filter,
       ExtractValues extractValues,
       F readWithVisitor) {
     readWithVisitor(
         ColumnVisitor<folly::StringPiece, TFilter, ExtractValues, kIsDense>(
-            *static_cast<TFilter*>(filter), &reader_, rows_, extractValues));
+            *static_cast<const TFilter*>(filter),
+            &reader_,
+            rows_,
+            extractValues));
   }
 
   template <bool kIsDense, typename ExtractValues, typename F>

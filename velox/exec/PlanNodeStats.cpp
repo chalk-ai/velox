@@ -37,7 +37,6 @@ PlanNodeStats& PlanNodeStats::operator+=(const PlanNodeStats& another) {
   addInputTiming.add(another.addInputTiming);
   getOutputTiming.add(another.getOutputTiming);
   finishTiming.add(another.finishTiming);
-  cpuWallTiming.add(another.isBlockedTiming);
   cpuWallTiming.add(another.addInputTiming);
   cpuWallTiming.add(another.getOutputTiming);
   cpuWallTiming.add(another.finishTiming);
@@ -132,6 +131,14 @@ void PlanNodeStats::addTotals(const OperatorStats& stats) {
     }
   }
 
+  for (const auto& [name, exprStats] : stats.expressionStats) {
+    if (UNLIKELY(this->expressionStats.count(name) == 0)) {
+      this->expressionStats.insert(std::make_pair(name, exprStats));
+    } else {
+      this->expressionStats.at(name).add(exprStats);
+    }
+  }
+
   // Populating number of drivers for plan nodes with multiple operators is not
   // useful. Each operator could have been executed in different pipelines with
   // different number of drivers.
@@ -209,20 +216,33 @@ std::string PlanNodeStats::toString(
   return out.str();
 }
 
+void appendOperatorStats(
+    const OperatorStats& stats,
+    std::unordered_map<core::PlanNodeId, PlanNodeStats>& planStats) {
+  const auto& planNodeId = stats.planNodeId;
+  auto it = planStats.find(planNodeId);
+  if (it != planStats.end()) {
+    it->second.add(stats);
+  } else {
+    PlanNodeStats nodeStats;
+    nodeStats.add(stats);
+    planStats.emplace(planNodeId, std::move(nodeStats));
+  }
+}
+
 std::unordered_map<core::PlanNodeId, PlanNodeStats> toPlanStats(
     const TaskStats& taskStats) {
   std::unordered_map<core::PlanNodeId, PlanNodeStats> planStats;
 
   for (const auto& pipelineStats : taskStats.pipelineStats) {
     for (const auto& opStats : pipelineStats.operatorStats) {
-      const auto& planNodeId = opStats.planNodeId;
-      auto it = planStats.find(planNodeId);
-      if (it != planStats.end()) {
-        it->second.add(opStats);
+      if (opStats.statsSplitter.has_value()) {
+        const auto& multiNodeStats = opStats.statsSplitter.value()(opStats);
+        for (const auto& stats : multiNodeStats) {
+          appendOperatorStats(stats, planStats);
+        }
       } else {
-        PlanNodeStats nodeStats;
-        nodeStats.add(opStats);
-        planStats.emplace(planNodeId, std::move(nodeStats));
+        appendOperatorStats(opStats, planStats);
       }
     }
   }
@@ -278,7 +298,7 @@ namespace {
 void printCustomStats(
     const std::unordered_map<std::string, RuntimeMetric>& stats,
     const std::string& indentation,
-    std::stringstream& stream) {
+    std::ostream& stream) {
   int width = 0;
   for (const auto& entry : stats) {
     if (width < entry.first.size()) {
@@ -294,9 +314,9 @@ void printCustomStats(
   }
 
   for (const auto& [name, metric] : orderedStats) {
-    stream << std::endl;
     stream << indentation << std::left << std::setw(width) << name;
     metric.printMetric(stream);
+    stream << std::endl;
   }
 }
 } // namespace
@@ -318,16 +338,15 @@ std::string printPlanWithStats(
         // Print input rows and sizes only for leaf plan nodes. Including this
         // information for other plan nodes is redundant as it is the same as
         // output of the source nodes.
-        const bool includeInputStats = leafPlanNodes.count(planNodeId) > 0;
-        stream << stats.toString(includeInputStats);
+        const bool includeInputStats = leafPlanNodes.contains(planNodeId);
+        stream << indentation << stats.toString(includeInputStats) << std::endl;
 
         // Include break down by operator type for plan nodes with multiple
         // operators. Print input rows and sizes for all such nodes.
         if (stats.isMultiOperatorTypeNode()) {
           for (const auto& entry : stats.operatorStats) {
-            stream << std::endl;
             stream << indentation << entry.first << ": "
-                   << entry.second->toString(true);
+                   << entry.second->toString(true) << std::endl;
 
             if (includeCustomStats) {
               printCustomStats(

@@ -110,8 +110,7 @@ void addSubfields(
       folly::F14FastMap<std::string, std::vector<SubfieldSpec>> required;
       for (auto& subfield : subfields) {
         auto* element = subfield.subfield->path()[level].get();
-        auto* nestedField =
-            dynamic_cast<const common::Subfield::NestedField*>(element);
+        auto* nestedField = element->as<common::Subfield::NestedField>();
         VELOX_CHECK(
             nestedField,
             "Unsupported for row subfields pruning: {}",
@@ -150,20 +149,18 @@ void addSubfields(
       std::vector<int64_t> longSubscripts;
       for (auto& subfield : subfields) {
         auto* element = subfield.subfield->path()[level].get();
-        if (dynamic_cast<const common::Subfield::AllSubscripts*>(element)) {
+        if (element->is(common::SubfieldKind::kAllSubscripts)) {
           return;
         }
         if (stringKey) {
-          auto* subscript =
-              dynamic_cast<const common::Subfield::StringSubscript*>(element);
+          auto* subscript = element->as<common::Subfield::StringSubscript>();
           VELOX_CHECK(
               subscript,
               "Unsupported for string map pruning: {}",
               element->toString());
           stringSubscripts.push_back(subscript->index());
         } else {
-          auto* subscript =
-              dynamic_cast<const common::Subfield::LongSubscript*>(element);
+          auto* subscript = element->as<common::Subfield::LongSubscript>();
           VELOX_CHECK(
               subscript,
               "Unsupported for long map pruning: {}",
@@ -242,8 +239,7 @@ inline uint8_t parseDelimiter(const std::string& delim) {
 
 inline bool isSynthesizedColumn(
     const std::string& name,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns) {
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns) {
   return infoColumns.count(name) != 0;
 }
 
@@ -263,7 +259,7 @@ const std::string& getColumnName(const common::Subfield& subfield) {
   return field->name();
 }
 
-void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type) {
+void checkColumnNameLowerCase(const TypePtr& type) {
   switch (type->kind()) {
     case TypeKind::ARRAY:
       checkColumnNameLowerCase(type->asArray().elementType());
@@ -289,8 +285,7 @@ void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type) {
 
 void checkColumnNameLowerCase(
     const common::SubfieldFilters& filters,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns) {
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns) {
   for (const auto& filterIt : filters) {
     const auto name = filterIt.first.toString();
     if (isSynthesizedColumn(name, infoColumns)) {
@@ -330,7 +325,11 @@ void processFieldSpec(
     if (type.isMap() && !spec.isConstant()) {
       auto* keys = spec.childByName(common::ScanSpec::kMapKeysFieldName);
       VELOX_CHECK_NOT_NULL(keys);
-      keys->addFilter(common::IsNotNull());
+      if (keys->filter()) {
+        VELOX_CHECK(!keys->filter()->testNull());
+      } else {
+        keys->setFilter(std::make_shared<common::IsNotNull>());
+      }
     }
   });
   if (dataColumns) {
@@ -351,10 +350,8 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
         outputSubfields,
     const common::SubfieldFilters& filters,
     const RowTypePtr& dataColumns,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        partitionKeys,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& partitionKeys,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns,
     const SpecialColumnNames& specialColumns,
     bool disableStatsBasedFilterReorder,
     memory::MemoryPool* pool) {
@@ -443,7 +440,8 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
       continue;
     }
     auto fieldSpec = spec->getOrCreateChild(pair.first);
-    fieldSpec->addFilter(*pair.second);
+    VELOX_CHECK_NULL(spec->filter());
+    fieldSpec->setFilter(pair.second);
   }
 
   if (disableStatsBasedFilterReorder) {
@@ -554,6 +552,7 @@ void configureReaderOptions(
       hiveConfig->maxCoalescedDistanceBytes(sessionProperties));
   readerOptions.setFileColumnNamesReadAsLowerCase(
       hiveConfig->isFileColumnNamesReadAsLowerCase(sessionProperties));
+  readerOptions.setAllowEmptyFile(true);
   bool useColumnNamesForColumnMapping = false;
   switch (hiveSplit->fileFormat) {
     case dwio::common::FileFormat::DWRF:
@@ -626,7 +625,10 @@ void configureRowReaderOptions(
   if (hiveConfig && sessionProperties) {
     rowReaderOptions.setTimestampPrecision(static_cast<TimestampPrecision>(
         hiveConfig->readTimestampUnit(sessionProperties)));
+    rowReaderOptions.setPreserveFlatMapsInMemory(
+        hiveConfig->preserveFlatMapsInMemory(sessionProperties));
   }
+  rowReaderOptions.setSerdeParameters(hiveSplit->serdeParameters);
 }
 
 namespace {
@@ -635,7 +637,7 @@ bool applyPartitionFilter(
     const TypePtr& type,
     const std::string& partitionValue,
     bool isPartitionDateDaysSinceEpoch,
-    common::Filter* filter,
+    const common::Filter* filter,
     bool asLocalTime) {
   if (type->isDate()) {
     int32_t result = 0;
@@ -689,7 +691,7 @@ bool testFilters(
     const std::string& filePath,
     const std::unordered_map<std::string, std::optional<std::string>>&
         partitionKeys,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
+    const std::unordered_map<std::string, HiveColumnHandlePtr>&
         partitionKeysHandle,
     bool asLocalTime) {
   const auto totalRows = reader->numberOfRows();
@@ -756,23 +758,35 @@ std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
     return std::make_unique<dwio::common::CachedBufferedInput>(
         fileHandle.file,
         dwio::common::MetricsLog::voidLog(),
-        fileHandle.uuid.id(),
+        fileHandle.uuid,
         connectorQueryCtx->cache(),
         Connector::getTracker(
             connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
-        fileHandle.groupId.id(),
+        fileHandle.groupId,
         ioStats,
         std::move(fsStats),
         executor,
         readerOpts);
   }
+  if (readerOpts.fileFormat() == dwio::common::FileFormat::NIMBLE) {
+    // Nimble streams (in case of single chunk) are compressed as whole and need
+    // to be fully fetched in order to do decompression, so there is no point to
+    // fetch them by quanta.  Just use BufferedInput to fetch streams as whole
+    // to reduce memory footprint.
+    return std::make_unique<dwio::common::BufferedInput>(
+        fileHandle.file,
+        readerOpts.memoryPool(),
+        dwio::common::MetricsLog::voidLog(),
+        ioStats.get(),
+        fsStats.get());
+  }
   return std::make_unique<dwio::common::DirectBufferedInput>(
       fileHandle.file,
       dwio::common::MetricsLog::voidLog(),
-      fileHandle.uuid.id(),
+      fileHandle.uuid,
       Connector::getTracker(
           connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
-      fileHandle.groupId.id(),
+      fileHandle.groupId,
       std::move(ioStats),
       std::move(fsStats),
       executor,

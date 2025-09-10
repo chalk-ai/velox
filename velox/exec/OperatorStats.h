@@ -15,8 +15,11 @@
  */
 #pragma once
 
+#include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/memory/MemoryPool.h"
 #include "velox/common/time/CpuWallTimer.h"
+#include "velox/core/PlanNode.h"
+#include "velox/expression/ExprStats.h"
 
 namespace facebook::velox::exec {
 
@@ -90,6 +93,19 @@ struct OperatorStats {
   int32_t operatorId = 0;
   int32_t pipelineId = 0;
   core::PlanNodeId planNodeId;
+
+  /// Some operators perform the logic describe in multiple consecutive plan
+  /// nodes. For example, FilterProject operator maps to Filter node followed by
+  /// Project node. In this case, runtime stats are collected for the combined
+  /// operator and attached to the "main" plan node ID chosen by the operator.
+  /// (Project node ID in case of FilterProject operator.) The operator can then
+  /// provide a function to split the stats among all plan nodes that are being
+  /// represented. For example, FilterProject would split the stats but moving
+  /// cardinality reduction to Filter and making Project cardinality neutral.
+  using StatsSplitter = std::function<std::vector<OperatorStats>(
+      const OperatorStats& combinedStats)>;
+
+  std::optional<StatsSplitter> statsSplitter;
 
   /// Name for reporting. We use Presto compatible names set at
   /// construction of the Operator where applicable.
@@ -168,6 +184,11 @@ struct OperatorStats {
 
   std::unordered_map<std::string, RuntimeMetric> runtimeStats;
 
+  // A map of expression name to its respective stats.
+  // These are only populated when a copy of the stats is returned via
+  // Operator::stats(bool) API.
+  std::unordered_map<std::string, ExprStats> expressionStats;
+
   int numDrivers = 0;
 
   OperatorStats() = default;
@@ -175,12 +196,16 @@ struct OperatorStats {
   OperatorStats(
       int32_t _operatorId,
       int32_t _pipelineId,
-      std::string _planNodeId,
+      core::PlanNodeId _planNodeId,
       std::string _operatorType)
       : operatorId(_operatorId),
         pipelineId(_pipelineId),
         planNodeId(std::move(_planNodeId)),
         operatorType(std::move(_operatorType)) {}
+
+  void setStatSplitter(StatsSplitter splitter) {
+    statsSplitter = std::move(splitter);
+  }
 
   void addInputVector(uint64_t bytes, uint64_t positions) {
     inputBytes += bytes;

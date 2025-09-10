@@ -152,6 +152,12 @@ inline int32_t ArbitraryAggregate<int128_t>::accumulatorAlignmentSize() const {
   return static_cast<int32_t>(sizeof(int128_t));
 }
 
+// In case of clustered input, we just keep a reference to the input vector.
+struct ClusteredNonNumericAccumulator {
+  VectorPtr vector;
+  vector_size_t index;
+};
+
 // Arbitrary for non-numeric types. We always keep the first (non-NULL) element
 // seen. Arbitrary (x) will produce partial and final aggregations of type x.
 class NonNumericArbitrary : public exec::Aggregate {
@@ -159,29 +165,90 @@ class NonNumericArbitrary : public exec::Aggregate {
   explicit NonNumericArbitrary(const TypePtr& resultType)
       : exec::Aggregate(resultType) {}
 
-  // We use singleValueAccumulator to save the results for each group. This
-  // struct will allow us to save variable-width value.
   int32_t accumulatorFixedWidthSize() const override {
-    return sizeof(SingleValueAccumulator);
+    return clusteredInput_ ? sizeof(ClusteredNonNumericAccumulator)
+                           : sizeof(SingleValueAccumulator);
+  }
+
+  bool accumulatorUsesExternalMemory() const override {
+    return true;
   }
 
   void extractValues(char** groups, int32_t numGroups, VectorPtr* result)
       override {
-    VELOX_CHECK(result);
+    VELOX_CHECK_NOT_NULL(result);
     (*result)->resize(numGroups);
-
-    auto* rawNulls = exec::Aggregate::getRawNulls(result->get());
-
-    for (int32_t i = 0; i < numGroups; ++i) {
-      char* group = groups[i];
-      auto accumulator = value<SingleValueAccumulator>(group);
-      if (!accumulator->hasValue()) {
-        (*result)->setNull(i, true);
-      } else {
-        exec::Aggregate::clearNull(rawNulls, i);
-        accumulator->read(*result, i);
+    if (clusteredInput_) {
+      bool singleSource{true};
+      VectorPtr* currentSource = nullptr;
+      VELOX_DCHECK(copyRanges_.empty());
+      for (vector_size_t i = 0; i < numGroups; ++i) {
+        auto* accumulator = value<ClusteredNonNumericAccumulator>(groups[i]);
+        if (!accumulator->vector) {
+          (*result)->setNull(i, true);
+          continue;
+        }
+        if ((currentSource != nullptr) &&
+            (currentSource->get() != accumulator->vector.get())) {
+          singleSource = false;
+          result->get()->copyRanges(currentSource->get(), copyRanges_);
+          copyRanges_.clear();
+        }
+        currentSource = &accumulator->vector;
+        BaseVector::CopyRange range = {accumulator->index, i, 1};
+        if (!copyRanges_.empty() && copyRanges_.back().mergeable(range)) {
+          ++copyRanges_.back().count;
+        } else {
+          copyRanges_.push_back(range);
+        }
+      }
+      if (currentSource != nullptr) {
+        if (!singleSource) {
+          result->get()->copyRanges(currentSource->get(), copyRanges_);
+        } else {
+          if (copyRanges_.size() == 1 && copyRanges_[0].count == numGroups) {
+            *result = currentSource->get()->slice(
+                copyRanges_[0].sourceIndex, copyRanges_[0].count);
+          } else {
+            prepareGroupIndices(numGroups, result->get()->pool());
+            applyToEachRange(
+                copyRanges_,
+                [&](auto targetIndex, auto sourceIndex, auto count) {
+                  for (auto i = 0; i < count; ++i) {
+                    rawGroupIndices_[targetIndex + i] = sourceIndex + i;
+                  }
+                });
+            *result = BaseVector::wrapInDictionary(
+                result->get()->nulls(),
+                groupIndices_,
+                numGroups,
+                *currentSource);
+          }
+        }
+        copyRanges_.clear();
+      }
+    } else {
+      auto* rawNulls = exec::Aggregate::getRawNulls(result->get());
+      for (int32_t i = 0; i < numGroups; ++i) {
+        auto* accumulator = value<SingleValueAccumulator>(groups[i]);
+        if (!accumulator->hasValue()) {
+          (*result)->setNull(i, true);
+        } else {
+          exec::Aggregate::clearNull(rawNulls, i);
+          accumulator->read(*result, i);
+        }
       }
     }
+  }
+
+  void prepareGroupIndices(size_t numGroups, memory::MemoryPool* pool) {
+    const auto groupByteSize = numGroups * sizeof(vector_size_t);
+    if ((groupIndices_ == nullptr) || !groupIndices_->unique() ||
+        (groupIndices_->capacity() < groupByteSize)) {
+      groupIndices_ = allocateIndices(numGroups, pool);
+      rawGroupIndices_ = groupIndices_->asMutable<vector_size_t>();
+    }
+    groupIndices_->setSize(groupByteSize);
   }
 
   void extractAccumulators(char** groups, int32_t numGroups, VectorPtr* result)
@@ -194,16 +261,17 @@ class NonNumericArbitrary : public exec::Aggregate {
       const SelectivityVector& rows,
       const std::vector<VectorPtr>& args,
       bool /*unused*/) override {
-    DecodedVector decoded(*args[0], rows, true);
-    if (decoded.isConstantMapping() && decoded.isNullAt(rows.begin())) {
+    VELOX_CHECK(!clusteredInput_);
+    decoded_.decode(*args[0], rows, true);
+    if (decoded_.isConstantMapping() && decoded_.isNullAt(rows.begin())) {
       // nothing to do; all values are nulls
       return;
     }
 
-    const auto* indices = decoded.indices();
-    const auto* baseVector = decoded.base();
+    const auto* indices = decoded_.indices();
+    const auto* baseVector = decoded_.base();
     rows.applyToSelected([&](vector_size_t i) {
-      if (decoded.isNullAt(i)) {
+      if (decoded_.isNullAt(i)) {
         return;
       }
       auto* accumulator = value<SingleValueAccumulator>(groups[i]);
@@ -211,6 +279,48 @@ class NonNumericArbitrary : public exec::Aggregate {
         accumulator->write(baseVector, indices[i], allocator_);
       }
     });
+  }
+
+  bool supportsAddRawClusteredInput() const override {
+    return clusteredInput_;
+  }
+
+  void addRawClusteredInput(
+      char** groups,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args,
+      const folly::Range<const vector_size_t*>& groupBoundaries) override {
+    VELOX_CHECK(clusteredInput_);
+    decoded_.decode(*args[0]);
+    vector_size_t groupStart = 0;
+    auto forEachEmptyAccumulator = [&](auto func) {
+      for (auto groupEnd : groupBoundaries) {
+        auto* accumulator =
+            value<ClusteredNonNumericAccumulator>(groups[groupEnd - 1]);
+        // When the vector is already set, it means the same group is also
+        // present in previous input batch.
+        if (!accumulator->vector) {
+          func(groupEnd, accumulator);
+        }
+        groupStart = groupEnd;
+      }
+    };
+    if (rows.isAllSelected() && !decoded_.mayHaveNulls()) {
+      forEachEmptyAccumulator([&](auto /*groupEnd*/, auto* accumulator) {
+        accumulator->vector = args[0];
+        accumulator->index = groupStart;
+      });
+    } else {
+      forEachEmptyAccumulator([&](auto groupEnd, auto* accumulator) {
+        for (auto i = groupStart; i < groupEnd; ++i) {
+          if (rows.isValid(i) && !decoded_.isNullAt(i)) {
+            accumulator->vector = args[0];
+            accumulator->index = i;
+            break;
+          }
+        }
+      });
+    }
   }
 
   void addIntermediateResults(
@@ -226,22 +336,23 @@ class NonNumericArbitrary : public exec::Aggregate {
       const SelectivityVector& rows,
       const std::vector<VectorPtr>& args,
       bool /*unused*/) override {
+    VELOX_CHECK(!clusteredInput_);
     auto* accumulator = value<SingleValueAccumulator>(group);
     if (accumulator->hasValue()) {
       return;
     }
 
-    DecodedVector decoded(*args[0], rows, true);
-    if (decoded.isConstantMapping() && decoded.isNullAt(rows.begin())) {
+    decoded_.decode(*args[0], rows, true);
+    if (decoded_.isConstantMapping() && decoded_.isNullAt(rows.begin())) {
       // nothing to do; all values are nulls
       return;
     }
 
-    const auto* indices = decoded.indices();
-    const auto* baseVector = decoded.base();
+    const auto* indices = decoded_.indices();
+    const auto* baseVector = decoded_.base();
     // Find the first non-null value.
     rows.testSelected([&](vector_size_t i) {
-      if (!decoded.isNullAt(i)) {
+      if (!decoded_.isNullAt(i)) {
         accumulator->write(baseVector, indices[i], allocator_);
         return false; // Stop
       }
@@ -258,23 +369,44 @@ class NonNumericArbitrary : public exec::Aggregate {
   }
 
  protected:
-  // Initialize each group, we will not use the null flags because
-  // SingleValueAccumulator has its own flag.
+  // Initialize each group, we will not use the null flags because the
+  // accumulator has its own flag.
   void initializeNewGroupsInternal(
       char** groups,
       folly::Range<const vector_size_t*> indices) override {
     for (auto i : indices) {
-      new (groups[i] + offset_) SingleValueAccumulator();
+      if (clusteredInput_) {
+        new (groups[i] + offset_) ClusteredNonNumericAccumulator();
+      } else {
+        new (groups[i] + offset_) SingleValueAccumulator();
+      }
     }
   }
 
   void destroyInternal(folly::Range<char**> groups) override {
     for (auto group : groups) {
       if (isInitialized(group)) {
-        value<SingleValueAccumulator>(group)->destroy(allocator_);
+        if (clusteredInput_) {
+          auto* accumulator = value<ClusteredNonNumericAccumulator>(group);
+          std::destroy_at(accumulator);
+        } else {
+          auto* accumulator = value<SingleValueAccumulator>(group);
+          accumulator->destroy(allocator_);
+        }
       }
     }
   }
+
+ private:
+  // Decoded input vector.
+  DecodedVector decoded_;
+
+  // Copy ranges used when extracting from ClusteredNonNumericAccumulator.
+  std::vector<BaseVector::CopyRange> copyRanges_;
+
+  // Reusable buffers.
+  BufferPtr groupIndices_;
+  vector_size_t* rawGroupIndices_{};
 };
 
 } // namespace

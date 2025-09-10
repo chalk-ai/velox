@@ -28,7 +28,7 @@ using namespace facebook::velox::common;
 class ReaderTest : public testing::Test, public velox::test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 };
 
@@ -76,6 +76,28 @@ TEST_F(ReaderTest, projectColumnsFilterStruct) {
   auto expected = makeRowVector({
       makeFlatVector<int64_t>({2, 4, 6}),
   });
+  test::assertEqualVectors(expected, actual);
+}
+
+TEST_F(ReaderTest, projectColumnsNullField) {
+  constexpr int kSize = 10;
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>(kSize),
+       makeRowVector({makeFlatVector<int64_t>(kSize, folly::identity)}),
+       makeFlatVector<int64_t>(kSize, folly::identity)});
+  input->childAt(0) = nullptr;
+
+  common::ScanSpec spec("<root>");
+  spec.addField("c0", 0);
+  spec.addField("c1", 1);
+  spec.getOrCreateChild(common::Subfield("c1.c0"))
+      ->setFilter(common::createBigintValues({2, 4, 6}, false));
+  auto actual = RowReader::projectColumns(input, spec, nullptr);
+
+  auto expected = makeRowVector(
+      {makeFlatVector<int64_t>(3),
+       makeRowVector({makeFlatVector<int64_t>({2, 4, 6})})});
+  expected->childAt(0) = nullptr;
   test::assertEqualVectors(expected, actual);
 }
 
@@ -130,19 +152,29 @@ TEST_F(ReaderTest, projectColumnsMutation) {
   random::RandomSkipTracker randomSkip(0.5);
   mutation.randomSkip = &randomSkip;
   actual = RowReader::projectColumns(input, spec, &mutation);
-#if FOLLY_HAVE_EXTRANDOM_SFMT19937
-  expected = makeRowVector({
-      makeFlatVector<int64_t>({0, 1, 3, 5, 6, 8}),
-  });
-#elif __APPLE__
-  expected = makeRowVector({
-      makeFlatVector<int64_t>({1, 5, 6, 7, 8, 9}),
-  });
+  if constexpr (std::is_same_v<folly::detail::DefaultGenerator, std::mt19937>) {
+#if __APPLE__
+    expected = makeRowVector({
+        makeFlatVector<int64_t>({1, 5, 6, 7, 8, 9}),
+    });
 #else
-  expected = makeRowVector({
-      makeFlatVector<int64_t>({3, 4, 7, 9}),
-  });
+    expected = makeRowVector({
+        makeFlatVector<int64_t>({3, 4, 7, 9}),
+    });
 #endif
+#if FOLLY_HAVE_EXTRANDOM_SFMT19937
+  } else if constexpr (std::is_same_v<
+                           folly::detail::DefaultGenerator,
+                           __gnu_cxx::sfmt19937>) {
+    expected = makeRowVector({
+        makeFlatVector<int64_t>({0, 1, 3, 5, 6, 8}),
+    });
+#endif
+  } else {
+    expected = makeRowVector({
+        makeFlatVector<int64_t>({1, 3, 5, 7}),
+    });
+  }
   test::assertEqualVectors(expected, actual);
 }
 

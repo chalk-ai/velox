@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include <breeze/platforms/platform.h>
+#include <breeze/utils/types.h>
+#include <breeze/platforms/cuda.cuh>
 #include <cub/cub.cuh> // @manual
 #include "velox/experimental/wave/common/Bits.cuh"
 #include "velox/experimental/wave/common/Block.cuh"
@@ -93,7 +96,7 @@ __device__ void storeResult(
 #if 1
 template <typename T, ResultOp resultOp>
 __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
-  int32_t i = op.begin + threadIdx.x;
+  auto i = op.begin + threadIdx.x;
   auto end = op.end;
   auto address = reinterpret_cast<uint64_t>(op.indices);
   int32_t alignOffset = (address & 7) * 8;
@@ -123,7 +126,7 @@ __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
 
 template <typename T, ResultOp resultOp>
 __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
-  int32_t i = op.begin + threadIdx.x;
+  auto i = op.begin + threadIdx.x;
   __shared__ int32_t end;
   __shared__ uint64_t address;
   __shared__ int32_t alignOffset;
@@ -167,7 +170,7 @@ __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
 
 template <typename T, ResultOp resultOp>
 __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
-  int32_t i = op.begin + threadIdx.x;
+  auto i = op.begin + threadIdx.x;
   auto address = reinterpret_cast<uint64_t>(op.indices);
   int32_t alignOffset = (address & 7) * 8;
   address &= ~7UL;
@@ -195,7 +198,7 @@ __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
 #elif 0
 template <typename T, ResultOp resultOp>
 __device__ void decodeDictionaryOnBitpack(GpuDecode::DictionaryOnBitpack& op) {
-  int32_t i = op.begin + threadIdx.x;
+  auto i = op.begin + threadIdx.x;
   auto scatter = op.scatter;
   auto baseline = op.baseline;
   for (; i < op.end; i += blockDim.x) {
@@ -335,11 +338,11 @@ bitpackBools(const bool* input, int count, uint8_t* out) {
 }
 
 __device__ inline void decodeSparseBool(GpuDecode::SparseBool& op) {
-  for (int i = threadIdx.x; i < op.totalCount; i += blockDim.x) {
+  for (auto i = threadIdx.x; i < op.totalCount; i += blockDim.x) {
     op.bools[i] = !op.sparseValue;
   }
   __syncthreads();
-  for (int i = threadIdx.x; i < op.sparseCount; i += blockDim.x) {
+  for (auto i = threadIdx.x; i < op.sparseCount; i += blockDim.x) {
     op.bools[op.sparseIndices[i]] = op.sparseValue;
   }
   __syncthreads();
@@ -462,11 +465,11 @@ __device__ void decodeMainlyConstant(GpuDecode::MainlyConstant& op) {
   auto commonValue = *(const T*)op.commonValue;
   auto* otherValues = (const T*)op.otherValues;
   auto* result = (T*)op.result;
-  for (int i = threadIdx.x; i < op.count; i += blockDim.x) {
+  for (auto i = threadIdx.x; i < op.count; i += blockDim.x) {
     result[i] = commonValue;
   }
   __syncthreads();
-  for (int i = threadIdx.x; i < otherCount; i += blockDim.x) {
+  for (auto i = threadIdx.x; i < otherCount; i += blockDim.x) {
     result[op.otherIndices[i]] = otherValues[i];
   }
   if (threadIdx.x == 0 && op.otherCount) {
@@ -560,8 +563,11 @@ __device__ void decodeRle(GpuDecode::Rle& op) {
     __syncthreads();
     offsets[threadIdx.x] = offset;
     __syncthreads();
-    for (int j = threadIdx.x; j < subtotal; j += blockDim.x) {
-      result[total + j] = values[i + upperBound(offsets, blockDim.x, j)];
+    for (auto j = threadIdx.x; j < subtotal; j += blockDim.x) {
+      result[total + j] = values
+          [i +
+           upperBound(
+               offsets, static_cast<int>(blockDim.x), static_cast<int32_t>(j))];
     }
     total += subtotal;
   }
@@ -599,6 +605,19 @@ __device__ void makeScatterIndices(GpuDecode::MakeScatterIndices& op) {
       op.bits, op.findSetBits, op.begin, op.end, op.indices);
   if (threadIdx.x == 0 && op.indicesCount) {
     *op.indicesCount = indicesCount;
+  }
+}
+
+template <typename T>
+inline __device__ T loadBits(
+    void const* p,
+    uint32_t idx,
+    uint32_t width = 8 * sizeof(T),
+    int64_t baseline = 0) {
+  if (sizeof(T) == 4 || width <= 32) {
+    return loadBits32(p, idx * width, width) + baseline;
+  } else {
+    return loadBits64(p, idx * width, width) + baseline;
   }
 }
 
@@ -719,6 +738,7 @@ template <
     bool kHasResult,
     typename IndexT = T>
 __device__ void decodeSelective(GpuDecode* op) {
+  using namespace breeze::utils;
   int32_t nthLoop = 0;
   constexpr bool kAlwaysDict = !std::is_same_v<T, IndexT>;
   switch (op->nullMode) {
@@ -761,8 +781,9 @@ __device__ void decodeSelective(GpuDecode* op) {
             int32_t bitIndex = (i + base) * bitWidth + alignOffset;
             int32_t wordIndex = bitIndex >> 6;
             if (false && threadIdx.x < 3) {
-              asm volatile("prefetch.global.L1 [%0];" ::"l"(
-                  &words[wordIndex + 48 + threadIdx.x * 4]));
+              CudaPlatform<kBlockSize, kWarpThreads> p;
+              p.prefetch(
+                  make_slice<GLOBAL>(&words[wordIndex + 48 + threadIdx.x * 4]));
             }
             int32_t bit = bitIndex & 63;
             uint64_t word = words[wordIndex];
@@ -777,7 +798,7 @@ __device__ void decodeSelective(GpuDecode* op) {
         }
       } else {
         do {
-          int32_t row = threadIdx.x + op->baseRow + nthLoop * kBlockSize;
+          auto row = threadIdx.x + op->baseRow + nthLoop * kBlockSize;
           bool filterPass = false;
           IndexT data{};
           if (row < op->maxRow) {
@@ -819,7 +840,7 @@ __device__ void decodeSelective(GpuDecode* op) {
       int32_t maxRow = op->maxRow;
       int32_t dataIdx = 0;
       auto* state = reinterpret_cast<NonNullState*>(op->temp);
-      if (threadIdx.x == 0) {
+      if (threadIdx.x == 0 && op->isNullsBitmap) {
         state->nonNullsBelow = op->nthBlock == 0
             ? 0
             : op->nonNullBases
@@ -836,8 +857,14 @@ __device__ void decodeSelective(GpuDecode* op) {
         int32_t dataIdx;
         IndexT data{};
         if (base < maxRow) {
-          dataIdx = nonNullIndex256(
-              op->nulls, base, min(kBlockSize, maxRow - base), state);
+          if (op->isNullsBitmap) {
+            dataIdx = nonNullIndex256(
+                op->nulls, base, min(kBlockSize, maxRow - base), state);
+          } else {
+            dataIdx = base + threadIdx.x < maxRow
+                ? (op->nulls[base + threadIdx.x] ? base + threadIdx.x : -1)
+                : -1;
+          }
           filterPass = base + threadIdx.x < maxRow;
           if (filterPass) {
             if (dataIdx == -1) {
@@ -869,7 +896,7 @@ __device__ void decodeSelective(GpuDecode* op) {
     }
     case NullMode::kSparseNullable: {
       auto state = reinterpret_cast<NonNullState*>(op->temp);
-      if (threadIdx.x == 0) {
+      if (threadIdx.x == 0 && op->isNullsBitmap) {
         state->nonNullsBelow = op->nthBlock == 0
             ? 0
             : op->nonNullBases
@@ -887,8 +914,17 @@ __device__ void decodeSelective(GpuDecode* op) {
         } else {
           bool filterPass = true;
           IndexT data{};
-          int32_t dataIdx =
-              nonNullIndex256Sparse(op->nulls, op->rows + base, numRows, state);
+          int32_t dataIdx;
+          if (op->isNullsBitmap) {
+            dataIdx = nonNullIndex256Sparse(
+                op->nulls, op->rows + base, numRows, state);
+          } else {
+            dataIdx = threadIdx.x < numRows
+                ? (op->nulls[op->rows[base + threadIdx.x]]
+                       ? op->rows[base + threadIdx.x]
+                       : -1)
+                : -1;
+          }
           filterPass = threadIdx.x < numRows;
           if (filterPass) {
             if (dataIdx == -1) {
@@ -1042,7 +1078,7 @@ __device__ void countBits(GpuDecode& step) {
   int32_t numResults = (numBits - 1) / op.resultStride;
   auto* bits = reinterpret_cast<const uint64_t*>(op.bits);
   for (auto i = 0; i < numBits; i += 64 * kBlockSize) {
-    int32_t idx = threadIdx.x + (i / 64);
+    auto idx = threadIdx.x + (i / 64);
     int32_t cnt = 0;
     if (idx < numWords) {
       if (aligned) {
@@ -1133,6 +1169,91 @@ __device__ void selectiveFilter(GpuDecode* op) {
   }
 }
 
+__device__ inline int32_t
+rowExists(int32_t row, const int32_t* rows, int32_t numRows) {
+  int lo = 0, hi = numRows;
+  while (lo < hi) {
+    int i = (lo + hi) / 2;
+    if (rows[i] == row) {
+      return i;
+    }
+    if (rows[i] < row) {
+      lo = i + 1;
+    } else {
+      hi = i;
+    }
+  }
+  return -1;
+}
+
+// returns the index of the matching row in the rows array if exists . -1
+// if not exists.
+template <int32_t kBlockSize>
+__device__ int32_t rowExists(int32_t nthLoop, GpuDecode* op) {
+  auto row = threadIdx.x + op->data.selectiveChunked.chunkStart + op->baseRow +
+      nthLoop * kBlockSize; // global row id
+  auto tileSize = kBlockSize * op->numRowsPerThread;
+  auto resultBlockId = row / tileSize;
+  auto loopId = (row % tileSize) / kBlockSize;
+  auto resultStart = resultBlockId * tileSize + loopId * kBlockSize;
+  auto numRows =
+      op->filterRowCount[resultBlockId * op->numRowsPerThread + loopId];
+  auto match = rowExists(row, op->rows + resultStart, numRows);
+  return match == -1 ? match : resultStart + match;
+}
+
+template <typename T, int32_t kBlockSize>
+__device__ void selectiveFilterChunked(GpuDecode* op) {
+  using namespace breeze::utils;
+  int32_t nthLoop = 0;
+  bool hasNulls = op->nullMode == NullMode::kSparseNullable ||
+      op->nullMode == NullMode::kDenseNullable;
+  if (hasNulls) {
+    int32_t maxRow = op->maxRow;
+    auto* state = reinterpret_cast<NonNullState*>(op->temp);
+    if (threadIdx.x == 0) {
+      state->nonNullsBelow = op->nthBlock == 0
+          ? 0
+          : op->nonNullBases
+                [op->nthBlock *
+                     (op->gridNumRowsPerThread / (1024 / kBlockSize)) -
+                 1];
+      state->nonNullsBelowRow =
+          op->gridNumRowsPerThread * op->nthBlock * kBlockSize;
+    }
+    __syncthreads();
+    do {
+      auto base = op->baseRow + nthLoop * kBlockSize;
+      int32_t dataIdx = nonNullIndex256(
+          op->nulls, base, min(kBlockSize, maxRow - base), state);
+
+      auto row = threadIdx.x + base; // local row id wrt the chunk
+      auto resultIdx =
+          row < op->maxRow ? rowExists<kBlockSize>(nthLoop, op) : -1;
+      if (resultIdx != -1) {
+        if (dataIdx != -1) {
+          auto data = loadBits<T>(op->data.selectiveChunked.input, dataIdx);
+          reinterpret_cast<T*>(op->result)[resultIdx] = data;
+        }
+        op->resultNulls[resultIdx] = (dataIdx == -1 ? kNull : kNotNull);
+      }
+    } while (++nthLoop < op->numRowsPerThread);
+  } else {
+    do {
+      auto row = threadIdx.x + op->baseRow +
+          nthLoop * kBlockSize; // local row id wrt the chunk
+
+      auto resultIdx =
+          row < op->maxRow ? rowExists<kBlockSize>(nthLoop, op) : -1;
+      if (resultIdx != -1) {
+        auto data = loadBits<T>(op->data.selectiveChunked.input, row);
+        reinterpret_cast<T*>(op->result)[resultIdx] = data;
+      }
+    } while (++nthLoop < op->numRowsPerThread);
+  }
+  __syncthreads();
+}
+
 template <typename T, int32_t kBlockSize>
 __device__ void selectiveSwitch(GpuDecode* op) {
   if (op->encoding == DecodeStep::kDictionaryOnBitpack) {
@@ -1151,6 +1272,12 @@ __device__ void decodeSwitch(GpuDecode& op) {
       break;
     case DecodeStep::kSelective64:
       selectiveSwitch<int64_t, kBlockSize>(&op);
+      break;
+    case DecodeStep::kSelective32Chunked:
+      selectiveFilterChunked<int32_t, kBlockSize>(&op);
+      break;
+    case DecodeStep::kSelective64Chunked:
+      selectiveFilterChunked<int64_t, kBlockSize>(&op);
       break;
     case DecodeStep::kCompact64:
       detail::compactValues<int64_t, kBlockSize>(&op);
@@ -1228,6 +1355,8 @@ int32_t sharedMemorySizeForDecode(DecodeStep step) {
   switch (step) {
     case DecodeStep::kSelective32:
     case DecodeStep::kSelective64:
+    case DecodeStep::kSelective32Chunked:
+    case DecodeStep::kSelective64Chunked:
     case DecodeStep::kCompact64:
     case DecodeStep::kTrivial:
     case DecodeStep::kDictionaryOnBitpack:

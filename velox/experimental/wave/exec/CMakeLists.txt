@@ -14,12 +14,13 @@
 
 add_library(velox_wave_stream OperandSet.cpp Wave.cpp)
 
-target_link_libraries(
-  velox_wave_stream Folly::folly fmt::fmt xsimd)
+target_link_libraries(velox_wave_stream Folly::folly fmt::fmt xsimd)
 
 add_library(
-  velox_wave_exec OBJECT
+  velox_wave_exec
+  OBJECT
   AggregateGen.cpp
+  JoinGen.cpp
   HashGen.cpp
   ExprKernel.cu
   Instruction.cpp
@@ -36,7 +37,8 @@ add_library(
   Project.cpp
   TableScan.cpp
   WaveHiveDataSource.cpp
-  WaveSplitReader.cpp)
+  WaveSplitReader.cpp
+)
 
 target_link_libraries(
   velox_wave_exec
@@ -46,7 +48,8 @@ target_link_libraries(
   velox_exception
   velox_common_base
   velox_exec
-  CUDA::cudart)
+  CUDA::cudart
+)
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)

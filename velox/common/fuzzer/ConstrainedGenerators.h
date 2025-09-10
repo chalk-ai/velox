@@ -21,6 +21,7 @@
 #include "folly/json.h"
 
 #include "velox/common/fuzzer/Utils.h"
+#include "velox/functions/lib/QuantileDigest.h"
 #include "velox/type/Type.h"
 #include "velox/type/Variant.h"
 
@@ -28,8 +29,21 @@ namespace facebook::velox::fuzzer {
 
 using facebook::velox::variant;
 
-std::unique_ptr<AbstractInputGenerator>
-getRandomInputGenerator(size_t seed, const TypePtr& type, double nullRatio);
+/// Get a random input generator for the given type.
+/// @param seed The seed used by the returned input generator.
+/// @param type The type of the input generator.
+/// @param nullRatio The ratio of null values to generate by the returned input
+/// generator.
+/// @param mapKeys The candidate map keys used when generating data for all maps
+/// nested in 'type'. If empty, random keys are used.
+/// @param maxContainerSize The maximum size of all containers nested in 'type',
+/// including arrays and maps.
+std::unique_ptr<AbstractInputGenerator> getRandomInputGenerator(
+    size_t seed,
+    const TypePtr& type,
+    double nullRatio,
+    const std::vector<variant>& mapKeys = {},
+    size_t maxContainerSize = 10);
 
 template <typename T, typename Enabled = void>
 class RandomInputGenerator : public AbstractInputGenerator {
@@ -335,6 +349,11 @@ class SetConstrainedGenerator : public AbstractInputGenerator {
   std::vector<variant> set_;
 };
 
+// Generates random JSON strings. This generator first generates a value that
+// the expected JSON represents through 'objectGenerator', then converts the
+// value to a JSON string via folly::json::serialize() with randomly generated
+// serialization options. Additionally, it makes a random variation to the JSON
+// string by chance for testing of invalid cases.
 class JsonInputGenerator : public AbstractInputGenerator {
  public:
   JsonInputGenerator(
@@ -361,6 +380,21 @@ class JsonInputGenerator : public AbstractInputGenerator {
     return folly::dynamic(value);
   }
 
+  // Presto and Velox JSON parser have different behavior for floating point
+  // with magnitudes greater than equal to 10^-3 and less than 10^7. Clamp
+  // values to avoid scientific notation when comparing JSON parse results.
+  template <TypeKind KIND>
+  folly::dynamic convertVariantToDynamicFloatingPoint(const variant& v) {
+    using T = typename TypeTraits<KIND>::DeepCopiedType;
+    VELOX_CHECK(v.isSet());
+    const T value = v.value<T>();
+    const T absValue = std::abs(value);
+    const T sign = value < 0 ? static_cast<T>(-1.0) : static_cast<T>(1.0);
+    const T clampedValue =
+        std::clamp(absValue, static_cast<T>(1e-3), static_cast<T>(1e7 - 1));
+    return folly::dynamic(sign * clampedValue);
+  }
+
   folly::dynamic convertVariantToDynamic(const variant& object);
 
   void makeRandomVariation(std::string& json);
@@ -382,5 +416,181 @@ class PhoneNumberInputGenerator : public AbstractInputGenerator {
 
  private:
   std::string generateImpl();
+};
+
+/// Generates a JSON path for JSON of a given type.
+/// @param jsonType The type of data represented by the JSON.
+/// @param mapKeys Candidate key values of maps in the JSON. All maps in the
+/// JSON are assumed to share the same key type and candidate key values.
+/// @param maxContainerLength The maximum length of a container (array or map)
+/// in the JSON.
+/// @param makeRandomVariation If true, the generator will generate JSON path
+/// not supported by JsonExtractor.
+/// This generator generates the following JSON paths:
+///  - On root: $
+///  - On arrays: [index], [], [*], .*
+///  - On objects: [key], ['key'], ["key"], [], [*], .*, .key, ."key"
+/// TODO: support the following JSON paths:
+///  - Recusive gathering by key or array index: ..key, ..[1]
+/// TODO: support the following JSON paths after Velox JsonExtractor supports
+/// them:
+///  - On strings, arrays, and objects: .length()
+///  - On arrays: [begin:end:step]
+class JsonPathGenerator : public AbstractInputGenerator {
+ public:
+  JsonPathGenerator(
+      size_t seed,
+      const TypePtr& type,
+      double nullRatio,
+      const TypePtr& jsonType,
+      const std::vector<variant>& mapKeys,
+      size_t maxContainerLength,
+      bool makeRandomVariation = false)
+      : AbstractInputGenerator(seed, type, nullptr, nullRatio),
+        jsonType_{jsonType},
+        mapKeys_{mapKeys},
+        maxContainerLength_{maxContainerLength},
+        makeRandomVariation_{makeRandomVariation} {}
+
+  ~JsonPathGenerator() override = default;
+
+  variant generate() override;
+
+ private:
+  uint64_t generateRandomIndex();
+
+  void generateRecursiveAccess(std::string& path, const TypePtr& type);
+
+  void generateImpl(std::string& path, const TypePtr& type);
+
+  TypePtr jsonType_;
+
+  std::vector<variant> mapKeys_;
+
+  size_t maxContainerLength_;
+
+  bool makeRandomVariation_;
+};
+
+// Input generator to cast a Varchar or Json to a given type T.
+class CastVarcharInputGenerator : public AbstractInputGenerator {
+ public:
+  CastVarcharInputGenerator(
+      size_t seed,
+      const TypePtr& type,
+      double nullRatio,
+      const TypePtr& castToType);
+
+  ~CastVarcharInputGenerator() override;
+
+  variant generate() override;
+
+ private:
+  TypePtr castToType_;
+
+  std::string generateValidPrimitiveAsString();
+};
+
+class URLInputGenerator : public AbstractInputGenerator {
+ public:
+  URLInputGenerator(
+      size_t seed,
+      const TypePtr& type,
+      double nullRatio,
+      std::string functionName,
+      std::vector<std::string> functionsToSkipForMailTo,
+      std::vector<std::string> functionsToSkipForTruncate);
+
+  ~URLInputGenerator() override;
+
+  variant generate() override;
+
+ private:
+  std::shared_ptr<RuleList> generateURLRules();
+  std::shared_ptr<RuleList> generateMailToRules();
+  std::shared_ptr<RuleList> generateChromeExtensionRules();
+
+  const std::string functionName_;
+  // Particular UDFs are known to have mismatches for mailto and trucated input.
+  // Let's skip those test cases for now. More info can be found in
+  // https://github.com/facebookincubator/velox/issues/14204.
+  const std::vector<std::string> functionsToSkipForMailTo_;
+  const std::vector<std::string> functionsToSkipForTruncate_;
+};
+
+class TDigestInputGenerator : public AbstractInputGenerator {
+ public:
+  TDigestInputGenerator(size_t seed, const TypePtr& type, double nullRatio);
+
+  ~TDigestInputGenerator() override;
+
+  variant generate() override;
+};
+
+class BingTileInputGenerator : public AbstractInputGenerator {
+ public:
+  BingTileInputGenerator(size_t seed, const TypePtr& type, double nullRatio);
+
+  ~BingTileInputGenerator() override;
+
+  variant generate() override;
+
+ private:
+  int64_t generateImpl();
+};
+
+class QDigestInputGenerator : public AbstractInputGenerator {
+ public:
+  QDigestInputGenerator(
+      size_t seed,
+      const TypePtr& type,
+      double nullRatio,
+      const TypePtr& qdigestType);
+
+  ~QDigestInputGenerator() override;
+
+  variant generate() override;
+
+ private:
+  const TypePtr qdigestType;
+
+  template <typename T>
+  std::vector<T> generateRandomValue(size_t len) {
+    std::vector<T> values;
+    values.reserve(len);
+
+    auto makeDist = []() {
+      if constexpr (std::is_integral_v<T>) {
+        return std::uniform_int_distribution<T>(0, 10000);
+      } else {
+        return std::uniform_real_distribution<T>(0.0, 10000.0);
+      }
+    };
+
+    auto dist = makeDist();
+    for (size_t i = 0; i < len; ++i) {
+      values.push_back(dist(rng_));
+    }
+    return values;
+  }
+
+  template <typename T>
+  std::string createSerializedDigest(size_t len, double accuracy) {
+    using facebook::velox::functions::qdigest::QuantileDigest;
+
+    std::allocator<T> allocator;
+    QuantileDigest<T, std::allocator<T>> digest(allocator, accuracy);
+
+    const auto input = generateRandomValue<T>(len);
+    auto dist = boost::random::uniform_real_distribution<T>(1.0, 100.0);
+    for (const auto& value : input) {
+      digest.add(value, dist(rng_));
+    }
+    const auto serializedSize = digest.serializedByteSize();
+    std::vector<char> serializedData(serializedSize);
+    digest.serialize(serializedData.data());
+
+    return std::string(serializedData.begin(), serializedData.end());
+  }
 };
 } // namespace facebook::velox::fuzzer

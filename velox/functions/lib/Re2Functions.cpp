@@ -102,7 +102,7 @@ FlatVector<StringView>& ensureWritableStringView(
     VectorPtr& result) {
   context.ensureWritable(rows, VARCHAR(), result);
   auto* flat = result->as<FlatVector<StringView>>();
-  flat->mutableValues(rows.end());
+  flat->mutableValues();
   return *flat;
 }
 
@@ -1254,10 +1254,13 @@ std::shared_ptr<exec::VectorFunction> makeRe2MatchImpl(
     const std::string& name,
     const std::vector<exec::VectorFunctionArg>& inputArgs,
     const core::QueryConfig& config) {
-  if (inputArgs.size() != 2 || !inputArgs[0].type->isVarchar() ||
-      !inputArgs[1].type->isVarchar()) {
+  if (inputArgs.size() != 2 ||
+      (!inputArgs[0].type->isVarchar() &&
+       inputArgs[0].type->kind() != TypeKind::UNKNOWN) ||
+      (!inputArgs[1].type->isVarchar() &&
+       inputArgs[1].type->kind() != TypeKind::UNKNOWN)) {
     VELOX_UNSUPPORTED(
-        "{} expected (VARCHAR, VARCHAR) but got ({})",
+        "{} expected (VARCHAR, VARCHAR) or (VARCHAR, UNKNOWN) but got ({})",
         name,
         printTypesCsv(inputArgs));
   }
@@ -1590,13 +1593,13 @@ class RegexpReplaceWithLambdaFunction : public exec::VectorFunction {
       vector_size_t numMatchesPerRow = 0;
 
       size_t pos = 0;
-      re2::StringPiece subMatches[numGroups + 1];
+      std::vector<re2::StringPiece> subMatches(numGroups + 1);
       while (re->Match(
           toStringPiece(hay),
           pos,
           hay.size(),
           RE2::Anchor::UNANCHORED,
-          subMatches,
+          subMatches.data(),
           numGroups + 1)) {
         ++numMatchesPerRow;
         matches.ensureSize(matchRow + 1);
@@ -1666,11 +1669,27 @@ std::shared_ptr<exec::VectorFunction> makeRe2Search(
 
 std::vector<std::shared_ptr<exec::FunctionSignature>> re2SearchSignatures() {
   // varchar, varchar -> boolean
-  return {exec::FunctionSignatureBuilder()
-              .returnType("boolean")
-              .argumentType("varchar")
-              .argumentType("varchar")
-              .build()};
+  return {
+      exec::FunctionSignatureBuilder()
+          .returnType("boolean")
+          .argumentType("varchar")
+          .argumentType("varchar")
+          .build(),
+      exec::FunctionSignatureBuilder()
+          .returnType("boolean")
+          .argumentType("varchar")
+          .argumentType("unknown")
+          .build(),
+      exec::FunctionSignatureBuilder()
+          .returnType("boolean")
+          .argumentType("unknown")
+          .argumentType("varchar")
+          .build(),
+      exec::FunctionSignatureBuilder()
+          .returnType("boolean")
+          .argumentType("unknown")
+          .argumentType("unknown")
+          .build()};
 }
 
 std::shared_ptr<exec::VectorFunction> makeRe2Extract(

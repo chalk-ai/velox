@@ -24,16 +24,17 @@
 #include "arrow/ipc/api.h"
 #include "arrow/result.h"
 #include "arrow/status.h"
-#include "grpc/grpc.h"
-#include "spark/connect/base.pb.h"
-#include "spark/connect/relations.pb.h"
+#include "grpc/grpc.h" // @manual
 #include "velox/common/base/Fs.h"
 #include "velox/dwio/common/WriterFactory.h"
 #include "velox/dwio/parquet/writer/Writer.h"
 #include "velox/exec/fuzzer/FuzzerUtil.h"
-#include "velox/exec/fuzzer/ToSQLUtil.h"
+#include "velox/exec/fuzzer/PrestoSql.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/exec/tests/utils/TempFilePath.h"
+#include "velox/functions/sparksql/fuzzer/SparkQueryRunnerToSqlPlanNodeVisitor.h"
+#include "velox/functions/sparksql/fuzzer/spark/connect/base.pb.h"
+#include "velox/functions/sparksql/fuzzer/spark/connect/relations.pb.h"
 #include "velox/vector/arrow/Bridge.h"
 
 using namespace spark::connect;
@@ -101,45 +102,77 @@ SparkQueryRunner::aggregationFunctionDataSpecs() const {
 
 std::optional<std::string> SparkQueryRunner::toSql(
     const velox::core::PlanNodePtr& plan) {
-  if (const auto aggregationNode =
-          std::dynamic_pointer_cast<const core::AggregationNode>(plan)) {
-    return toSql(aggregationNode);
-  }
-  if (const auto projectNode =
-          std::dynamic_pointer_cast<const core::ProjectNode>(plan)) {
-    return toSql(projectNode);
-  }
-  VELOX_NYI("Unsupported plan node: {}.", plan->toString());
+  exec::test::PrestoSqlPlanNodeVisitorContext context;
+  SparkQueryRunnerToSqlPlanNodeVisitor visitor;
+  plan->accept(visitor, context);
+
+  return context.sql;
 }
 
-std::multiset<std::vector<variant>> SparkQueryRunner::execute(
-    const std::string& sql,
-    const std::vector<RowVectorPtr>& input,
-    const RowTypePtr& resultType) {
-  return exec::test::materialize(executeVector(sql, input, resultType));
+std::pair<
+    std::optional<std::multiset<std::vector<variant>>>,
+    exec::test::ReferenceQueryErrorCode>
+SparkQueryRunner::execute(const core::PlanNodePtr& plan) {
+  std::pair<
+      std::optional<std::vector<RowVectorPtr>>,
+      exec::test::ReferenceQueryErrorCode>
+      result = executeAndReturnVector(plan);
+  if (result.first) {
+    return std::make_pair(
+        exec::test::materialize(*result.first), result.second);
+  }
+  return std::make_pair(std::nullopt, result.second);
 }
 
-std::vector<RowVectorPtr> SparkQueryRunner::executeVector(
-    const std::string& sql,
-    const std::vector<RowVectorPtr>& input,
-    const RowTypePtr& resultType) {
-  auto inputType = asRowType(input[0]->type());
-  if (inputType->size() == 0) {
-    auto rowVector = exec::test::makeNullRows(input, "x", pool());
-    return executeVector(sql, {rowVector}, resultType);
+std::pair<
+    std::optional<std::vector<RowVectorPtr>>,
+    exec::test::ReferenceQueryErrorCode>
+SparkQueryRunner::executeAndReturnVector(const core::PlanNodePtr& plan) {
+  if (std::optional<std::string> sql = toSql(plan)) {
+    try {
+      std::unordered_map<std::string, std::vector<RowVectorPtr>> inputMap =
+          getAllTables(plan);
+      for (const auto& [tableName, input] : inputMap) {
+        auto inputType = asRowType(input[0]->type());
+        if (inputType->size() == 0) {
+          inputMap[tableName] = {exec::test::makeNullRows(
+              input, fmt::format("{}x", tableName), pool())};
+        }
+      }
+
+      auto writerPool = aggregatePool()->addAggregateChild("writer");
+      std::vector<std::shared_ptr<exec::test::TempFilePath>> tempFiles;
+      tempFiles.reserve(inputMap.size());
+      for (const auto& [tableName, input] : inputMap) {
+        auto tempFile = exec::test::TempFilePath::create();
+        tempFiles.emplace_back(tempFile);
+        const auto& filePath = tempFile->getPath();
+        writeToFile(filePath, input, writerPool.get());
+        // Create temporary view for this table in Spark by reading the
+        // generated Parquet file.
+        execute(fmt::format(
+            "CREATE OR REPLACE TEMPORARY VIEW {} AS (SELECT * from parquet.`file://{}`);",
+            tableName,
+            filePath));
+      }
+
+      // Run the query.
+      return std::make_pair(
+          execute(*sql), exec::test::ReferenceQueryErrorCode::kSuccess);
+    } catch (const VeloxRuntimeError&) {
+      throw;
+    } catch (...) {
+      LOG(WARNING) << "Query failed in Spark";
+      return std::make_pair(
+          std::nullopt,
+          exec::test::ReferenceQueryErrorCode::kReferenceQueryFail);
+    }
   }
 
-  // Write the input to a Parquet file.
-  auto tempFile = exec::test::TempFilePath::create();
-  const auto& filePath = tempFile->getPath();
-  auto writerPool = aggregatePool()->addAggregateChild("writer");
-  writeToFile(filePath, input, writerPool.get());
-
-  // Create temporary view 'tmp' in Spark by reading the generated Parquet file.
-  execute(fmt::format(
-      "CREATE OR REPLACE TEMPORARY VIEW tmp AS (SELECT * from parquet.`file://{}`);",
-      filePath));
-  return execute(sql);
+  LOG(INFO) << "Query not supported in Spark";
+  return std::make_pair(
+      std::nullopt,
+      exec::test::ReferenceQueryErrorCode::kReferenceQueryUnsupported);
 }
 
 std::vector<RowVectorPtr> SparkQueryRunner::execute(
@@ -232,84 +265,5 @@ std::vector<RowVectorPtr> SparkQueryRunner::readArrowData(
       "Failed to read batch: {}.",
       batchResult.status().ToString());
   return results;
-}
-
-std::optional<std::string> SparkQueryRunner::toSql(
-    const std::shared_ptr<const core::AggregationNode>& aggregationNode) {
-  // Assume plan is Aggregation over Values.
-  VELOX_CHECK(aggregationNode->step() == core::AggregationNode::Step::kSingle);
-
-  std::vector<std::string> groupingKeys;
-  for (const auto& key : aggregationNode->groupingKeys()) {
-    groupingKeys.push_back(key->name());
-  }
-
-  std::stringstream sql;
-  sql << "SELECT " << folly::join(", ", groupingKeys);
-
-  const auto& aggregates = aggregationNode->aggregates();
-  if (!aggregates.empty()) {
-    if (!groupingKeys.empty()) {
-      sql << ", ";
-    }
-
-    for (auto i = 0; i < aggregates.size(); ++i) {
-      exec::test::appendComma(i, sql);
-      const auto& aggregate = aggregates[i];
-      VELOX_CHECK(
-          aggregate.sortingKeys.empty(),
-          "Sort key is not supported in Spark's aggregation. You may need to disable 'enable_sorted_aggregations' when running the fuzzer test.");
-      sql << exec::test::toAggregateCallSql(
-          aggregate.call, {}, {}, aggregate.distinct);
-
-      if (aggregate.mask != nullptr) {
-        sql << " filter (where " << aggregate.mask->name() << ")";
-      }
-      sql << " as " << aggregationNode->aggregateNames()[i];
-    }
-  }
-
-  sql << " FROM tmp";
-
-  if (!groupingKeys.empty()) {
-    sql << " GROUP BY " << folly::join(", ", groupingKeys);
-  }
-
-  return sql.str();
-}
-
-std::optional<std::string> SparkQueryRunner::toSql(
-    const std::shared_ptr<const core::ProjectNode>& projectNode) {
-  auto sourceSql = toSql(projectNode->sources()[0]);
-  if (!sourceSql.has_value()) {
-    return std::nullopt;
-  }
-
-  std::stringstream sql;
-  sql << "SELECT ";
-
-  for (auto i = 0; i < projectNode->names().size(); ++i) {
-    exec::test::appendComma(i, sql);
-    auto projection = projectNode->projections()[i];
-    if (auto field =
-            std::dynamic_pointer_cast<const core::FieldAccessTypedExpr>(
-                projection)) {
-      sql << field->name();
-    } else if (
-        auto call =
-            std::dynamic_pointer_cast<const core::CallTypedExpr>(projection)) {
-      sql << exec::test::toCallSql(call);
-    } else {
-      VELOX_NYI(
-          "Unsupported projection {} in project node: {}.",
-          projection->toString(),
-          projectNode->toString());
-    }
-
-    sql << " as " << projectNode->names()[i];
-  }
-
-  sql << " FROM (" << sourceSql.value() << ")";
-  return sql.str();
 }
 } // namespace facebook::velox::functions::sparksql::fuzzer

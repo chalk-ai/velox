@@ -26,7 +26,8 @@ velox_add_library(
   RleBpDecoder.cpp
   StructColumnReader.cpp
   StringColumnReader.cpp
-  SemanticVersion.cpp)
+  SemanticVersion.cpp
+)
 
 velox_link_libraries(
   velox_dwio_native_parquet_reader
@@ -38,5 +39,6 @@ velox_link_libraries(
   fmt::fmt
   arrow
   Snappy::snappy
-  thrift::thrift
-  zstd::zstd)
+  thrift
+  zstd::zstd
+)

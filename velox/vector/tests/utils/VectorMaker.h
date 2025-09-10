@@ -19,6 +19,7 @@
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/DictionaryVector.h"
+#include "velox/vector/FlatMapVector.h"
 #include "velox/vector/FlatVector.h"
 #include "velox/vector/SequenceVector.h"
 #include "velox/vector/SimpleVector.h"
@@ -52,19 +53,19 @@ T jsonValue(const folly::dynamic& jsonValue) {
 }
 
 template <typename T>
-void appendVariant(std::vector<variant>& values, const T& x) {
+void appendVariant(std::vector<Variant>& values, const T& x) {
   values.push_back(x);
 };
 
 template <typename TupleT, std::size_t... Is>
-variant toVariantRow(const TupleT& tp, std::index_sequence<Is...>) {
-  std::vector<variant> values;
+Variant toVariantRow(const TupleT& tp, std::index_sequence<Is...>) {
+  std::vector<Variant> values;
   (appendVariant(values, std::get<Is>(tp)), ...);
-  return variant::row(values);
+  return Variant::row(values);
 }
 
 template <typename TupleT, std::size_t TupleSize = std::tuple_size_v<TupleT>>
-variant toVariantRow(const TupleT& tp) {
+Variant toVariantRow(const TupleT& tp) {
   return toVariantRow(tp, std::make_index_sequence<TupleSize>{});
 }
 
@@ -145,7 +146,7 @@ class VectorMaker {
         pool_,
         CppToType<T>::create(),
         size,
-        std::make_unique<SimpleVectorLoader>([=](RowSet rowSet) {
+        std::make_unique<SimpleVectorLoader>([=, this](RowSet rowSet) {
           // Populate requested rows with correct data and fill in gaps with
           // "garbage".
           SelectivityVector rows(rowSet.back() + 1, false);
@@ -454,7 +455,7 @@ class VectorMaker {
   /// Create an ArrayVector<ROW> from nested std::vectors of Variants.
   ArrayVectorPtr arrayOfRowVector(
       const RowTypePtr& rowType,
-      const std::vector<std::vector<variant>>& data);
+      const std::vector<std::vector<Variant>>& data);
 
   /// Creates an ARRAY(ROW(...)) vector from a list of lists of optional tuples.
   ///
@@ -477,14 +478,14 @@ class VectorMaker {
   ArrayVectorPtr arrayOfRowVector(
       const std::vector<std::vector<std::optional<TupleT>>>& data,
       const RowTypePtr& rowType) {
-    std::vector<std::vector<variant>> arrays;
+    std::vector<std::vector<Variant>> arrays;
     for (const auto& tuples : data) {
-      std::vector<variant> elements;
+      std::vector<Variant> elements;
       for (const auto& t : tuples) {
         if (t.has_value()) {
           elements.push_back(detail::toVariantRow(t.value()));
         } else {
-          elements.push_back(variant::null(TypeKind::ROW));
+          elements.push_back(Variant::null(TypeKind::ROW));
         }
       }
       arrays.push_back(elements);
@@ -797,55 +798,19 @@ class VectorMaker {
   ///  {} - empty map
   ///  null - null map
   ///
-  /// @tparam K Type of map keys. Must be a std::string or an integer: int8_t,
-  /// int16_t, int32_t, int64_t.
-  /// @tparam V Type of map value. Can be an integer or a floating point
+  /// @tparam TKey Type of map keys. Must be a std::string or an integer:
+  /// int8_t, int16_t, int32_t, int64_t.
+  /// @tparam TValue Type of map value. Can be an integer or a floating point
   /// number.
   /// @param jsonMaps A list of JSON maps. JSON map cannot be an empty
   /// string.
-  template <typename K, typename V>
+  template <typename TKey, typename TValue>
   MapVectorPtr mapVectorFromJson(
       const std::vector<std::string>& jsonMaps,
       const TypePtr& mapType =
-          MAP(CppToType<K>::create(), CppToType<V>::create())) {
-    static_assert(
-        std::is_same_v<K, int8_t> || std::is_same_v<K, int16_t> ||
-        std::is_same_v<K, int32_t> || std::is_same_v<K, int64_t> ||
-        std::is_same_v<K, float> || std::is_same_v<K, double> ||
-        std::is_same_v<K, std::string>);
-
-    std::vector<std::optional<std::vector<std::pair<K, std::optional<V>>>>>
-        maps;
-    for (const auto& jsonMap : jsonMaps) {
-      VELOX_CHECK(!jsonMap.empty());
-
-      folly::json::serialization_opts options;
-      options.convert_int_keys = true;
-      options.allow_non_string_keys = true;
-      options.allow_nan_inf = true;
-      folly::dynamic mapObject = folly::parseJson(jsonMap, options);
-      if (mapObject.isNull()) {
-        // Null map.
-        maps.push_back(std::nullopt);
-        continue;
-      }
-
-      std::vector<std::pair<K, std::optional<V>>> pairs;
-      for (const auto& item : mapObject.items()) {
-        auto key = detail::jsonValue<K>(item.first);
-
-        if (item.second.isNull()) {
-          // Null value.
-          pairs.push_back({key, std::nullopt});
-        } else {
-          pairs.push_back({key, detail::jsonValue<V>(item.second)});
-        }
-      }
-
-      maps.push_back(pairs);
-    }
-
-    return mapVector<K, V>(maps, mapType);
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return mapVector<TKey, TValue>(
+        jsonMapToVectorOfPairs<TKey, TValue>(jsonMaps), mapType);
   }
 
   MapVectorPtr allNullMapVector(
@@ -853,9 +818,176 @@ class VectorMaker {
       const TypePtr& keyType,
       const TypePtr& valueType);
 
-  /// Create a FlatVector from a variant containing a scalar value.
+  /// Creates a FlatMapVector from a list of key value pairs.
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr flatMapVector(
+      const std::vector<std::vector<std::pair<TKey, std::optional<TValue>>>>&
+          maps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    std::vector<
+        std::optional<std::vector<std::pair<TKey, std::optional<TValue>>>>>
+        nullableMaps;
+    nullableMaps.reserve(maps.size());
+
+    for (const auto& m : maps) {
+      nullableMaps.push_back(m);
+    }
+    return flatMapVectorNullable<TKey, TValue>(nullableMaps, mapType, false);
+  }
+
+  /// Creates a FlatMapVector from a list of key value pairs where the list of
+  /// key values pairs (the maps) are nullable. This is the case when the entire
+  /// map for a particular row is null. Alternatively, individual values for
+  /// keys can also be nulls, but not keys (map keys are non-nullable by
+  /// design).
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr flatMapVectorNullable(
+      const std::vector<std::optional<
+          std::vector<std::pair<TKey, std::optional<TValue>>>>>& maps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create()),
+      bool hasNulls = true) {
+    std::unordered_map<TKey, vector_size_t> keysMap;
+    vector_size_t keyChannel = 0;
+    vector_size_t index = 0;
+
+    std::vector<TKey> flatKeys;
+    std::vector<std::vector<std::optional<TValue>>> flatValues;
+    std::vector<BufferPtr> inMaps;
+
+    std::vector<std::optional<TValue>>* curValues;
+    uint64_t* curInMaps;
+
+    BufferPtr nulls = allocateNulls(maps.size(), pool_);
+    auto rawNulls = nulls->asMutable<uint64_t>();
+
+    for (const auto& map : maps) {
+      if (map.has_value()) {
+        for (const auto& [key, value] : map.value()) {
+          auto it = keysMap.find(key);
+
+          // First time we see this key.
+          if (it == keysMap.end()) {
+            keysMap.insert({key, keyChannel++});
+            flatKeys.push_back(key);
+            flatValues.push_back({});
+
+            // We allocate a new inMaps buffer, setting "not in map" by default.
+            // Then set the current key to in map.
+            inMaps.push_back(
+                AlignedBuffer::allocate<bool>(maps.size(), pool_, 0));
+            curInMaps = inMaps.back()->asMutable<uint64_t>();
+
+            curValues = &flatValues.back();
+            curValues->resize(maps.size());
+          } else {
+            curValues = &flatValues[it->second];
+            curInMaps = inMaps[it->second]->template asMutable<uint64_t>();
+          }
+          (*curValues)[index] = value;
+          bits::setBit(curInMaps, index);
+        }
+      } else {
+        bits::setNull(rawNulls, index, true);
+      }
+      ++index;
+    }
+
+    // Build the vectors containing map value for each distinct key.
+    std::vector<VectorPtr> mapValues;
+    mapValues.reserve(flatValues.size());
+
+    for (const auto& values : flatValues) {
+      mapValues.push_back(flatVectorNullable(values));
+    }
+    return std::make_shared<FlatMapVector>(
+        pool_,
+        mapType,
+        hasNulls ? nulls : nullptr,
+        maps.size(),
+        flatKeys.empty() ? nullptr : flatVector(flatKeys),
+        std::move(mapValues),
+        std::move(inMaps));
+  }
+
+  template <typename TKey>
+  FlatMapVectorPtr flatMapVector(MapVectorPtr mapVector) {
+    std::unordered_map<TKey, vector_size_t> keysMap;
+    vector_size_t keyChannel = 0;
+    vector_size_t index = 0;
+
+    std::vector<TKey> flatKeys;
+    std::vector<VectorPtr> values;
+    std::vector<BufferPtr> inMaps;
+
+    VectorPtr* curValues;
+    uint64_t* curInMaps;
+
+    DecodedVector decodedKeys(*mapVector->mapKeys());
+
+    BufferPtr nulls = allocateNulls(mapVector->size(), pool_);
+    auto rawNulls = nulls->asMutable<uint64_t>();
+    bool hasNulls = false;
+
+    for (vector_size_t row = 0; row < mapVector->size(); row++) {
+      if (mapVector->isNullAt(row)) {
+        hasNulls = true;
+        bits::setNull(rawNulls, index, true);
+      } else {
+        for (vector_size_t entry = mapVector->offsetAt(row);
+             entry < mapVector->offsetAt(row) + mapVector->sizeAt(row);
+             entry++) {
+          TKey key = decodedKeys.valueAt<TKey>(entry);
+          auto it = keysMap.find(key);
+
+          // First time we see this key.
+          if (it == keysMap.end()) {
+            keysMap.insert({key, keyChannel++});
+            flatKeys.push_back(key);
+            values.push_back(BaseVector::create(
+                mapVector->type()->childAt(1), mapVector->size(), pool_));
+
+            // We allocate a new inMaps buffer, setting "not in map" by default.
+            // Then set the current key to in map.
+            inMaps.push_back(
+                AlignedBuffer::allocate<bool>(mapVector->size(), pool_, 0));
+            curInMaps = inMaps.back()->asMutable<uint64_t>();
+
+            curValues = &values.back();
+          } else {
+            curValues = &values[it->second];
+            curInMaps = inMaps[it->second]->template asMutable<uint64_t>();
+          }
+          (*curValues)->copy(mapVector->mapValues().get(), index, entry, 1);
+          bits::setBit(curInMaps, index);
+        }
+      }
+      ++index;
+    }
+
+    return std::make_shared<FlatMapVector>(
+        pool_,
+        mapVector->type(),
+        hasNulls ? nulls : nullptr,
+        mapVector->size(),
+        flatKeys.empty() ? nullptr : flatVector(flatKeys),
+        std::move(values),
+        std::move(inMaps));
+  }
+
+  template <typename TKey, typename TValue>
+  FlatMapVectorPtr flatMapVectorFromJson(
+      const std::vector<std::string>& jsonMaps,
+      const TypePtr& mapType =
+          MAP(CppToType<TKey>::create(), CppToType<TValue>::create())) {
+    return flatMapVectorNullable<TKey, TValue>(
+        jsonMapToVectorOfPairs<TKey, TValue>(jsonMaps), mapType);
+  }
+
+  /// Create a FlatVector from a Variant containing a scalar value.
   template <TypeKind kind>
-  VectorPtr toFlatVector(variant value) {
+  VectorPtr toFlatVector(const Variant& value) {
     using T = typename TypeTraits<kind>::NativeType;
     if constexpr (std::is_same_v<T, StringView>) {
       return flatVector<StringView>({StringView(value.value<const char*>())});
@@ -864,9 +996,9 @@ class VectorMaker {
     }
   }
 
-  /// Create constant vector of type ROW from a variant.
+  /// Create constant vector of type ROW from a Variant.
   VectorPtr
-  constantRow(const RowTypePtr& rowType, variant value, vector_size_t size) {
+  constantRow(const RowTypePtr& rowType, Variant value, vector_size_t size) {
     VELOX_CHECK_EQ(value.kind(), TypeKind::ROW);
 
     std::vector<VectorPtr> fields(rowType->size());
@@ -937,6 +1069,53 @@ class VectorMaker {
         elements.push_back(detail::jsonValue<T>(element));
       }
     }
+  }
+
+  // Helper function to convert a string json into a std::vector of pairs to
+  // contruct map vectors.
+  template <typename TKey, typename TValue>
+  auto jsonMapToVectorOfPairs(const std::vector<std::string>& jsonMaps) {
+    static_assert(
+        std::is_same_v<TKey, int8_t> || std::is_same_v<TKey, int16_t> ||
+        std::is_same_v<TKey, int32_t> || std::is_same_v<TKey, int64_t> ||
+        std::is_same_v<TKey, float> || std::is_same_v<TKey, double> ||
+        std::is_same_v<TKey, std::string>);
+
+    std::vector<
+        std::optional<std::vector<std::pair<TKey, std::optional<TValue>>>>>
+        maps;
+
+    for (const auto& jsonMap : jsonMaps) {
+      VELOX_CHECK(!jsonMap.empty());
+
+      folly::json::serialization_opts options;
+      options.convert_int_keys = true;
+      options.allow_non_string_keys = true;
+      options.allow_nan_inf = true;
+      folly::dynamic mapObject = folly::parseJson(jsonMap, options);
+
+      if (mapObject.isNull()) {
+        // Null map.
+        maps.push_back(std::nullopt);
+        continue;
+      }
+
+      std::vector<std::pair<TKey, std::optional<TValue>>> pairs;
+      pairs.reserve(mapObject.size());
+
+      for (const auto& item : mapObject.items()) {
+        auto key = detail::jsonValue<TKey>(item.first);
+
+        if (item.second.isNull()) {
+          // Null value.
+          pairs.push_back({key, std::nullopt});
+        } else {
+          pairs.push_back({key, detail::jsonValue<TValue>(item.second)});
+        }
+      }
+      maps.push_back(pairs);
+    }
+    return maps;
   }
 
   memory::MemoryPool* pool_;

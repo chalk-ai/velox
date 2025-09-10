@@ -118,14 +118,15 @@ void RowNumber::restoreNextSpillPartition() {
   }
 
   auto it = spillInputPartitionSet_.begin();
+  restoringPartitionId_ = it->first;
   spillInputReader_ = it->second->createUnorderedReader(
-      spillConfig_->readBufferSize, pool(), &spillStats_);
+      spillConfig_->readBufferSize, pool(), spillStats_.get());
 
   // Find matching partition for the hash table.
   auto hashTableIt = spillHashTablePartitionSet_.find(it->first);
   if (hashTableIt != spillHashTablePartitionSet_.end()) {
     spillHashTableReader_ = hashTableIt->second->createUnorderedReader(
-        spillConfig_->readBufferSize, pool(), &spillStats_);
+        spillConfig_->readBufferSize, pool(), spillStats_.get());
 
     setSpillPartitionBits(&(it->first));
 
@@ -326,7 +327,8 @@ RowVectorPtr RowNumber::getOutput() {
     if (spillInputReader_->nextBatch(unspilledInput)) {
       addInput(std::move(unspilledInput));
     } else {
-      spillInputReader_ = nullptr;
+      spillInputReader_.reset();
+      restoringPartitionId_.reset();
       table_->clear(/*freeTable=*/true);
       restoreNextSpillPartition();
     }
@@ -386,14 +388,14 @@ void RowNumber::reclaim(
                  << spillConfig_->maxSpillLevel
                  << ", and abandon spilling for memory pool: "
                  << pool()->name();
-    ++spillStats_.wlock()->spillMaxLevelExceededCount;
+    ++spillStats_->wlock()->spillMaxLevelExceededCount;
     return;
   }
 
   spill();
 }
 
-SpillPartitionNumSet RowNumber::spillHashTable() {
+SpillPartitionIdSet RowNumber::spillHashTable() {
   VELOX_CHECK_NOT_NULL(table_);
 
   auto columnTypes = table_->rows()->columnTypes();
@@ -402,28 +404,32 @@ SpillPartitionNumSet RowNumber::spillHashTable() {
 
   auto hashTableSpiller = std::make_unique<RowNumberHashTableSpiller>(
       table_->rows(),
+      restoringPartitionId_,
       tableType,
       spillPartitionBits_,
       &spillConfig,
-      &spillStats_);
+      spillStats_.get());
 
   hashTableSpiller->spill();
   hashTableSpiller->finishSpill(spillHashTablePartitionSet_);
 
   table_->clear(/*freeTable=*/true);
   pool()->release();
-  return hashTableSpiller->state().spilledPartitionSet();
+  return hashTableSpiller->state().spilledPartitionIdSet();
 }
 
 void RowNumber::setupInputSpiller(
-    const SpillPartitionNumSet& spillPartitionSet) {
-  VELOX_CHECK(!spillPartitionSet.empty());
+    const SpillPartitionIdSet& spillPartitionIdSet) {
+  VELOX_CHECK(!spillPartitionIdSet.empty());
 
   const auto& spillConfig = spillConfig_.value();
 
   inputSpiller_ = std::make_unique<NoRowContainerSpiller>(
-      inputType_, spillPartitionBits_, &spillConfig, &spillStats_);
-  inputSpiller_->setPartitionsSpilled(spillPartitionSet);
+      inputType_,
+      restoringPartitionId_,
+      spillPartitionBits_,
+      &spillConfig,
+      spillStats_.get());
 
   const auto& hashers = table_->hashers();
 
@@ -440,10 +446,10 @@ void RowNumber::setupInputSpiller(
 void RowNumber::spill() {
   VELOX_CHECK(spillEnabled());
 
-  const auto spillPartitionSet = spillHashTable();
+  const auto spillPartitionIdSet = spillHashTable();
   VELOX_CHECK_EQ(table_->numDistinct(), 0);
 
-  setupInputSpiller(spillPartitionSet);
+  setupInputSpiller(spillPartitionIdSet);
   if (input_ != nullptr) {
     spillInput(input_, memory::spillMemoryPool());
     input_ = nullptr;
@@ -493,7 +499,8 @@ void RowNumber::spillInput(
     }
 
     inputSpiller_->spill(
-        partition, wrap(numInputs, partitionIndices[partition], input));
+        SpillPartitionId(partition),
+        wrap(numInputs, partitionIndices[partition], input));
   }
 }
 
@@ -502,7 +509,7 @@ void RowNumber::recursiveSpillInput() {
   while (spillInputReader_->nextBatch(unspilledInput)) {
     spillInput(unspilledInput, pool());
 
-    if (operatorCtx_->driver()->shouldYield()) {
+    if (shouldYield()) {
       yield_ = true;
       return;
     }
@@ -515,7 +522,10 @@ void RowNumber::setSpillPartitionBits(
     const SpillPartitionId* restoredPartitionId) {
   const auto startPartitionBitOffset = restoredPartitionId == nullptr
       ? spillConfig_->startPartitionBit
-      : restoredPartitionId->partitionBitOffset() +
+      : partitionBitOffset(
+            *restoredPartitionId,
+            spillConfig_->startPartitionBit,
+            spillConfig_->numPartitionBits) +
           spillConfig_->numPartitionBits;
   if (spillConfig_->exceedSpillLevelLimit(startPartitionBitOffset)) {
     exceededMaxSpillLevelLimit_ = true;
@@ -530,6 +540,7 @@ void RowNumber::setSpillPartitionBits(
 
 RowNumberHashTableSpiller::RowNumberHashTableSpiller(
     RowContainer* container,
+    std::optional<SpillPartitionId> parentId,
     RowTypePtr rowType,
     HashBitRange bits,
     const common::SpillConfig* spillConfig,
@@ -538,10 +549,10 @@ RowNumberHashTableSpiller::RowNumberHashTableSpiller(
           container,
           std::move(rowType),
           bits,
-          0,
           {},
           spillConfig->maxFileSize,
           spillConfig->maxSpillRunRows,
+          parentId,
           spillConfig,
           spillStats) {}
 
