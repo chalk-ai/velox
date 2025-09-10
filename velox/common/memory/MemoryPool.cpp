@@ -1199,7 +1199,7 @@ void MemoryPoolImpl::recordAllocDbg(const void* addr, uint64_t size) {
   if (!needRecordDbg(true)) {
     return;
   }
-  AllocationRecord allocationRecord{size, {}}; // process::StackTrace()};
+  AllocationRecord allocationRecord{size, ""}; // process::StackTrace()};
   std::lock_guard<std::mutex> debugAllocLock(debugAllocMutex_);
   auto [it, inserted] = debugAllocRecords_.try_emplace(
       reinterpret_cast<uint64_t>(addr), std::move(allocationRecord));
