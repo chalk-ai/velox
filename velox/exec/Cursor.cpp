@@ -16,6 +16,7 @@
 #include "velox/exec/Cursor.h"
 #include "velox/common/file/FileSystems.h"
 
+#include <cstddef>
 #include <filesystem>
 
 namespace facebook::velox::exec {
@@ -156,6 +157,7 @@ class TaskCursorBase : public TaskCursor {
           std::
               unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
           cache::AsyncDataCache::getInstance(),
+          nullptr,
           nullptr,
           nullptr,
           fmt::format("TaskCursorQuery_{}", cursorQueryId++));
