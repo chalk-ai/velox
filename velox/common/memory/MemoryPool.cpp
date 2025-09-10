@@ -1224,7 +1224,7 @@ void MemoryPoolImpl::recordAllocDbg(const void* addr, uint64_t size) {
         succinctBytes(debugOptions_->debugPoolWarnThresholdBytes),
         succinctBytes(size),
         succinctBytes(usedBytes),
-        it->second.callStack.toString(),
+        it->second.callStack,
         dumpRecordsDbg());
   }
 }
