@@ -17,15 +17,19 @@ add_executable(
   AggregationReplayerTest.cpp
   FilterProjectReplayerTest.cpp
   HashJoinReplayerTest.cpp
+  IndexLookupJoinReplayerTest.cpp
   PartitionedOutputReplayerTest.cpp
   TraceFileToolTest.cpp
   TableScanReplayerTest.cpp
-  TableWriterReplayerTest.cpp)
+  TableWriterReplayerTest.cpp
+  UnnestReplayerTest.cpp
+)
 
 add_test(
   NAME velox_tool_trace_test
   COMMAND velox_tool_trace_test
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
 
 set_tests_properties(velox_tool_trace_test PROPERTIES TIMEOUT 3000)
 
@@ -42,4 +46,5 @@ target_link_libraries(
   Folly::folly
   gflags::gflags
   glog::glog
-  fmt::fmt)
+  fmt::fmt
+)

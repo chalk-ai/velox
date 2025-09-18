@@ -23,6 +23,7 @@
 #include <string>
 
 #include "velox/common/base/GTestMacros.h"
+#include "velox/common/base/Status.h"
 
 namespace facebook::velox::encoding {
 
@@ -86,7 +87,7 @@ class Base64 {
 
   /// Decodes the specified number of characters from the 'input' and writes the
   /// result to the 'outputBuffer'.
-  static size_t decode(
+  static Status decode(
       const char* input,
       size_t inputSize,
       char* outputBuffer,
@@ -103,22 +104,49 @@ class Base64 {
 
   /// Decodes the specified number of characters from the 'input' using URL
   /// encoding and writes the result to the 'outputBuffer'
-  static void decodeUrl(
+  static Status decodeUrl(
       const char* input,
       size_t inputSize,
       char* outputBuffer,
       size_t outputSize);
 
+  /// Decodes a Base64 MIME‐mode buffer back to binary.
+  /// Skips any non-Base64 chars (e.g. CR/LF).
+  static Status
+  decodeMime(const char* input, size_t inputSize, char* outputBuffer);
+
+  /// Encodes the input buffer into Base64 MIME format.
+  /// Inserts a CRLF every kMaxLineLength output characters.
+  static void
+  encodeMime(const char* input, size_t inputSize, char* outputBuffer);
+
   /// Calculates the encoded size based on input 'inputSize'.
   static size_t calculateEncodedSize(size_t inputSize, bool withPadding = true);
 
-  /// Returns the actual size of the decoded data. Removes the padding
-  /// length from the input data 'inputSize'.
-  static size_t calculateDecodedSize(const char* input, size_t& inputSize);
+  /// Calculates the decoded size based on encoded input and adjusts the input
+  /// size for padding.
+  static Expected<size_t> calculateDecodedSize(
+      const char* input,
+      size_t& inputSize);
+
+  /// Calculates the decoded binary size of a MIME‐mode Base64 input,
+  /// accounting for padding and ignoring whitespace.
+  static Expected<size_t> calculateMimeDecodedSize(
+      const char* input,
+      const size_t inputSize);
+
+  /// Computes the exact output length for MIME‐mode Base64 encoding,
+  /// including required CRLF line breaks.
+  static size_t calculateMimeEncodedSize(size_t inputSize);
 
  private:
   // Padding character used in encoding.
   static const char kPadding = '=';
+
+  // Soft Line breaks used in mime encoding as defined in RFC 2045, section 6.8:
+  // https://www.rfc-editor.org/rfc/rfc2045#section-6.8
+  inline static const std::string kNewline{"\r\n"};
+  static const size_t kMaxLineLength = 76;
 
   // Checks if the input Base64 string is padded.
   static inline bool isPadded(const char* input, size_t inputSize) {
@@ -137,7 +165,7 @@ class Base64 {
 
   // Reverse lookup helper function to get the original index of a Base64
   // character.
-  static uint8_t base64ReverseLookup(
+  static Expected<uint8_t> base64ReverseLookup(
       char encodedChar,
       const ReverseIndex& reverseIndex);
 
@@ -155,7 +183,7 @@ class Base64 {
       char* outputBuffer);
 
   // Decodes the specified data using the provided reverse lookup table.
-  static size_t decodeImpl(
+  static Expected<size_t> decodeImpl(
       const char* input,
       size_t inputSize,
       char* outputBuffer,

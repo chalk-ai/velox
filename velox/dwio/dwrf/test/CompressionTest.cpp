@@ -154,7 +154,7 @@ TestDecrypter testDecrypter;
 class CompressionTest : public TestWithParam<TestParams> {
  public:
   static void SetUpTestCase() {
-    MemoryManager::testingSetInstance({});
+    MemoryManager::testingSetInstance(MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -291,6 +291,8 @@ VELOX_INSTANTIATE_TEST_SUITE_P(
     Values(
         std::make_tuple(CompressionKind_ZLIB, nullptr, nullptr),
         std::make_tuple(CompressionKind_ZLIB, &testEncrypter, &testDecrypter),
+        std::make_tuple(CompressionKind_GZIP, nullptr, nullptr),
+        std::make_tuple(CompressionKind_GZIP, &testEncrypter, &testDecrypter),
         std::make_tuple(CompressionKind_ZSTD, nullptr, nullptr),
         std::make_tuple(CompressionKind_ZSTD, &testEncrypter, &testDecrypter),
         std::make_tuple(CompressionKind_NONE, nullptr, nullptr),
@@ -301,7 +303,7 @@ typedef std::tuple<CompressionKind, const Encrypter*> TestParams2;
 class RecordPositionTest : public TestWithParam<TestParams2> {
  public:
   static void SetUpTestCase() {
-    MemoryManager::testingSetInstance({});
+    MemoryManager::testingSetInstance(MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -456,6 +458,8 @@ VELOX_INSTANTIATE_TEST_SUITE_P(
     Values(
         std::make_tuple(CompressionKind_ZLIB, nullptr),
         std::make_tuple(CompressionKind_ZLIB, &testEncrypter),
+        std::make_tuple(CompressionKind_GZIP, nullptr),
+        std::make_tuple(CompressionKind_GZIP, &testEncrypter),
         std::make_tuple(CompressionKind_ZSTD, nullptr),
         std::make_tuple(CompressionKind_ZSTD, &testEncrypter),
         std::make_tuple(CompressionKind_NONE, &testEncrypter)));

@@ -213,7 +213,7 @@ folly::dynamic AlwaysFalse::serialize() const {
   return Filter::serializeBase("AlwaysFalse");
 }
 
-FilterPtr AlwaysFalse::create(const folly::dynamic& /*obj*/) {
+std::unique_ptr<Filter> AlwaysFalse::create(const folly::dynamic& /*obj*/) {
   return std::make_unique<AlwaysFalse>();
 }
 
@@ -221,7 +221,7 @@ folly::dynamic AlwaysTrue::serialize() const {
   return Filter::serializeBase("AlwaysTrue");
 }
 
-FilterPtr AlwaysTrue::create(const folly::dynamic& /*obj*/) {
+std::unique_ptr<Filter> AlwaysTrue::create(const folly::dynamic& /*obj*/) {
   return std::make_unique<AlwaysTrue>();
 }
 
@@ -229,7 +229,7 @@ folly::dynamic IsNull::serialize() const {
   return Filter::serializeBase("IsNull");
 }
 
-FilterPtr IsNull::create(const folly::dynamic& /*obj*/) {
+std::unique_ptr<Filter> IsNull::create(const folly::dynamic& /*obj*/) {
   return std::make_unique<IsNull>();
 }
 
@@ -237,7 +237,7 @@ folly::dynamic IsNotNull::serialize() const {
   return Filter::serializeBase("IsNotNull");
 }
 
-FilterPtr IsNotNull::create(const folly::dynamic& /*obj*/) {
+std::unique_ptr<Filter> IsNotNull::create(const folly::dynamic& /*obj*/) {
   return std::make_unique<IsNotNull>();
 }
 
@@ -247,7 +247,7 @@ folly::dynamic BoolValue::serialize() const {
   return obj;
 }
 
-FilterPtr BoolValue::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BoolValue::create(const folly::dynamic& obj) {
   auto value = obj["value"].asBool();
   auto nullAllowed = deserializeNullAllowed(obj);
   return std::make_unique<BoolValue>(value, nullAllowed);
@@ -266,7 +266,7 @@ folly::dynamic BigintRange::serialize() const {
   return obj;
 }
 
-FilterPtr BigintRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BigintRange::create(const folly::dynamic& obj) {
   auto lower = obj["lower"].asInt();
   auto upper = obj["upper"].asInt();
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -287,7 +287,7 @@ folly::dynamic NegatedBigintRange::serialize() const {
   return obj;
 }
 
-FilterPtr NegatedBigintRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> NegatedBigintRange::create(const folly::dynamic& obj) {
   auto lower = obj["lower"].asInt();
   auto upper = obj["upper"].asInt();
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -309,7 +309,7 @@ folly::dynamic HugeintRange::serialize() const {
   return obj;
 }
 
-FilterPtr HugeintRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> HugeintRange::create(const folly::dynamic& obj) {
   auto lower = HugeInt::parse(obj["lower"].asString());
   auto upper = HugeInt::parse(obj["upper"].asString());
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -330,7 +330,7 @@ folly::dynamic TimestampRange::serialize() const {
   return obj;
 }
 
-FilterPtr TimestampRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> TimestampRange::create(const folly::dynamic& obj) {
   auto lower = ISerializable::deserialize<Timestamp>(obj["lower"]);
   auto upper = ISerializable::deserialize<Timestamp>(obj["upper"]);
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -358,7 +358,8 @@ folly::dynamic BigintValuesUsingHashTable::serialize() const {
   return obj;
 }
 
-FilterPtr BigintValuesUsingHashTable::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BigintValuesUsingHashTable::create(
+    const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto min = obj["min"].asInt();
   auto max = obj["max"].asInt();
@@ -405,7 +406,8 @@ folly::dynamic BigintValuesUsingBitmask::serialize() const {
   return obj;
 }
 
-FilterPtr BigintValuesUsingBitmask::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BigintValuesUsingBitmask::create(
+    const folly::dynamic& obj) {
   auto min = obj["min"].asInt();
   auto max = obj["max"].asInt();
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -441,7 +443,8 @@ folly::dynamic NegatedBigintValuesUsingHashTable::serialize() const {
   return obj;
 }
 
-FilterPtr NegatedBigintValuesUsingHashTable::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> NegatedBigintValuesUsingHashTable::create(
+    const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto nonNegated =
       ISerializable::deserialize<BigintValuesUsingHashTable>(obj["nonNegated"]);
@@ -470,7 +473,8 @@ folly::dynamic NegatedBigintValuesUsingBitmask::serialize() const {
   return obj;
 }
 
-FilterPtr NegatedBigintValuesUsingBitmask::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> NegatedBigintValuesUsingBitmask::create(
+    const folly::dynamic& obj) {
   auto min = obj["min"].asInt();
   auto max = obj["max"].asInt();
   auto nullAllowed = deserializeNullAllowed(obj);
@@ -505,7 +509,7 @@ folly::dynamic FloatingPointRange<double>::serialize() const {
   return obj;
 }
 
-FilterPtr AbstractRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> AbstractRange::create(const folly::dynamic& obj) {
   auto lowerUnbounded = obj["lowerUnbounded"].asBool();
   auto lowerExclusive = obj["lowerExclusive"].asBool();
   auto upperUnbounded = obj["upperUnbounded"].asBool();
@@ -544,7 +548,7 @@ folly::dynamic BytesRange::serialize() const {
   return obj;
 }
 
-FilterPtr BytesRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BytesRange::create(const folly::dynamic& obj) {
   auto lowerUnbounded = obj["lowerUnbounded"].asBool();
   auto lowerExclusive = obj["lowerExclusive"].asBool();
   auto upperUnbounded = obj["upperUnbounded"].asBool();
@@ -575,7 +579,7 @@ folly::dynamic NegatedBytesRange::serialize() const {
   return obj;
 }
 
-FilterPtr NegatedBytesRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> NegatedBytesRange::create(const folly::dynamic& obj) {
   auto nonNegated = ISerializable::deserialize<BytesRange>(obj["nonNegated"]);
 
   return std::make_unique<NegatedBytesRange>(
@@ -605,7 +609,7 @@ folly::dynamic BytesValues::serialize() const {
   return obj;
 }
 
-FilterPtr BytesValues::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BytesValues::create(const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto arr = obj["values"];
   std::vector<std::string> values;
@@ -655,7 +659,7 @@ folly::dynamic BigintMultiRange::serialize() const {
   return obj;
 }
 
-FilterPtr BigintMultiRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> BigintMultiRange::create(const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto arr = obj["ranges"];
   std::vector<std::unique_ptr<BigintRange>> ranges;
@@ -693,7 +697,7 @@ folly::dynamic NegatedBytesValues::serialize() const {
   return obj;
 }
 
-FilterPtr NegatedBytesValues::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> NegatedBytesValues::create(const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto nonNegated = ISerializable::deserialize<BytesValues>(obj["nonNegated"]);
   return std::make_unique<NegatedBytesValues>(
@@ -720,7 +724,7 @@ folly::dynamic MultiRange::serialize() const {
   return obj;
 }
 
-FilterPtr MultiRange::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> MultiRange::create(const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   folly::dynamic arr = obj["filters"];
   auto tmpFilters = ISerializable::deserialize<std::vector<Filter>>(arr);
@@ -762,8 +766,17 @@ BigintValuesUsingBitmask::BigintValuesUsingBitmask(
     : Filter(true, nullAllowed, FilterKind::kBigintValuesUsingBitmask),
       min_(min),
       max_(max) {
-  VELOX_CHECK(min < max, "min must be less than max");
-  VELOX_CHECK(values.size() > 1, "values must contain at least 2 entries");
+  VELOX_CHECK_LT(
+      min,
+      max,
+      "BigintValuesUsingBitmask min must be less than max. min: {}, max: {}",
+      min,
+      max);
+  VELOX_CHECK_GT(
+      values.size(),
+      1,
+      "values must contain at least 2 entries, current size is {}",
+      values.size());
 
   bitmask_.resize(max - min + 1);
 
@@ -814,8 +827,17 @@ BigintValuesUsingHashTable::BigintValuesUsingHashTable(
       max_(max),
       values_(values) {
   constexpr int32_t kPaddingElements = 4;
-  VELOX_CHECK(min < max, "min must be less than max");
-  VELOX_CHECK(values.size() > 1, "values must contain at least 2 entries");
+  VELOX_CHECK_LT(
+      min,
+      max,
+      "BigintValuesUsingHashTable min must be less than max. min: {}, max: {}",
+      min,
+      max);
+  VELOX_CHECK_GT(
+      values.size(),
+      1,
+      "values must contain at least 2 entries, current size is {}",
+      values.size());
 
   // Size the hash table to be 2+x the entry count, e.g. 10 entries
   // gets 1 << log2 of 50 == 32. The filter is expected to fail often so we
@@ -980,7 +1002,8 @@ folly::dynamic HugeintValuesUsingHashTable::serialize() const {
   return obj;
 }
 
-FilterPtr HugeintValuesUsingHashTable::create(const folly::dynamic& obj) {
+std::unique_ptr<Filter> HugeintValuesUsingHashTable::create(
+    const folly::dynamic& obj) {
   auto nullAllowed = deserializeNullAllowed(obj);
   auto min = HugeInt::build(obj["min_upper"].asInt(), obj["min_lower"].asInt());
   auto max = HugeInt::build(obj["max_upper"].asInt(), obj["max_lower"].asInt());
@@ -999,7 +1022,12 @@ HugeintValuesUsingHashTable::HugeintValuesUsingHashTable(
       min_(min),
       max_(max) {
   VELOX_CHECK(!values.empty(), "values must not be empty");
-  VELOX_CHECK_LE(min_, max_, "min must not be greater than max");
+  VELOX_CHECK_LE(
+      min_,
+      max_,
+      "HugeintValuesUsingHashTable min must not be greater than max. min: {}, max: {}",
+      min_,
+      max_);
   for (auto value : values) {
     values_.insert(value);
   }
@@ -1036,7 +1064,12 @@ NegatedBigintValuesUsingBitmask::NegatedBigintValuesUsingBitmask(
     : Filter(true, nullAllowed, FilterKind::kNegatedBigintValuesUsingBitmask),
       min_(min),
       max_(max) {
-  VELOX_CHECK(min <= max, "min must be no greater than max");
+  VELOX_CHECK_LE(
+      min,
+      max,
+      "NegatedBigintValuesUsingBitmask min must be no greater than max. min: {}, max: {}",
+      min,
+      max);
 
   nonNegated_ = std::make_unique<BigintValuesUsingBitmask>(
       min, max, values, !nullAllowed);
@@ -1101,7 +1134,7 @@ bool NegatedBigintValuesUsingHashTable::testInt64Range(
   // of things between min and max
   // if distance is any less, then we are missing an element => something
   // in the range is accepted
-  return (std::distance(lo, hi) != max - min);
+  return std::distance(lo, hi) != static_cast<int128_t>(max) - min;
 }
 
 namespace {
@@ -1205,13 +1238,14 @@ BigintMultiRange::BigintMultiRange(
     : Filter(true, nullAllowed, FilterKind::kBigintMultiRange),
       ranges_(std::move(ranges)) {
   VELOX_CHECK(!ranges_.empty(), "ranges is empty");
-  VELOX_CHECK(ranges_.size() > 1, "should contain at least 2 ranges");
+  VELOX_CHECK_GT(ranges_.size(), 1, "should contain at least 2 ranges.");
   for (const auto& range : ranges_) {
     lowerBounds_.push_back(range->lower());
   }
   for (int i = 1; i < lowerBounds_.size(); i++) {
-    VELOX_CHECK(
-        lowerBounds_[i] >= ranges_[i - 1]->upper(),
+    VELOX_CHECK_GE(
+        lowerBounds_[i],
+        ranges_[i - 1]->upper(),
         "bigint ranges must not overlap");
   }
 }
@@ -1460,6 +1494,15 @@ bool MultiRange::testFloat(float value) const {
   return false;
 }
 
+bool MultiRange::testInt128(const int128_t& value) const {
+  for (const auto& filter : filters_) {
+    if (filter->testInt128(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool MultiRange::testBytes(const char* value, int32_t length) const {
   for (const auto& filter : filters_) {
     if (filter->testBytes(value, length)) {
@@ -1536,9 +1579,38 @@ std::unique_ptr<Filter> MultiRange::mergeWith(const Filter* other) const {
     case FilterKind::kIsNotNull:
       return this->clone(/*nullAllowed=*/false);
     case FilterKind::kDoubleRange:
-    case FilterKind::kFloatRange:
-      // TODO: Implement
-      VELOX_UNREACHABLE();
+    case FilterKind::kFloatRange: {
+      bool bothNullAllowed = nullAllowed_ && other->testNull();
+      std::vector<std::unique_ptr<Filter>> merged;
+
+      for (auto const& filter : this->filters()) {
+        auto innerMerged = filter->mergeWith(other);
+        switch (innerMerged->kind()) {
+          case FilterKind::kAlwaysFalse:
+          case FilterKind::kIsNull:
+            continue;
+          case FilterKind::kMultiRange: {
+            auto innerMergedMulti =
+                static_cast<const MultiRange*>(innerMerged.get());
+            merged.reserve(merged.size() + innerMergedMulti->filters().size());
+            for (int i = 0; i < innerMergedMulti->filters().size(); ++i) {
+              merged.emplace_back(innerMergedMulti->filters()[i]->clone());
+            }
+            break;
+          }
+          default:
+            merged.emplace_back(innerMerged.release());
+        }
+      }
+
+      if (merged.empty()) {
+        return nullOrFalse(bothNullAllowed);
+      } else if (merged.size() == 1) {
+        return merged.front()->clone(bothNullAllowed);
+      } else {
+        return std::make_unique<MultiRange>(std::move(merged), bothNullAllowed);
+      }
+    }
     case FilterKind::kBytesValues:
     case FilterKind::kNegatedBytesValues:
     case FilterKind::kBytesRange:
@@ -2070,7 +2142,7 @@ std::unique_ptr<Filter> BigintValuesUsingHashTable::mergeWith(
     valuesToKeep.emplace_back(kEmptyMarker);
   }
 
-  for (int64_t v : hashTable_) {
+  for (int64_t v : values_) {
     if (v != kEmptyMarker && other->testInt64(v)) {
       valuesToKeep.emplace_back(v);
     }

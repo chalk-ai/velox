@@ -33,8 +33,11 @@ velox_add_library(
   TimestampConversion.cpp
   Tokenizer.cpp
   Type.cpp
+  TypeCoercer.cpp
   TypeEncodingUtil.cpp
-  Variant.cpp)
+  TypeUtil.cpp
+  Variant.cpp
+)
 
 velox_link_libraries(
   velox_type
@@ -47,4 +50,5 @@ velox_link_libraries(
   velox_status
   Boost::headers
   Folly::folly
-  re2::re2)
+  re2::re2
+)

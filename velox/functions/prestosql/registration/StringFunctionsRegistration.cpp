@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "velox/expression/ExprRewriteRegistry.h"
 #include "velox/functions/Registerer.h"
 #include "velox/functions/lib/Re2Functions.h"
 #include "velox/functions/prestosql/RegexpReplace.h"
+#include "velox/functions/prestosql/RegexpSplit.h"
 #include "velox/functions/prestosql/SplitPart.h"
 #include "velox/functions/prestosql/SplitToMap.h"
 #include "velox/functions/prestosql/SplitToMultiMap.h"
@@ -54,21 +56,23 @@ void registerSimpleFunctions(const std::string& prefix) {
       {prefix + "starts_with"});
   registerFunction<EndsWithFunction, bool, Varchar, Varchar>(
       {prefix + "ends_with"});
+  registerFunction<EndsWithFunction, bool, Varchar, UnknownValue>(
+      {prefix + "ends_with"});
 
   registerFunction<TrailFunction, Varchar, Varchar, int32_t>(
       {prefix + "trail"});
 
   registerFunction<SubstrFunction, Varchar, Varchar, int64_t>(
-      {prefix + "substr"});
+      {prefix + "substr", prefix + "substring"});
   registerFunction<SubstrFunction, Varchar, Varchar, int64_t, int64_t>(
-      {prefix + "substr"});
+      {prefix + "substr", prefix + "substring"});
 
   // TODO Presto doesn't allow INTEGER types for 2nd and 3rd arguments. Remove
   // these signatures.
   registerFunction<SubstrFunction, Varchar, Varchar, int32_t>(
-      {prefix + "substr"});
+      {prefix + "substr", prefix + "substring"});
   registerFunction<SubstrFunction, Varchar, Varchar, int32_t, int32_t>(
-      {prefix + "substr"});
+      {prefix + "substr", prefix + "substring"});
 
   registerFunction<SubstrVarbinaryFunction, Varbinary, Varbinary, int64_t>(
       {prefix + "substr"});
@@ -148,6 +152,25 @@ void registerSplitToMap(const std::string& prefix) {
       Varchar,
       Varchar>({prefix + "split_to_map"});
 
+  registerFunction<
+      SplitToMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      UnknownValue,
+      Varchar>({prefix + "split_to_map"});
+  registerFunction<
+      SplitToMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      Varchar,
+      UnknownValue>({prefix + "split_to_map"});
+  registerFunction<
+      SplitToMapFunction,
+      Map<Varchar, Array<Varchar>>,
+      Varchar,
+      UnknownValue,
+      UnknownValue>({prefix + "split_to_map"});
+
   exec::registerVectorFunction(
       prefix + "split_to_map",
       {
@@ -167,9 +190,10 @@ void registerSplitToMap(const std::string& prefix) {
       Varchar,
       Varchar,
       bool>({"$internal$split_to_map"});
-  exec::registerExpressionRewrite([prefix](const auto& expr) {
-    return rewriteSplitToMapCall(prefix, expr);
-  });
+  expression::ExprRewriteRegistry::instance().registerRewrite(
+      [prefix](const auto& expr) {
+        return rewriteSplitToMapCall(prefix, expr);
+      });
 }
 } // namespace
 

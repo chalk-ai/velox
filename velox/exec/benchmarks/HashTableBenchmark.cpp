@@ -286,7 +286,7 @@ class HashTableBenchmark : public VectorTestBase {
       int32_t tableOffset,
       BaseHashTable* table) {
     int32_t batchSize = batches[0]->size();
-    raw_vector<uint64_t> dummy(batchSize);
+    raw_vector<uint64_t> dummy(batchSize, pool());
     int32_t batchOffset = 0;
     rowOfKey_.resize(tableOffset + batchSize * batches.size());
     auto rowContainer = table->rows();
@@ -623,7 +623,7 @@ void combineResults(
 
 int main(int argc, char** argv) {
   folly::Init init{&argc, &argv};
-  memory::MemoryManagerOptions options;
+  memory::MemoryManager::Options options;
   options.useMmapAllocator = true;
   options.allocatorCapacity = 64UL << 30;
   options.useMmapArena = true;

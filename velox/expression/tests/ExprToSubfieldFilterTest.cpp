@@ -44,7 +44,7 @@ class ExprToSubfieldFilterTest : public testing::Test {
   static void SetUpTestSuite() {
     functions::prestosql::registerAllScalarFunctions();
     parse::registerTypeResolver();
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   core::TypedExprPtr parseExpr(
@@ -264,17 +264,16 @@ TEST_F(ExprToSubfieldFilterTest, userError) {
 TEST_F(ExprToSubfieldFilterTest, dereferenceWithEmptyField) {
   auto call = std::make_shared<core::CallTypedExpr>(
       BOOLEAN(),
-      std::vector<core::TypedExprPtr>{
-          std::make_shared<core::DereferenceTypedExpr>(
-              REAL(),
-              std::make_shared<core::FieldAccessTypedExpr>(
-                  ROW({{"", DOUBLE()}, {"", REAL()}, {"", BIGINT()}}),
-                  std::make_shared<core::InputTypedExpr>(ROW(
-                      {{"c0",
-                        ROW({{"", DOUBLE()}, {"", REAL()}, {"", BIGINT()}})}})),
-                  "c0"),
-              1)},
-      "is_null");
+      "is_null",
+      std::make_shared<core::DereferenceTypedExpr>(
+          REAL(),
+          std::make_shared<core::FieldAccessTypedExpr>(
+              ROW({{"", DOUBLE()}, {"", REAL()}, {"", BIGINT()}}),
+              std::make_shared<core::InputTypedExpr>(ROW(
+                  {{"c0",
+                    ROW({{"", DOUBLE()}, {"", REAL()}, {"", BIGINT()}})}})),
+              "c0"),
+          1));
   Subfield subfield;
   auto filter =
       ExprToSubfieldFilterParser::getInstance()->leafCallToSubfieldFilter(
@@ -318,7 +317,7 @@ class CustomExprToSubfieldFilterTest : public ExprToSubfieldFilterTest {
     functions::prestosql::registerAllScalarFunctions("custom_");
     functions::registerIsNullFunction("is_null");
     parse::registerTypeResolver();
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     ExprToSubfieldFilterParser::registerParserFactory(
         []() { return std::make_unique<CustomExprToSubfieldFilterParser>(); });
   }

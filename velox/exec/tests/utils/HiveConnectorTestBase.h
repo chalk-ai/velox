@@ -15,23 +15,17 @@
  */
 #pragma once
 
-#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveDataSink.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/dwio/dwrf/common/Config.h"
 #include "velox/dwio/dwrf/writer/FlushPolicy.h"
-#include "velox/exec/Operator.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/TempFilePath.h"
-#include "velox/type/tests/SubfieldFiltersBuilder.h"
 
 namespace facebook::velox::exec::test {
 
 static const std::string kHiveConnectorId = "test-hive";
-
-using ColumnHandleMap =
-    std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>;
 
 class HiveConnectorTestBase : public OperatorTestBase {
  public:
@@ -42,6 +36,10 @@ class HiveConnectorTestBase : public OperatorTestBase {
 
   void resetHiveConnector(
       const std::shared_ptr<const config::ConfigBase>& config);
+
+  void writeToFiles(
+      const std::vector<std::string>& filePaths,
+      std::vector<RowVectorPtr> vectors);
 
   void writeToFile(const std::string& filePath, RowVectorPtr vector);
 
@@ -232,8 +230,9 @@ class HiveConnectorTestBase : public OperatorTestBase {
       const std::string& name,
       const TypePtr& type);
 
-  static ColumnHandleMap allRegularColumns(const RowTypePtr& rowType) {
-    ColumnHandleMap assignments;
+  static connector::ColumnHandleMap allRegularColumns(
+      const RowTypePtr& rowType) {
+    connector::ColumnHandleMap assignments;
     assignments.reserve(rowType->size());
     for (uint32_t i = 0; i < rowType->size(); ++i) {
       const auto& name = rowType->nameOf(i);
@@ -249,7 +248,7 @@ class HiveConnectorSplitBuilder
     : public connector::hive::HiveConnectorSplitBuilder {
  public:
   explicit HiveConnectorSplitBuilder(std::string filePath)
-      : connector::hive::HiveConnectorSplitBuilder(filePath) {
+      : connector::hive::HiveConnectorSplitBuilder(std::move(filePath)) {
     connectorId(kHiveConnectorId);
   }
 };

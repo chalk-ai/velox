@@ -30,7 +30,7 @@ namespace {
 class S3FileSystemTest : public S3Test {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -219,6 +219,27 @@ TEST_F(S3FileSystemTest, logLocation) {
   checkLogPrefix(expected);
 }
 
+TEST_F(S3FileSystemTest, mkdirAndRename) {
+  const auto bucketName = "mkdir";
+  const auto file = "mkdir-test.txt";
+  const auto s3File = s3URI(bucketName, file);
+  addBucket(bucketName);
+
+  auto hiveConfig = minioServer_->hiveConfig();
+  filesystems::S3FileSystem s3fs(bucketName, hiveConfig);
+
+  ASSERT_FALSE(s3fs.exists(s3File));
+  s3fs.mkdir(s3File);
+  ASSERT_TRUE(s3fs.exists(s3File));
+
+  // Rename test
+  const auto renameFile = "rename-test.txt";
+  const auto s3RenameFile = s3URI(bucketName, renameFile);
+  s3fs.rename(s3File, s3RenameFile);
+  ASSERT_TRUE(s3fs.exists(s3RenameFile));
+  ASSERT_FALSE(s3fs.exists(s3File));
+}
+
 TEST_F(S3FileSystemTest, writeFileAndRead) {
   const auto bucketName = "writedata";
   const auto file = "test.txt";
@@ -290,6 +311,14 @@ TEST_F(S3FileSystemTest, writeFileAndRead) {
   }
   // Verify the last chunk.
   ASSERT_EQ(readFile->pread(contentSize * 250'000, contentSize), dataContent);
+
+  // Verify the S3 list function.
+  auto result = s3fs.list(s3File);
+
+  ASSERT_EQ(result.size(), 1);
+  ASSERT_TRUE(result[0] == file);
+
+  ASSERT_TRUE(s3fs.exists(s3File));
 }
 
 TEST_F(S3FileSystemTest, invalidConnectionSettings) {
@@ -340,4 +369,5 @@ TEST_F(S3FileSystemTest, registerCredentialProviderFactories) {
           }),
       "CredentialsProviderFactory 'my-credentials-provider' already registered");
 }
+
 } // namespace facebook::velox::filesystems

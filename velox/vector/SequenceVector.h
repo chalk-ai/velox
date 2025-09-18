@@ -41,7 +41,7 @@ class SequenceVector : public SimpleVector<T> {
 
   SequenceVector(
       velox::memory::MemoryPool* pool,
-      size_t length,
+      vector_size_t length,
       VectorPtr sequenceValues,
       BufferPtr sequenceLengths,
       const SimpleVectorStats<T>& stats = {},
@@ -194,13 +194,13 @@ class SequenceVector : public SimpleVector<T> {
     return false;
   }
 
-  VectorPtr copyPreserveEncodings(
+  VectorPtr testingCopyPreserveEncodings(
       velox::memory::MemoryPool* pool = nullptr) const override {
     auto selfPool = pool ? pool : BaseVector::pool_;
     return std::make_shared<SequenceVector<T>>(
         selfPool,
         BaseVector::length_,
-        sequenceValues_->copyPreserveEncodings(),
+        sequenceValues_->testingCopyPreserveEncodings(),
         AlignedBuffer::copy(selfPool, sequenceLengths_),
         SimpleVector<T>::stats_,
         BaseVector::distinctValueCount_,

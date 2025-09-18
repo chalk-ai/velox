@@ -111,7 +111,7 @@ class RowContainerTestHelper {
 class RowContainerTest : public exec::test::RowContainerTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     TestValue::enable();
   }
 
@@ -1989,10 +1989,10 @@ TEST_F(RowContainerTest, toString) {
 
   EXPECT_EQ(
       rowContainer->toString(rows[0]),
-      "{1, summer, 11, 0.10000000149011612, 3 elements starting at 0 {1, 2, 3}}");
+      "{1, summer, 11, 0.10000000149011612, {1, 2, 3}}");
   EXPECT_EQ(
       rowContainer->toString(rows[1]),
-      "{2, fall, 0, 2.3399999141693115, 2 elements starting at 0 {4, 5}}");
+      "{2, fall, 0, 2.3399999141693115, {4, 5}}");
   EXPECT_EQ(
       rowContainer->toString(rows[2]),
       "{3, winter, 12, 123.00299835205078, null}");
@@ -2131,88 +2131,6 @@ DEBUG_ONLY_TEST_F(RowContainerTest, eraseAfterOomStoringString) {
   // allocated in the container's string allocator, this will fail
   // attempting to free a string the allocator doesn't own.
   rowContainer->eraseRows(folly::Range<char**>(rows.data(), numRows));
-}
-
-TEST_F(RowContainerTest, nextRowVector) {
-  int32_t numRows = 100;
-  auto data = makeRowContainer({SMALLINT()}, {SMALLINT()});
-  EXPECT_EQ(data->nextOffset(), 11);
-  std::unordered_set<char*> rowSet;
-  std::vector<char*> rows;
-
-  auto dataClear = [&]() {
-    data->clear();
-    EXPECT_EQ(0, data->numRows());
-    auto free = data->freeSpace();
-    EXPECT_EQ(0, free.first);
-    EXPECT_EQ(0, free.second);
-    rows.clear();
-    rowSet.clear();
-  };
-
-  auto validateNextRowVector = [&]() {
-    for (int i = 0; i < rows.size(); ++i) {
-      auto vector = data->getNextRowVector(rows[i]);
-      if (vector) {
-        auto iter = std::find(vector->begin(), vector->end(), rows[i]);
-        ASSERT_NE(iter, vector->end());
-        ASSERT_TRUE(vector->size() <= 2 && vector->size() > 0);
-        for (auto next : *vector) {
-          ASSERT_EQ(data->getNextRowVector(next), vector);
-          ASSERT_TRUE(std::find(rows.begin(), rows.end(), next) != rows.end());
-        }
-      }
-    }
-  };
-
-  auto nextRowVectorAppendValidation = [&]() {
-    for (int i = 0; i < numRows; ++i) {
-      rows.push_back(data->newRow());
-      rowSet.insert(rows.back());
-      ASSERT_EQ(data->getNextRowVector(rows.back()), nullptr);
-    }
-    ASSERT_EQ(numRows, data->numRows());
-    std::vector<char*> rowsFromContainer(numRows);
-    RowContainerIterator iter;
-    ASSERT_EQ(
-        data->listRows(&iter, numRows, rowsFromContainer.data()), numRows);
-    ASSERT_EQ(0, data->listRows(&iter, numRows, rows.data()));
-    ASSERT_EQ(rows, rowsFromContainer);
-
-    for (int i = 0; i + 2 <= numRows; i += 2) {
-      data->appendNextRow(rows[i], rows[i + 1], &data->stringAllocator());
-    }
-    validateNextRowVector();
-  };
-
-  auto nextRowVectorEraseValidation = [&](const std::vector<int>& eraseRows) {
-    dataClear();
-    nextRowVectorAppendValidation();
-    std::vector<char*> erasingRows;
-    for (auto index : eraseRows) {
-      erasingRows.emplace_back(rows[index]);
-    }
-    for (auto row : erasingRows) {
-      rows.erase(std::remove(rows.begin(), rows.end(), row), rows.end());
-    }
-    data->eraseRows(
-        folly::Range<char**>(erasingRows.data(), erasingRows.size()));
-    validateNextRowVector();
-    RowContainerTestHelper(data.get()).checkConsistency();
-  };
-
-  nextRowVectorAppendValidation();
-  nextRowVectorEraseValidation({0, 1});
-  nextRowVectorEraseValidation({34, 35, 98, 99});
-  nextRowVectorEraseValidation({2, 3, 22, 23, 88, 89, 58, 59});
-  std::vector<int> eraseRows(numRows);
-  std::iota(eraseRows.begin(), eraseRows.end(), 0);
-  nextRowVectorEraseValidation(eraseRows);
-  VELOX_ASSERT_THROW(
-      nextRowVectorEraseValidation({1}),
-      "All rows with the same keys must be present in 'rows'");
-
-  dataClear();
 }
 
 TEST_F(RowContainerTest, hugeIntStoreWithNulls) {
@@ -2789,6 +2707,43 @@ TEST_F(RowContainerTest, storeAndCollectColumnStats) {
   for (int i = 0; i < rowContainer->columnTypes().size(); ++i) {
     EXPECT_EQ(rowContainer->columnStats(i).value().numCells(), 0);
   }
+}
+
+TEST_F(RowContainerTest, setAllNull) {
+  std::vector<TypePtr> keyTypes = {INTEGER()};
+  std::vector<Accumulator> accumulators{Accumulator(
+      true, 8, false, 8, INTEGER(), [](auto, auto) {}, [](auto) {})};
+
+  auto rowContainer = std::make_unique<RowContainer>(
+      keyTypes,
+      true,
+      accumulators,
+      std::vector<TypePtr>{},
+      false,
+      true,
+      false,
+      false,
+      pool_.get());
+
+  auto row = rowContainer->newRow();
+
+  auto keyColumn = rowContainer->columnAt(0);
+  auto accColumn = rowContainer->columnAt(1);
+  ASSERT_FALSE(
+      RowContainer::isNullAt(row, keyColumn.nullByte(), keyColumn.nullMask()));
+  ASSERT_FALSE(
+      RowContainer::isNullAt(row, accColumn.nullByte(), accColumn.nullMask()));
+  ASSERT_EQ(
+      (row[accColumn.initializedByte()] & accColumn.initializedMask()), 0);
+
+  rowContainer->setAllNull(row);
+
+  ASSERT_TRUE(
+      RowContainer::isNullAt(row, keyColumn.nullByte(), keyColumn.nullMask()));
+  ASSERT_TRUE(
+      RowContainer::isNullAt(row, accColumn.nullByte(), accColumn.nullMask()));
+  ASSERT_EQ(
+      (row[accColumn.initializedByte()] & accColumn.initializedMask()), 0);
 }
 
 } // namespace facebook::velox::exec::test

@@ -19,6 +19,7 @@
 
 #include <gflags/gflags.h>
 
+#include "velox/core/Expressions.h"
 #include "velox/functions/lib/benchmarks/FunctionBenchmarkBase.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
@@ -251,8 +252,8 @@ BENCHMARK(castStructManyFieldsNestedCastMedium) {
 
 int main(int argc, char* argv[]) {
   folly::Init init{&argc, &argv};
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
-  memory::MemoryManager::initialize({});
+  ::gflags::ParseCommandLineFlags(&argc, &argv, true);
+  memory::MemoryManager::initialize(memory::MemoryManager::Options{});
   benchmark = std::make_unique<SimpleCastBenchmark>();
   folly::runBenchmarks();
   benchmark.reset();

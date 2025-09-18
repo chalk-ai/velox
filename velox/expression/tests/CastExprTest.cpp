@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "velox/expression/CastExpr.h"
 #include <limits>
 #include "velox/buffer/Buffer.h"
 #include "velox/common/base/VeloxException.h"
@@ -25,6 +26,7 @@
 #include "velox/functions/prestosql/tests/CastBaseTest.h"
 #include "velox/functions/prestosql/tests/utils/FunctionBaseTest.h"
 #include "velox/type/Type.h"
+#include "velox/type/tests/utils/CustomTypesForTesting.h"
 #include "velox/vector/BaseVector.h"
 #include "velox/vector/TypeAliases.h"
 
@@ -1142,8 +1144,7 @@ TEST_F(CastExprTest, primitiveInvalidCornerCases) {
         "bigint",
         {"٣"},
         "Unicode characters are not supported for conversion to integer types",
-        VARCHAR(),
-        true);
+        VARCHAR());
   }
 
   // To floating-point.
@@ -1483,16 +1484,16 @@ TEST_F(CastExprTest, arrayCast) {
   {
     // Array with all inner elements null.
     auto sizeAtLocal = [](vector_size_t /* row */) { return 5; };
-    auto arrayVector = vectorMaker_.arrayVector<int32_t>(
+    auto nullElementsArrayVector = vectorMaker_.arrayVector<int32_t>(
         kVectorSize, sizeAtLocal, nullptr, nullptr, nullEvery(1));
 
     SelectivityVector rows(5);
     rows.setValid(2, false);
-    arrayVector->setOffsetAndSize(2, 100, 5);
-    arrayVector->setOffsetAndSize(20, 10, 5);
+    nullElementsArrayVector->setOffsetAndSize(2, 100, 5);
+    nullElementsArrayVector->setOffsetAndSize(20, 10, 5);
     std::vector<VectorPtr> results(1);
 
-    auto rowVector = makeRowVector({arrayVector});
+    auto rowVector = makeRowVector({nullElementsArrayVector});
     auto castExpr =
         makeTypedExpr("cast (c0 as bigint[])", asRowType(rowVector->type()));
     exec::ExprSet exprSet({castExpr}, &execCtx_);
@@ -1667,10 +1668,10 @@ TEST_F(CastExprTest, testNullOnFailure) {
   auto expected = makeNullableFlatVector<int32_t>(
       {1, 2, std::nullopt, std::nullopt, std::nullopt});
 
-  // nullOnFailure is true, so we should return null instead of throwing.
+  // isTryCast is true, so we should return null instead of throwing.
   testCast(input, expected, true);
 
-  // nullOnFailure is false, so we should throw.
+  // isTryCast is false, so we should throw.
   EXPECT_THROW(testCast(input, expected, false), VeloxUserError);
 }
 
@@ -1840,7 +1841,7 @@ TEST_F(CastExprTest, decimalToDecimal) {
       testCast(longFlat, expectedShort),
       "Cannot cast DECIMAL '-1000.000' to DECIMAL(6, 4)");
 
-  // nullOnFailure is true.
+  // isTryCast is true.
   testCast(longFlat, expectedShort, true);
 
   // long to short, big numbers.
@@ -2079,7 +2080,7 @@ TEST_F(CastExprTest, varcharToDecimal) {
       VARCHAR(),
       DECIMAL(38, 0),
       {"0.0444a"},
-      "Cannot cast VARCHAR '0.0444a' to DECIMAL(38, 0). Value is not a number. Chars 'a' are invalid.");
+      "Cannot cast VARCHAR '0.0444a' to DECIMAL(38, 0). Value is not a number.");
 
   testThrow<std::string>(
       VARCHAR(),
@@ -2112,29 +2113,29 @@ TEST_F(CastExprTest, varcharToDecimal) {
       VARCHAR(),
       DECIMAL(38, 0),
       {"23e-5d"},
-      "Cannot cast VARCHAR '23e-5d' to DECIMAL(38, 0). Value is not a number. Non-digit character 'd' is not allowed in the exponent part.");
+      "Cannot cast VARCHAR '23e-5d' to DECIMAL(38, 0). Value is not a number. Non-digit character is not allowed in the exponent part.");
 
   // Whitespaces.
   testThrow<std::string>(
       VARCHAR(),
       DECIMAL(38, 0),
       {"1. 23"},
-      "Cannot cast VARCHAR '1. 23' to DECIMAL(38, 0). Value is not a number. Chars ' 23' are invalid.");
+      "Cannot cast VARCHAR '1. 23' to DECIMAL(38, 0). Value is not a number.");
   testThrow<std::string>(
       VARCHAR(),
       DECIMAL(12, 2),
       {"-3E+ 2"},
-      "Cannot cast VARCHAR '-3E+ 2' to DECIMAL(12, 2). Value is not a number. Non-digit character ' ' is not allowed in the exponent part.");
+      "Cannot cast VARCHAR '-3E+ 2' to DECIMAL(12, 2). Value is not a number. Non-digit character is not allowed in the exponent part.");
   testThrow<std::string>(
       VARCHAR(),
       DECIMAL(38, 0),
       {"1.23 "},
-      "Cannot cast VARCHAR '1.23 ' to DECIMAL(38, 0). Value is not a number. Chars ' ' are invalid.");
+      "Cannot cast VARCHAR '1.23 ' to DECIMAL(38, 0). Value is not a number.");
   testThrow<std::string>(
       VARCHAR(),
       DECIMAL(12, 2),
       {"-3E+2 "},
-      "Cannot cast VARCHAR '-3E+2 ' to DECIMAL(12, 2). Value is not a number. Non-digit character ' ' is not allowed in the exponent part.");
+      "Cannot cast VARCHAR '-3E+2 ' to DECIMAL(12, 2). Value is not a number. Non-digit character is not allowed in the exponent part.");
   testThrow<std::string>(
       VARCHAR(),
       DECIMAL(38, 0),
@@ -2150,7 +2151,7 @@ TEST_F(CastExprTest, varcharToDecimal) {
       VARCHAR(),
       DECIMAL(12, 2),
       {"-3E+2.1"},
-      "Cannot cast VARCHAR '-3E+2.1' to DECIMAL(12, 2). Value is not a number. Non-digit character '.' is not allowed in the exponent part.");
+      "Cannot cast VARCHAR '-3E+2.1' to DECIMAL(12, 2). Value is not a number. Non-digit character is not allowed in the exponent part.");
 
   testThrow<std::string>(
       VARCHAR(),
@@ -2163,6 +2164,18 @@ TEST_F(CastExprTest, varcharToDecimal) {
       DECIMAL(12, 2),
       {"-3E-"},
       "Cannot cast VARCHAR '-3E-' to DECIMAL(12, 2). Value is not a number. The exponent part only contains sign.");
+
+  testThrow<std::string>(
+      VARCHAR(),
+      DECIMAL(12, 2),
+      {"9e"},
+      "Cannot cast VARCHAR '9e' to DECIMAL(12, 2). Value is not a number. The exponent part is empty.");
+
+  testThrow<std::string>(
+      VARCHAR(),
+      DECIMAL(12, 2),
+      {"09{xi+yD"},
+      "Cannot cast VARCHAR '09{xi+yD' to DECIMAL(12, 2). Value is not a number. Chars are invalid.");
 }
 
 TEST_F(CastExprTest, castInTry) {
@@ -2512,8 +2525,8 @@ TEST_F(CastExprTest, castAsCall) {
   auto input = makeRowVector({makeNullableFlatVector(inputValues)});
   core::TypedExprPtr inputField =
       std::make_shared<const core::FieldAccessTypedExpr>(INTEGER(), "c0");
-  core::TypedExprPtr callExpr = std::make_shared<const core::CallTypedExpr>(
-      DOUBLE(), std::vector<core::TypedExprPtr>{inputField}, "cast");
+  core::TypedExprPtr callExpr =
+      std::make_shared<const core::CallTypedExpr>(DOUBLE(), "cast", inputField);
 
   auto result = evaluate(callExpr, input);
   auto expected = makeNullableFlatVector(outputValues);
@@ -2814,5 +2827,153 @@ TEST_F(CastExprTest, intervalDayTimeToVarchar) {
       "Cast from VARCHAR to INTERVAL DAY TO SECOND is not supported");
 }
 
+class BigintTypeWithCustomComparisonCastOperator final
+    : public exec::CastOperator {
+  BigintTypeWithCustomComparisonCastOperator() = default;
+
+ public:
+  static std::shared_ptr<const CastOperator> get() {
+    VELOX_CONSTEXPR_SINGLETON BigintTypeWithCustomComparisonCastOperator
+        kInstance;
+    return {std::shared_ptr<const CastOperator>{}, &kInstance};
+  }
+
+  bool isSupportedFromType(const TypePtr& other) const override {
+    return true;
+  }
+
+  bool isSupportedToType(const TypePtr& other) const override {
+    return true;
+  }
+
+  void castTo(
+      const BaseVector& input,
+      exec::EvalCtx& context,
+      const SelectivityVector& rows,
+      const TypePtr& resultType,
+      VectorPtr& result) const override {
+    VELOX_FAIL("Cast to BigintTypeWithCustomComparison should not be called");
+  }
+
+  void castFrom(
+      const BaseVector& input,
+      exec::EvalCtx& context,
+      const SelectivityVector& rows,
+      const TypePtr& resultType,
+      VectorPtr& result) const override {
+    VELOX_FAIL("Cast from BigintTypeWithCustomComparison should not be called");
+  }
+};
+
+class BigintTypeWithCustomComparisonTypeFactory : public CustomTypeFactory {
+ public:
+  TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
+    VELOX_CHECK(parameters.empty());
+    return BIGINT_TYPE_WITH_CUSTOM_COMPARISON();
+  }
+
+  // Type casting from and to TimestampWithTimezone is not supported yet.
+  exec::CastOperatorPtr getCastOperator() const override {
+    return BigintTypeWithCustomComparisonCastOperator::get();
+  }
+
+  AbstractInputGeneratorPtr getInputGenerator(
+      const InputGeneratorConfig& config) const override {
+    return nullptr;
+  }
+};
+
+TEST_F(CastExprTest, skipUnnecessaryChildrenOfComplexTypes) {
+  // bigint type with custom comparison is registered with a custom cast
+  // operator that always throws, we use this to ensure the children of complex
+  // types are not cast if they are already the right type.
+  //
+  // We use bigint type with custom comparison so that we can leverage an
+  // existing custom type that was written for testing purposes.
+  SCOPE_EXIT {
+    unregisterCustomType(BIGINT_TYPE_WITH_CUSTOM_COMPARISON()->name());
+  };
+
+  VELOX_CHECK(
+      registerCustomType(
+          BIGINT_TYPE_WITH_CUSTOM_COMPARISON()->name(),
+          std::make_unique<const BigintTypeWithCustomComparisonTypeFactory>()),
+      "Failed to register custom type 'bigint type with custom comparison'");
+
+  const auto valuesThatThrowOnCast = makeFlatVector<int64_t>(
+      10,
+      [](vector_size_t row) { return row; },
+      nullptr,
+      BIGINT_TYPE_WITH_CUSTOM_COMPARISON());
+  // We make an exact copy of the Vector, this is necessary so that if it's
+  // possible the Type pointers are different we get Vectors with different Type
+  // pointers (in practice this isn't possible for primitive types, this is just
+  // for completeness).
+  const auto castedValuesThatThrowOnCast = makeFlatVector<int64_t>(
+      10,
+      [](vector_size_t row) { return row; },
+      nullptr,
+      BIGINT_TYPE_WITH_CUSTOM_COMPARISON());
+  const auto arrayOfValuesThatThrowOnCast =
+      makeArrayVector({0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, valuesThatThrowOnCast);
+  // Again make an exact copy of the Vector, in this case, because the type is
+  // complex, the Vectors actually do have different Type pointers.
+  const auto castedArrayOfValuesThatThrowOnCast =
+      makeArrayVector({0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, valuesThatThrowOnCast);
+  const auto valuesToCast =
+      makeFlatVector<int32_t>(10, [](vector_size_t row) { return row; });
+  // Make an exact copy of the Vector with a different type (bigint instead of
+  // int).
+  const auto castedValuesToCast =
+      makeFlatVector<int64_t>(10, [](vector_size_t row) { return row; });
+
+  setCastMatchStructByName(true);
+  // Casting a row skips fields that don't need to change.
+  {
+    const auto rowVector = makeRowVector(
+        {valuesThatThrowOnCast, arrayOfValuesThatThrowOnCast, valuesToCast});
+    const auto expectedRowVector = makeRowVector(
+        {castedValuesThatThrowOnCast,
+         castedArrayOfValuesThatThrowOnCast,
+         castedValuesToCast});
+    testCast(rowVector, expectedRowVector);
+  }
+  // Casting a map skips primitve keys that don't need to change.
+  {
+    const auto mapVector =
+        makeMapVector({0, 2, 4, 6, 8}, valuesThatThrowOnCast, valuesToCast);
+    const auto expectedMapVector = makeMapVector(
+        {0, 2, 4, 6, 8}, castedValuesThatThrowOnCast, castedValuesToCast);
+    testCast(mapVector, expectedMapVector);
+  }
+  // Casting a map skips complex keys that don't need to change.
+  {
+    const auto mapVector = makeMapVector(
+        {0, 2, 4, 6, 8}, arrayOfValuesThatThrowOnCast, valuesToCast);
+    const auto expectedMapVector = makeMapVector(
+        {0, 2, 4, 6, 8},
+        castedArrayOfValuesThatThrowOnCast,
+        castedValuesToCast);
+    testCast(mapVector, expectedMapVector);
+  }
+  // Casting a map skips primitve values that don't need to change.
+  {
+    const auto mapVector =
+        makeMapVector({0, 2, 4, 6, 8}, valuesToCast, valuesThatThrowOnCast);
+    const auto expectedMapVector = makeMapVector(
+        {0, 2, 4, 6, 8}, castedValuesToCast, castedValuesThatThrowOnCast);
+    testCast(mapVector, expectedMapVector);
+  }
+  // Casting a map skips complex values that don't need to change.
+  {
+    const auto mapVector = makeMapVector(
+        {0, 2, 4, 6, 8}, valuesToCast, arrayOfValuesThatThrowOnCast);
+    const auto expectedMapVector = makeMapVector(
+        {0, 2, 4, 6, 8},
+        castedValuesToCast,
+        castedArrayOfValuesThatThrowOnCast);
+    testCast(mapVector, expectedMapVector);
+  }
+}
 } // namespace
 } // namespace facebook::velox::test

@@ -110,7 +110,7 @@ class HiveColumnHandle : public ColumnHandle {
         ColumnParseParameters::kDaysSinceEpoch;
   }
 
-  std::string toString() const;
+  std::string toString() const override;
 
   folly::dynamic serialize() const override;
 
@@ -131,6 +131,10 @@ class HiveColumnHandle : public ColumnHandle {
   const std::vector<common::Subfield> requiredSubfields_;
   const ColumnParseParameters columnParseParameters_;
 };
+
+using HiveColumnHandlePtr = std::shared_ptr<const HiveColumnHandle>;
+using HiveColumnHandleMap =
+    std::unordered_map<std::string, HiveColumnHandlePtr>;
 
 class HiveTableHandle : public ConnectorTableHandle {
  public:
@@ -190,5 +194,7 @@ class HiveTableHandle : public ConnectorTableHandle {
   const RowTypePtr dataColumns_;
   const std::unordered_map<std::string, std::string> tableParameters_;
 };
+
+using HiveTableHandlePtr = std::shared_ptr<const HiveTableHandle>;
 
 } // namespace facebook::velox::connector::hive

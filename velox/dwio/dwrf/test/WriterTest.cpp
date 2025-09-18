@@ -33,7 +33,7 @@ namespace facebook::velox::dwrf {
 class WriterTest : public Test {
  public:
   static void SetUpTestCase() {
-    MemoryManager::testingSetInstance({});
+    MemoryManager::testingSetInstance(MemoryManager::Options{});
   }
 
   WriterTest() : pool_(memoryManager()->addLeafPool("WriterTest")) {}
@@ -174,7 +174,6 @@ TEST_P(AllWriterCompressionTest, compression) {
   if (compressionKind_ == CompressionKind::CompressionKind_SNAPPY ||
       compressionKind_ == CompressionKind::CompressionKind_LZO ||
       compressionKind_ == CompressionKind::CompressionKind_LZ4 ||
-      compressionKind_ == CompressionKind::CompressionKind_GZIP ||
       compressionKind_ == CompressionKind::CompressionKind_MAX) {
     VELOX_ASSERT_THROW(
         writeFooter(*schema),

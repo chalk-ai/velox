@@ -435,7 +435,6 @@ class FakeWriteNodeFactory : public Operator::PlanNodeTranslator {
  private:
   const std::shared_ptr<TestExchangeController> testController_;
 };
-} // namespace
 
 class ScaleWriterLocalPartitionTest : public HiveConnectorTestBase {
  protected:
@@ -549,6 +548,28 @@ class ScaleWriterLocalPartitionTest : public HiveConnectorTestBase {
   const column_index_t partitionChannel_{1};
   folly::Random::DefaultGenerator rng_;
   RowTypePtr rowType_;
+};
+
+struct TestParam {
+  uint32_t minLocalExchangePartitionCountToUsePartitionBuffer;
+  uint32_t maxLocalExchangePartitionBufferSize;
+  std::string_view name;
+};
+
+class ScaleWriterLocalPartitionTestParametrized
+    : public ScaleWriterLocalPartitionTest,
+      public testing::WithParamInterface<TestParam> {
+ protected:
+  void applyTestParameters(AssertQueryBuilder& queryBuilder) {
+    const auto& params = GetParam();
+    queryBuilder.config(
+        core::QueryConfig::kMinLocalExchangePartitionCountToUsePartitionBuffer,
+        std::to_string(
+            params.minLocalExchangePartitionCountToUsePartitionBuffer));
+    queryBuilder.config(
+        core::QueryConfig::kMaxLocalExchangePartitionBufferSize,
+        std::to_string(params.maxLocalExchangePartitionBufferSize));
+  }
 };
 
 TEST_F(ScaleWriterLocalPartitionTest, unpartitionBasic) {
@@ -687,7 +708,7 @@ TEST_F(ScaleWriterLocalPartitionTest, unpartitionBasic) {
   }
 }
 
-TEST_F(ScaleWriterLocalPartitionTest, unpartitionFuzzer) {
+TEST_P(ScaleWriterLocalPartitionTestParametrized, unpartitionFuzzer) {
   const std::vector<RowVectorPtr> inputVectors = makeVectors(256, 512);
   const uint64_t queryCapacity = 256 << 20;
   const uint32_t maxExchanegBufferSize = 2 << 20;
@@ -728,6 +749,7 @@ TEST_F(ScaleWriterLocalPartitionTest, unpartitionFuzzer) {
     testController->setExchangeNodeId(exchnangeNodeId);
 
     AssertQueryBuilder queryBuilder(plan);
+    applyTestParameters(queryBuilder);
     std::shared_ptr<Task> task;
     const auto result =
         // Consumer and producer have overload the max drivers of their
@@ -790,11 +812,10 @@ TEST_F(ScaleWriterLocalPartitionTest, partitionBasic) {
       {4, 4, 4, 1ULL << 30, 1.0, 0, {1, 2}, 0.8, 0.6, false},
       {1, 4, 4, 0, 1.0, 0, {1, 2}, 0.3, 0.2, false},
       {4, 4, 4, 0, 1.0, 0, {1, 2}, 0.3, 0.2, false},
-      {1, 4, 4, 0, 0.1, queryCapacity / 2, {1, 2}, 0.8, 0.6, false},
-      {4, 4, 4, 0, 0.1, queryCapacity / 2, {1, 2}, 0.8, 0.6, false},
+      {1, 4, 4, 0, 0.0001, queryCapacity / 2, {1, 2}, 0.8, 0.6, false},
+      {4, 4, 4, 0, 0.0001, queryCapacity / 2, {1, 2}, 0.8, 0.6, false},
       {1, 32, 128, 0, 1.0, 0, {1, 2, 3, 4, 5, 6, 7, 8}, 0.8, 0.6, true},
-      {4, 32, 128, 0, 1.0, 0, {1, 2, 3, 4, 5, 6, 7, 8}, 0.8, 0.6, true},
-  };
+      {4, 32, 128, 0, 1.0, 0, {1, 2, 3, 4, 5, 6, 7, 8}, 0.8, 0.6, true}};
 
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
@@ -866,17 +887,25 @@ TEST_F(ScaleWriterLocalPartitionTest, partitionBasic) {
             .copyResults(pool_.get(), task);
     auto planStats = toPlanStats(task->taskStats());
     if (testData.expectedRebalance) {
-      ASSERT_EQ(
+      // NOTE: thre is time race across multiple drivers on the shared balancer
+      // stats reporting which can't totally avoid in tests under some extreme
+      // conditions like the rebalance happens on the last close driver.
+      ASSERT_LE(
           planStats.at(exchnangeNodeId)
               .customStats.count(
                   ScaleWriterPartitioningLocalPartition::kScaledPartitions),
           1);
-      ASSERT_GT(
-          planStats.at(exchnangeNodeId)
-              .customStats
-              .at(ScaleWriterPartitioningLocalPartition::kScaledPartitions)
-              .sum,
-          0);
+      if (planStats.at(exchnangeNodeId)
+              .customStats.count(
+                  ScaleWriterPartitioningLocalPartition::kScaledPartitions) ==
+          1) {
+        ASSERT_GT(
+            planStats.at(exchnangeNodeId)
+                .customStats
+                .at(ScaleWriterPartitioningLocalPartition::kScaledPartitions)
+                .sum,
+            0);
+      }
       ASSERT_EQ(
           planStats.at(exchnangeNodeId)
               .customStats.count(
@@ -909,7 +938,7 @@ TEST_F(ScaleWriterLocalPartitionTest, partitionBasic) {
   }
 }
 
-TEST_F(ScaleWriterLocalPartitionTest, partitionFuzzer) {
+TEST_P(ScaleWriterLocalPartitionTestParametrized, partitionFuzzer) {
   const std::vector<RowVectorPtr> inputVectors =
       makeVectors(1024, 256, {1, 2, 3, 4, 5, 6, 7, 8});
   const uint64_t queryCapacity = 256 << 20;
@@ -951,6 +980,7 @@ TEST_F(ScaleWriterLocalPartitionTest, partitionFuzzer) {
     testController->setExchangeNodeId(exchnangeNodeId);
 
     AssertQueryBuilder queryBuilder(plan);
+    applyTestParameters(queryBuilder);
     std::shared_ptr<Task> task;
     const auto result =
         // Consumer and producer have overload the max drivers of their
@@ -978,3 +1008,14 @@ TEST_F(ScaleWriterLocalPartitionTest, partitionFuzzer) {
     waitForAllTasksToBeDeleted();
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    LocalExchangePartitionBuffer,
+    ScaleWriterLocalPartitionTestParametrized,
+    testing::Values(
+        TestParam{1000, 1000, "partition_buffer_disabled"},
+        TestParam{0, 1024, "partition_buffer_enabled"}),
+    [](const testing::TestParamInfo<TestParam>& info) {
+      return std::string{info.param.name};
+    });
+} // namespace

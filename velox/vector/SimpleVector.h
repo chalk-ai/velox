@@ -113,7 +113,7 @@ class SimpleVector : public BaseVector {
       TypePtr type,
       VectorEncoding::Simple encoding,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       const SimpleVectorStats<T>& stats,
       std::optional<vector_size_t> distinctValueCount,
       std::optional<vector_size_t> nullCount,
@@ -134,7 +134,7 @@ class SimpleVector : public BaseVector {
         elementSize_(sizeof(T)),
         stats_(stats) {}
 
-  virtual ~SimpleVector() override {}
+  ~SimpleVector() override = default;
 
   SimpleVectorStats<T> getStats() const {
     return stats_;
@@ -183,7 +183,9 @@ class SimpleVector : public BaseVector {
   }
 
   template <TypeKind Kind>
-  uint64_t hashValueAt(const T& value) const {
+  static uint64_t hashValueAtWithCustomType(
+      const TypePtr& type,
+      const T& value) {
     if constexpr (!std::is_same<T, typename TypeTraits<Kind>::NativeType>()) {
       VELOX_UNSUPPORTED(
           "Cannot apply custom comparisons when the value type of the Vector {} does not match the NativeType associated with the Type of the Vector {}",
@@ -191,9 +193,14 @@ class SimpleVector : public BaseVector {
           typeid(T).name());
     } else {
       return static_cast<const CanProvideCustomComparisonType<Kind>*>(
-                 type_.get())
+                 type.get())
           ->hash(value);
     }
+  }
+
+  static uint64_t hashValueAtWithCustomType(const TypePtr& type, T value) {
+    return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+        hashValueAtWithCustomType, type->kind(), type, value);
   }
 
   /**
@@ -205,8 +212,7 @@ class SimpleVector : public BaseVector {
     }
 
     if (type_->providesCustomComparison()) {
-      return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
-          hashValueAt, type_->kind(), valueAt(index));
+      return hashValueAtWithCustomType(type_, valueAt(index));
     }
 
     if constexpr (std::is_floating_point_v<T>) {
@@ -238,36 +244,13 @@ class SimpleVector : public BaseVector {
 
   using BaseVector::toString;
 
-  std::string valueToString(T value) const {
-    if constexpr (std::is_same_v<T, bool>) {
-      return value ? "true" : "false";
-    } else if constexpr (std::is_same_v<T, std::shared_ptr<void>>) {
-      return "<opaque>";
-    } else if constexpr (
-        std::is_same_v<T, int64_t> || std::is_same_v<T, int128_t>) {
-      if (type()->isDecimal()) {
-        return DecimalUtil::toString(value, type());
-      } else {
-        return velox::to<std::string>(value);
-      }
-    } else if constexpr (std::is_same_v<T, int32_t>) {
-      if (type()->isDate()) {
-        return DATE()->toString(value);
-      } else {
-        return velox::to<std::string>(value);
-      }
-    } else {
-      return velox::to<std::string>(value);
-    }
-  }
-
   std::string toString(vector_size_t index) const override {
     VELOX_CHECK_LT(index, length_, "Vector index should be less than length.");
     std::stringstream out;
     if (isNullAt(index)) {
-      out << "null";
+      out << kNullValueString;
     } else {
-      out << valueToString(valueAt(index));
+      out << type()->valueToString(valueAt(index));
     }
     return out.str();
   }
@@ -555,8 +538,10 @@ inline std::optional<int32_t> SimpleVector<ComplexType>::compare(
   other = other->loadedVector();
   auto wrapped = wrappedVector();
   auto otherWrapped = other->wrappedVector();
-  DCHECK(wrapped->encoding() == otherWrapped->encoding())
-      << "Attempting to compare vectors not of the same type";
+  VELOX_DCHECK_EQ(
+      wrapped->typeKind(),
+      otherWrapped->typeKind(),
+      "Attempting to compare vectors not of the same type");
 
   bool otherNull = other->isNullAt(otherIndex);
   bool isNull = isNullAt(index);

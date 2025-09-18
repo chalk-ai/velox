@@ -48,7 +48,7 @@ void RuntimeMetric::merge(const RuntimeMetric& other)
   max = std::max(max, other.max);
 }
 
-void RuntimeMetric::printMetric(std::stringstream& stream) const {
+void RuntimeMetric::printMetric(std::ostream& stream) const {
   switch (unit) {
     case RuntimeCounter::Unit::kNanos:
       stream << " sum: " << succinctNanos(sum) << ", count: " << count
@@ -80,7 +80,6 @@ std::string RuntimeMetric::toString() const {
           succinctNanos(min),
           succinctNanos(max),
           succinctNanos(count == 0 ? 0 : sum / count));
-      break;
     case RuntimeCounter::Unit::kBytes:
       return fmt::format(
           "sum:{}, count:{}, min:{}, max:{}, avg: {}",
@@ -89,7 +88,6 @@ std::string RuntimeMetric::toString() const {
           succinctBytes(min),
           succinctBytes(max),
           succinctBytes(count == 0 ? 0 : sum / count));
-      break;
     case RuntimeCounter::Unit::kNone:
       [[fallthrough]];
     default:

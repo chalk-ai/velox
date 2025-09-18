@@ -16,7 +16,9 @@
 
 #include <string>
 
+#include "velox/expression/ExprRewriteRegistry.h"
 #include "velox/functions/Registerer.h"
+#include "velox/functions/lib/ArrayRemoveNullFunction.h"
 #include "velox/functions/lib/ArrayShuffle.h"
 #include "velox/functions/lib/Repeat.h"
 #include "velox/functions/lib/Slice.h"
@@ -157,16 +159,22 @@ void registerArrayFunctions(const std::string& prefix) {
       makeArrayShuffle,
       getMetadataForArrayShuffle());
 
-  VELOX_REGISTER_VECTOR_FUNCTION(udf_array_sort, prefix + "array_sort");
-  VELOX_REGISTER_VECTOR_FUNCTION(
-      udf_array_sort_desc, prefix + "array_sort_desc");
-
+  exec::registerStatefulVectorFunction(
+      prefix + "array_sort", arraySortSignatures(true), makeArraySortAsc);
+  exec::registerStatefulVectorFunction(
+      prefix + "array_sort_desc",
+      arraySortSignatures(false),
+      makeArraySortDesc);
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_max_by, prefix + "array_max_by");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_min_by, prefix + "array_min_by");
 
-  exec::registerExpressionRewrite([prefix](const auto& expr) {
-    return rewriteArraySortCall(prefix, expr);
-  });
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_array_flatten, prefix + "flatten");
+
+  auto checker = std::make_shared<SimpleComparisonChecker>();
+  expression::ExprRewriteRegistry::instance().registerRewrite(
+      [prefix, checker](const auto& expr) {
+        return rewriteArraySortCall(prefix, expr, checker);
+      });
 
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_sum, prefix + "array_sum");
   exec::registerStatefulVectorFunction(
@@ -210,11 +218,6 @@ void registerArrayFunctions(const std::string& prefix) {
 
   registerArrayConcatFunctions(prefix);
   registerArrayNGramsFunctions(prefix);
-
-  registerFunction<
-      ArrayFlattenFunction,
-      Array<Generic<T1>>,
-      Array<Array<Generic<T1>>>>({prefix + "flatten"});
 
   registerArrayRemoveFunctions<int8_t>(prefix);
   registerArrayRemoveFunctions<int16_t>(prefix);
@@ -315,6 +318,8 @@ void registerArrayFunctions(const std::string& prefix) {
   registerArrayCumSumFunction<int128_t>(prefix);
   registerArrayCumSumFunction<float>(prefix);
   registerArrayCumSumFunction<double>(prefix);
+  registerArrayCumSumFunction<LongDecimal<P1, S1>>(prefix);
+  registerArrayCumSumFunction<ShortDecimal<P1, S1>>(prefix);
 
   registerArrayHasDuplicatesFunctions<int8_t>(prefix);
   registerArrayHasDuplicatesFunctions<int16_t>(prefix);

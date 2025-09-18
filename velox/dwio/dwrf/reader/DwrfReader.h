@@ -176,6 +176,8 @@ class DwrfRowReader : public StrideIndexProvider,
   std::unique_ptr<dwio::common::UnitLoader> getUnitLoader();
 
   const dwio::common::RowReaderOptions options_;
+  dwio::common::ColumnReaderOptions columnReaderOptions_;
+
   // column selector
   const std::shared_ptr<dwio::common::ColumnSelector> columnSelector_;
   const std::function<void(std::chrono::high_resolution_clock::duration)>
@@ -219,6 +221,9 @@ class DwrfRowReader : public StrideIndexProvider,
 
   std::unique_ptr<dwio::common::UnitLoader> unitLoader_;
   DwrfUnit* currentUnit_;
+
+  mutable std::optional<size_t> estimatedRowSize_;
+  mutable bool hasRowEstimate_{false};
 };
 
 class DwrfReader : public dwio::common::Reader {

@@ -348,14 +348,11 @@ void FilterGenerator::collectFilterableSubFields(
     auto kind = rowType->childAt(i)->kind();
     switch (kind) {
       // ignore these types for filtering
-      case TypeKind::ARRAY:
-      case TypeKind::MAP:
       case TypeKind::UNKNOWN:
       case TypeKind::FUNCTION:
       case TypeKind::OPAQUE:
       case TypeKind::VARBINARY:
       case TypeKind::TIMESTAMP:
-      case TypeKind::ROW:
       case TypeKind::INVALID:
         continue;
 
@@ -450,7 +447,9 @@ void FilterGenerator::addToScanSpec(
     const SubfieldFilters& filters,
     ScanSpec& spec) {
   for (auto& pair : filters) {
-    spec.getOrCreateChild(pair.first)->addFilter(*pair.second);
+    auto* child = spec.getOrCreateChild(pair.first);
+    VELOX_CHECK_NULL(child->filter());
+    child->setFilter(pair.second);
   }
 }
 

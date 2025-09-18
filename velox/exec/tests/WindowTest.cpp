@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "velox/exec/Window.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/exec/OrderBy.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/exec/RowsStreamingWindowBuild.h"
 #include "velox/exec/SortWindowBuild.h"
@@ -196,7 +198,7 @@ TEST_F(WindowTest, rowBasedStreamingWindowOOM) {
               .singleAggregation({}, {"sum(d)"})
               .planNode();
 
-      readCursor(params, [](Task*) {});
+      readCursor(params);
     } else {
       params.planNode =
           PlanBuilder(planNodeIdGenerator)
@@ -206,8 +208,7 @@ TEST_F(WindowTest, rowBasedStreamingWindowOOM) {
               .singleAggregation({}, {"sum(d)"})
               .planNode();
 
-      VELOX_ASSERT_THROW(
-          readCursor(params, [](Task*) {}), "Exceeded memory pool capacity");
+      VELOX_ASSERT_THROW(readCursor(params), "Exceeded memory pool capacity");
     }
   };
   // RowStreamingWindow will not OOM.
@@ -432,14 +433,13 @@ TEST_F(WindowTest, missingFunctionSignature) {
             })
             .planNode();
 
-    readCursor(params, [](auto*) {});
+    readCursor(params);
   };
 
   auto callExpr = std::make_shared<core::CallTypedExpr>(
       BIGINT(),
-      std::vector<core::TypedExprPtr>{
-          std::make_shared<core::FieldAccessTypedExpr>(VARCHAR(), "c1")},
-      "sum");
+      "sum",
+      std::make_shared<core::FieldAccessTypedExpr>(VARCHAR(), "c1"));
 
   VELOX_ASSERT_THROW(
       runWindow(callExpr),
@@ -447,9 +447,8 @@ TEST_F(WindowTest, missingFunctionSignature) {
 
   callExpr = std::make_shared<core::CallTypedExpr>(
       VARCHAR(),
-      std::vector<core::TypedExprPtr>{
-          std::make_shared<core::FieldAccessTypedExpr>(BIGINT(), "c2")},
-      "sum");
+      "sum",
+      std::make_shared<core::FieldAccessTypedExpr>(BIGINT(), "c2"));
 
   VELOX_ASSERT_THROW(
       runWindow(callExpr),
@@ -748,6 +747,64 @@ TEST_F(WindowTest, NaNFrameBound) {
         PlanBuilder().values({data}).window({frame}).project({"w0"}).planNode();
     AssertQueryBuilder(plan).assertResults(expected);
   }
+}
+
+DEBUG_ONLY_TEST_F(WindowTest, releaseWindowBuildInTime) {
+  const vector_size_t size = 1'000;
+  auto data = makeRowVector(
+      {"d", "p0", "s"},
+      {
+          // Payload Data.
+          makeFlatVector<int64_t>(size, [](auto row) { return row; }),
+          // Partition key.
+          makeFlatVector<int16_t>(size, [](auto row) { return row % 11; }),
+          // Sorting key.
+          makeFlatVector<int32_t>(size, [](auto row) { return row; }),
+      });
+
+  createDuckDbTable({data});
+
+  core::PlanNodeId windowId;
+  core::PlanNodeId orderById;
+  auto plan = PlanBuilder()
+                  .values(split(data, 10))
+                  .window({"row_number() over (partition by p0 order by s)"})
+                  .capturePlanNodeId(windowId)
+                  .orderBy({"d"}, false)
+                  .capturePlanNodeId(orderById)
+                  .planNode();
+
+  std::atomic<memory::MemoryPool*> windowPool{nullptr};
+
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Driver::runInternal::getOutput",
+      std::function<void(Operator*)>([&](exec::Operator* op) {
+        auto* windowOp = dynamic_cast<exec::Window*>(op);
+        if (windowOp == nullptr || windowPool != nullptr) {
+          return;
+        }
+        windowPool = windowOp->pool();
+      }));
+
+  std::atomic_bool checkOnce{false};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Driver::runInternal::noMoreInput",
+      std::function<void(Operator*)>([&](exec::Operator* op) {
+        if (dynamic_cast<exec::OrderBy*>(op) == nullptr ||
+            checkOnce.exchange(true)) {
+          return;
+        }
+        ASSERT_LT(
+            windowPool.load()->usedBytes(), windowPool.load()->peakBytes() / 3);
+      }));
+
+  auto task =
+      AssertQueryBuilder(plan, duckDbQueryRunner_)
+          .config(core::QueryConfig::kPreferredOutputBatchBytes, "1024")
+          .assertResults(
+              "SELECT *, row_number() over (partition by p0 order by s) "
+              "FROM tmp "
+              "ORDER BY d");
 }
 
 } // namespace

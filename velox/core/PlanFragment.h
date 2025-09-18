@@ -62,6 +62,14 @@ struct PlanFragment {
         groupedExecutionLeafNodeIds.end();
   }
 
+  /// Returns first node that does not support barrier.
+  /// Returns nullptr if all nodes support barrier.
+  const PlanNode* firstNodeNotSupportingBarrier() const;
+
+  /// Returns true if the spilling is enabled and there is at least one node in
+  /// the plan, whose operator can spill. Returns false otherwise.
+  bool canSpill(const QueryConfig& queryConfig) const;
+
   PlanFragment() = default;
 
   explicit PlanFragment(std::shared_ptr<const core::PlanNode> topNode)
@@ -76,10 +84,6 @@ struct PlanFragment {
         executionStrategy(strategy),
         numSplitGroups(numberOfSplitGroups),
         groupedExecutionLeafNodeIds(groupedExecLeafNodeIds) {}
-
-  /// Returns true if the spilling is enabled and there is at least one node in
-  /// the plan, whose operator can spill. Returns false otherwise.
-  bool canSpill(const QueryConfig& queryConfig) const;
 };
 
 } // namespace facebook::velox::core

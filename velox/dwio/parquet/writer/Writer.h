@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "arrow/memory_pool.h"
 #include "velox/common/compression/Compression.h"
 #include "velox/common/config/Config.h"
 #include "velox/dwio/common/DataBuffer.h"
@@ -88,9 +89,6 @@ class LambdaFlushPolicy : public DefaultFlushPolicy {
 };
 
 struct WriterOptions : public dwio::common::WriterOptions {
-  bool enableDictionary = true;
-  int64_t dataPageSize = 1'024 * 1'024;
-  int64_t dictionaryPageSizeLimit = 1'024 * 1'024;
   // Growth ratio passed to ArrowDataBufferSink. The default value is a
   // heuristic borrowed from
   // folly/FBVector(https://github.com/facebook/folly/blob/main/folly/docs/FBVector.md#memory-handling).
@@ -108,7 +106,15 @@ struct WriterOptions : public dwio::common::WriterOptions {
   /// Timestamp time zone for Parquet write through Arrow bridge.
   std::optional<std::string> parquetWriteTimestampTimeZone;
   bool writeInt96AsTimestamp = false;
+
+  std::optional<int64_t> batchSize;
+  std::optional<int64_t> dataPageSize;
+  std::optional<int64_t> dictionaryPageSizeLimit;
+  std::optional<bool> enableDictionary;
   std::optional<bool> useParquetDataPageV2;
+  std::optional<std::string> createdBy;
+
+  std::shared_ptr<arrow::MemoryPool> arrowMemoryPool;
 
   // Parsing session and hive configs.
 
@@ -118,10 +124,28 @@ struct WriterOptions : public dwio::common::WriterOptions {
       "hive.parquet.writer.timestamp_unit";
   static constexpr const char* kParquetHiveConnectorWriteTimestampUnit =
       "hive.parquet.writer.timestamp-unit";
+  static constexpr const char* kParquetSessionEnableDictionary =
+      "hive.parquet.writer.enable_dictionary";
+  static constexpr const char* kParquetHiveConnectorEnableDictionary =
+      "hive.parquet.writer.enable-dictionary";
+  static constexpr const char* kParquetSessionDictionaryPageSizeLimit =
+      "hive.parquet.writer.dictionary_page_size_limit";
+  static constexpr const char* kParquetHiveConnectorDictionaryPageSizeLimit =
+      "hive.parquet.writer.dictionary-page-size-limit";
   static constexpr const char* kParquetSessionDataPageVersion =
       "hive.parquet.writer.datapage_version";
   static constexpr const char* kParquetHiveConnectorDataPageVersion =
       "hive.parquet.writer.datapage-version";
+  static constexpr const char* kParquetSessionWritePageSize =
+      "hive.parquet.writer.page_size";
+  static constexpr const char* kParquetHiveConnectorWritePageSize =
+      "hive.parquet.writer.page-size";
+  static constexpr const char* kParquetSessionWriteBatchSize =
+      "hive.parquet.writer.batch_size";
+  static constexpr const char* kParquetHiveConnectorWriteBatchSize =
+      "hive.parquet.writer.batch-size";
+  static constexpr const char* kParquetHiveConnectorCreatedBy =
+      "hive.parquet.writer.created-by";
 
   // Process hive connector and session configs.
   void processConfigs(
@@ -175,9 +199,15 @@ class Writer : public dwio::common::Writer {
   // Sets the memory reclaimers for all the memory pools used by this writer.
   void setMemoryReclaimers();
 
+  // Checks if the input data contains a nested wrapped vector or complex
+  // vector. If so, flatten the input to make it compatible with
+  // 'exportFlattenedVector' in Arrow export.
+  bool needFlatten(const VectorPtr& data) const;
+
   // Pool for 'stream_'.
   std::shared_ptr<memory::MemoryPool> pool_;
   std::shared_ptr<memory::MemoryPool> generalPool_;
+  std::shared_ptr<arrow::MemoryPool> arrowMemoryPool_;
 
   // Temporary Arrow stream for capturing the output.
   std::shared_ptr<ArrowDataBufferSink> stream_;

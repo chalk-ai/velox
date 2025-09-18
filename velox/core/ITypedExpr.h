@@ -20,6 +20,19 @@
 
 namespace facebook::velox::core {
 
+enum class ExprKind : int32_t {
+  kInput = 0,
+  kFieldAccess = 1,
+  kDereference = 2,
+  kCall = 3,
+  kCast = 5,
+  kConstant = 6,
+  kConcat = 7,
+  kLambda = 8,
+};
+
+VELOX_DECLARE_ENUM_NAME(ExprKind);
+
 class ITypedExpr;
 class ITypedExprVisitor;
 class ITypedExprVisitorContext;
@@ -29,19 +42,61 @@ using TypedExprPtr = std::shared_ptr<const ITypedExpr>;
 /// Strongly-typed expression, e.g. literal, function call, etc.
 class ITypedExpr : public ISerializable {
  public:
-  explicit ITypedExpr(TypePtr type) : type_{std::move(type)}, hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{} {}
+  ITypedExpr(ExprKind kind, TypePtr type)
+      : kind_{kind}, type_{std::move(type)}, hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{} {}
 
-  ITypedExpr(TypePtr type, std::vector<TypedExprPtr> inputs)
-      : type_{std::move(type)},  hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{std::move(inputs)} {}
+  ITypedExpr(ExprKind kind, TypePtr type, std::vector<TypedExprPtr> inputs)
+      : kind_{kind}, type_{std::move(type)}, hash_{std::make_shared<std::atomic_size_t>(0)}, inputs_{std::move(inputs)} {}
+
+  virtual ~ITypedExpr() = default;
+
+  ExprKind kind() const {
+    return kind_;
+  }
 
   const TypePtr& type() const {
     return type_;
   }
 
-  virtual ~ITypedExpr() = default;
-
   const std::vector<TypedExprPtr>& inputs() const {
     return inputs_;
+  }
+
+  bool isInputKind() const {
+    return kind_ == ExprKind::kInput;
+  }
+
+  bool isFieldAccessKind() const {
+    return kind_ == ExprKind::kFieldAccess;
+  }
+
+  bool isDereferenceKind() const {
+    return kind_ == ExprKind::kDereference;
+  }
+
+  bool isCallKind() const {
+    return kind_ == ExprKind::kCall;
+  }
+
+  bool isCastKind() const {
+    return kind_ == ExprKind::kCast;
+  }
+
+  bool isConstantKind() const {
+    return kind_ == ExprKind::kConstant;
+  }
+
+  bool isConcatKind() const {
+    return kind_ == ExprKind::kConcat;
+  }
+
+  bool isLambdaKind() const {
+    return kind_ == ExprKind::kLambda;
+  }
+
+  template <typename T>
+  const T* asUnchecked() const {
+    return dynamic_cast<const T*>(this);
   }
 
   /// Returns a copy of this expression with input fields replaced according
@@ -79,24 +134,6 @@ class ITypedExpr : public ISerializable {
     return *hash_;
   }
 
-  /// Returns true if other is recursively equal to 'this'. We do not
-  /// overload == because this is overloaded in a subclass for a
-  /// different purpose.
-  bool equals(const ITypedExpr& other) const {
-    if (type_ != other.type_ || inputs_.size() != other.inputs_.size()) {
-      return false;
-    }
-    if (!equalsNonRecursive(other)) {
-      return false;
-    }
-    for (int32_t i = 0; i < inputs_.size(); ++i) {
-      if (*inputs_[i] == *other.inputs_[i]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   virtual bool operator==(const ITypedExpr& other) const = 0;
 
   static void registerSerDe();
@@ -115,10 +152,7 @@ class ITypedExpr : public ISerializable {
   }
 
  private:
-  virtual bool equalsNonRecursive(const ITypedExpr& other) const {
-    return false;
-  }
-
+  const ExprKind kind_;
   TypePtr type_;
   std::shared_ptr<std::atomic_size_t> hash_;
   std::vector<TypedExprPtr> inputs_;

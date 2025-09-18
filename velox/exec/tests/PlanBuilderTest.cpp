@@ -15,9 +15,13 @@
  */
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
 #include "velox/exec/WindowFunction.h"
+#include "velox/exec/tests/utils/TestIndexStorageConnector.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
+#include "velox/parse/Expressions.h"
+#include "velox/parse/IExpr.h"
 #include "velox/parse/TypeResolver.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -27,7 +31,7 @@ class PlanBuilderTest : public testing::Test,
                         public velox::test::VectorTestBase {
  public:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   PlanBuilderTest() {
@@ -248,6 +252,149 @@ TEST_F(PlanBuilderTest, missingOutputType) {
   VELOX_ASSERT_THROW(
       PlanBuilder().startTableScan().endTableScan(),
       "outputType must be specified");
+}
+
+TEST_F(PlanBuilderTest, projectExpressions) {
+  // Non-typed Expressions.
+  // Simple field access.
+  auto data = ROW({"c0"}, {BIGINT()});
+  VELOX_CHECK_EQ(
+      PlanBuilder()
+          .tableScan("tmp", data)
+          .projectExpressions(
+              {std::make_shared<core::FieldAccessExpr>("c0", std::nullopt)})
+          .planNode()
+          ->toString(true, false),
+      "-- Project[1][expressions: (c0:BIGINT, ROW[\"c0\"])] -> c0:BIGINT\n");
+  // Dereference test using field access query.
+  data = ROW({"c0"}, {ROW({"field0"}, {BIGINT()})});
+  VELOX_CHECK_EQ(
+      PlanBuilder()
+          .tableScan("tmp", data)
+          .projectExpressions({std::make_shared<core::FieldAccessExpr>(
+              "field0",
+              std::nullopt,
+              std::vector<core::ExprPtr>{
+                  std::make_shared<core::FieldAccessExpr>(
+                      "c0", std::nullopt)})})
+          .planNode()
+          ->toString(true, false),
+      "-- Project[1][expressions: (field0:BIGINT, ROW[\"c0\"][field0])] -> field0:BIGINT\n");
+
+  // Test Typed Expressions
+  VELOX_CHECK_EQ(
+      PlanBuilder()
+          .tableScan("tmp", ROW({"c0"}, {ROW({VARCHAR()})}))
+          .projectExpressions(
+              {std::make_shared<core::FieldAccessTypedExpr>(VARCHAR(), "c0")})
+          .planNode()
+          ->toString(true, false),
+      "-- Project[1][expressions: (p0:VARCHAR, \"c0\")] -> p0:VARCHAR\n");
+  VELOX_CHECK_EQ(
+      PlanBuilder()
+          .tableScan("tmp", ROW({"c0"}, {ROW({VARCHAR()})}))
+          .projectExpressions({std::make_shared<core::FieldAccessTypedExpr>(
+              VARCHAR(),
+              std::make_shared<core::FieldAccessTypedExpr>(VARCHAR(), "c0"),
+              "field0")})
+          .planNode()
+          ->toString(true, false),
+      "-- Project[1][expressions: (p0:VARCHAR, \"c0\"[\"field0\"])] -> p0:VARCHAR\n");
+}
+
+TEST_F(PlanBuilderTest, commitStrategyParameter) {
+  auto data = makeRowVector({makeFlatVector<int64_t>(10, folly::identity)});
+  auto directory = "/some/test/directory";
+
+  // Lambda to create a plan with given commitStrategy and verify it
+  auto testCommitStrategy = [&](connector::CommitStrategy commitStrategy) {
+    // Create a plan with commitStrategy
+    auto planBuilder = PlanBuilder().values({data}).tableWrite(
+        directory,
+        {},
+        0,
+        {},
+        {},
+        dwio::common::FileFormat::DWRF,
+        {},
+        PlanBuilder::kHiveDefaultConnectorId,
+        {},
+        nullptr,
+        "",
+        common::CompressionKind_NONE,
+        nullptr,
+        false);
+
+    core::PlanNodePtr plan;
+    // Conditionally set commitStrategy if it's not kNoCommit
+    if (commitStrategy != connector::CommitStrategy::kNoCommit) {
+      plan = PlanBuilder::TableWriterBuilder(planBuilder)
+                 .commitStrategy(commitStrategy)
+                 .endTableWriter()
+                 .planNode();
+    } else {
+      plan = std::move(planBuilder.planNode());
+    }
+
+    // Verify the plan node has the correct commit strategy
+    auto tableWriteNode =
+        std::dynamic_pointer_cast<const core::TableWriteNode>(plan);
+    ASSERT_NE(tableWriteNode, nullptr);
+    ASSERT_EQ(tableWriteNode->commitStrategy(), commitStrategy);
+  };
+
+  // Test with explicit task commit strategy
+  testCommitStrategy(connector::CommitStrategy::kTaskCommit);
+
+  // Test with no explicit commit strategy (should default to kNoCommit)
+  testCommitStrategy(connector::CommitStrategy::kNoCommit);
+}
+
+TEST_F(PlanBuilderTest, indexLookupJoinBuilder) {
+  auto leftType = ROW({"t0", "t1"}, {BIGINT(), ARRAY(BIGINT())});
+  auto rightType = ROW({"u0", "u1"}, {BIGINT(), BIGINT()});
+
+  // Create a TestIndexTableHandle that supports index lookup
+  auto indexTableHandle = std::make_shared<TestIndexTableHandle>(
+      kTestIndexConnectorName, nullptr, false);
+
+  // Create column handles for the index table
+  connector::ColumnHandleMap columnHandles;
+  for (const auto& name : rightType->names()) {
+    columnHandles[name] = std::make_shared<TestIndexColumnHandle>(name);
+  }
+
+  auto rightScan = std::make_shared<core::TableScanNode>(
+      "right_scan", rightType, indexTableHandle, columnHandles);
+
+  auto plan = PlanBuilder(pool_.get())
+                  .tableScan(leftType)
+                  .startIndexLookupJoin()
+                  .leftKeys({"t0"})
+                  .rightKeys({"u0"})
+                  .indexSource(rightScan)
+                  .joinConditions({"contains(t1, u1)"})
+                  .hasMarker(false)
+                  .outputLayout({"t0", "u1"})
+                  .joinType(core::JoinType::kInner)
+                  .filter("t0 > 0")
+                  .endIndexLookupJoin()
+                  .planNode();
+
+  auto indexJoinNode =
+      std::dynamic_pointer_cast<const core::IndexLookupJoinNode>(plan);
+  ASSERT_NE(indexJoinNode, nullptr);
+  ASSERT_EQ(indexJoinNode->joinType(), core::JoinType::kInner);
+  ASSERT_EQ(indexJoinNode->leftKeys().size(), 1);
+  ASSERT_EQ(indexJoinNode->rightKeys().size(), 1);
+  ASSERT_EQ(indexJoinNode->leftKeys()[0]->name(), "t0");
+  ASSERT_EQ(indexJoinNode->rightKeys()[0]->name(), "u0");
+  ASSERT_EQ(indexJoinNode->joinConditions().size(), 1);
+  ASSERT_FALSE(indexJoinNode->hasMarker());
+  ASSERT_EQ(indexJoinNode->outputType()->names().size(), 2);
+  ASSERT_EQ(indexJoinNode->outputType()->names()[0], "t0");
+  ASSERT_EQ(indexJoinNode->outputType()->names()[1], "u1");
+  ASSERT_EQ(indexJoinNode->filter()->toString(), "gt(ROW[\"t0\"],0)");
 }
 
 } // namespace facebook::velox::exec::test

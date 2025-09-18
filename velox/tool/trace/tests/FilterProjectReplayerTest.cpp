@@ -23,24 +23,15 @@
 #include <folly/experimental/EventCount.h>
 
 #include "velox/common/file/FileSystems.h"
-#include "velox/common/hyperloglog/SparseHll.h"
-#include "velox/common/testutil/TestValue.h"
-#include "velox/dwio/dwrf/writer/Writer.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/PartitionFunction.h"
-#include "velox/exec/TableWriter.h"
 #include "velox/exec/TraceUtil.h"
-#include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/tool/trace/FilterProjectReplayer.h"
-
-#include "velox/common/file/Utils.h"
-#include "velox/exec/PlanNodeStats.h"
-
-#include "velox/vector/tests/utils/VectorTestBase.h"
 
 using namespace facebook::velox;
 using namespace facebook::velox::core;
@@ -54,10 +45,11 @@ using namespace facebook::velox::common::testutil;
 using namespace facebook::velox::common::hll;
 
 namespace facebook::velox::tool::trace::test {
+namespace {
 class FilterProjectReplayerTest : public HiveConnectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     HiveConnectorTestBase::SetUpTestCase();
     filesystems::registerLocalFileSystem();
     if (!isRegisteredVectorSerde()) {
@@ -65,12 +57,9 @@ class FilterProjectReplayerTest : public HiveConnectorTestBase {
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
-    connector::hive::HiveConnectorSplit::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
+    velox::exec::trace::registerDummySourceSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
   }
@@ -178,9 +167,7 @@ TEST_F(FilterProjectReplayerTest, filterProject) {
         .config(core::QueryConfig::kQueryTraceDir, traceRoot)
         .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
         .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-        .config(
-            core::QueryConfig::kQueryTraceNodeIds,
-            fmt::format("{},{}", filterNodeId_, projectNodeId_));
+        .config(core::QueryConfig::kQueryTraceNodeId, projectNodeId_);
     auto traceResult = traceBuilder.splits(tracePlanWithSplits.splits)
                            .copyResults(pool(), task);
 
@@ -215,9 +202,7 @@ TEST_F(FilterProjectReplayerTest, filterOnly) {
       .config(core::QueryConfig::kQueryTraceDir, traceRoot)
       .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(
-          core::QueryConfig::kQueryTraceNodeIds,
-          fmt::format("{},{}", filterNodeId_, projectNodeId_));
+      .config(core::QueryConfig::kQueryTraceNodeId, filterNodeId_);
   auto traceResult =
       traceBuilder.splits(tracePlanWithSplits.splits).copyResults(pool(), task);
 
@@ -251,9 +236,7 @@ TEST_F(FilterProjectReplayerTest, projectOnly) {
       .config(core::QueryConfig::kQueryTraceDir, traceRoot)
       .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(
-          core::QueryConfig::kQueryTraceNodeIds,
-          fmt::format("{},{}", filterNodeId_, projectNodeId_));
+      .config(core::QueryConfig::kQueryTraceNodeId, projectNodeId_);
   auto traceResult =
       traceBuilder.splits(tracePlanWithSplits.splits).copyResults(pool(), task);
 
@@ -320,4 +303,40 @@ TEST_F(FilterProjectReplayerTest, projectOnly) {
                          .run();
   ASSERT_EQ(emptyResult->size(), 0);
 }
+
+TEST_F(FilterProjectReplayerTest, dryRun) {
+  const auto planWithSplits = createPlan(PlanMode::FilterOnly);
+  AssertQueryBuilder builder(planWithSplits.plan);
+  std::shared_ptr<Task> task;
+  auto result = builder.splits(planWithSplits.splits).copyResults(pool(), task);
+  ASSERT_EQ(result->size(), 1780);
+
+  const auto traceRoot = fmt::format("{}/{}", testDir_->getPath(), "filter");
+  const auto tracePlanWithSplits = createPlan(PlanMode::FilterOnly);
+  std::shared_ptr<Task> taskWithTrace;
+  AssertQueryBuilder traceBuilder(tracePlanWithSplits.plan);
+  traceBuilder.maxDrivers(4)
+      .config(core::QueryConfig::kQueryTraceEnabled, true)
+      .config(core::QueryConfig::kQueryTraceDir, traceRoot)
+      .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
+      .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
+      .config(core::QueryConfig::kQueryTraceNodeId, filterNodeId_)
+      .config(core::QueryConfig::kQueryTraceDryRun, true);
+  auto traceResult = traceBuilder.splits(tracePlanWithSplits.splits)
+                         .copyResults(pool(), taskWithTrace);
+  ASSERT_EQ(traceResult->size(), 0);
+
+  auto replayingResult = FilterProjectReplayer(
+                             traceRoot,
+                             taskWithTrace->queryCtx()->queryId(),
+                             taskWithTrace->taskId(),
+                             filterNodeId_,
+                             "FilterProject",
+                             "",
+                             0,
+                             executor_.get())
+                             .run();
+  assertEqualResults({result}, {replayingResult});
+}
+} // namespace
 } // namespace facebook::velox::tool::trace::test

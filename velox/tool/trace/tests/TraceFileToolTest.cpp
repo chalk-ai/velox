@@ -19,18 +19,11 @@
 
 #include <string>
 
-#include "velox/common/file/FileSystems.h"
-
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/tests/FaultyFileSystem.h"
-#include "velox/common/hyperloglog/SparseHll.h"
-#include "velox/common/testutil/TestValue.h"
-#include "velox/dwio/dwrf/writer/Writer.h"
-#include "velox/exec/OperatorTraceReader.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/PartitionFunction.h"
-#include "velox/exec/PlanNodeStats.h"
-#include "velox/exec/TableWriter.h"
 #include "velox/exec/TraceUtil.h"
-#include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -38,7 +31,6 @@
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/tool/trace/HashJoinReplayer.h"
 #include "velox/tool/trace/TraceFileToolRunner.h"
-#include "velox/tool/trace/TraceReplayRunner.h"
 
 using namespace facebook::velox;
 using namespace facebook::velox::core;
@@ -56,7 +48,7 @@ namespace facebook::velox::tool::trace::test {
 class TraceFileToolTest : public HiveConnectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     HiveConnectorTestBase::SetUpTestCase();
     registerFaultyFileSystem();
     if (!isRegisteredVectorSerde()) {
@@ -64,12 +56,9 @@ class TraceFileToolTest : public HiveConnectorTestBase {
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
-    connector::hive::HiveConnectorSplit::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
+    velox::exec::trace::registerDummySourceSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
   }
@@ -213,7 +202,7 @@ TEST_F(TraceFileToolTest, basic) {
       .config(core::QueryConfig::kQueryTraceDir, traceRoot)
       .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, traceNodeId_);
+      .config(core::QueryConfig::kQueryTraceNodeId, traceNodeId_);
 
   for (const auto& [planNodeId, nodeSplits] : tracePlanWithSplits.splits) {
     traceBuilder.splits(planNodeId, nodeSplits);

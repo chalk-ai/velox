@@ -15,6 +15,7 @@
  */
 
 #include "velox/common/memory/Memory.h"
+#include "velox/core/Expressions.h"
 #include "velox/functions/Udf.h"
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
@@ -50,7 +51,7 @@ int main(int argc, char** argv) {
   // registered.
   registerFunction<TimesTwoFunction, int64_t, int64_t>({"times_two"});
 
-  memory::MemoryManager::initialize({});
+  memory::MemoryManager::initialize(memory::MemoryManager::Options{});
 
   // First of all, executing an expression in Velox will require us to create a
   // query context, a memory pool, and an execution context.
@@ -102,9 +103,7 @@ int main(int argc, char** argv) {
   // would be automatically and recursively generated based on some input IDL
   // (or by a SQL string parser).
   auto exprTree = std::make_shared<core::CallTypedExpr>(
-      BIGINT(),
-      std::vector<core::TypedExprPtr>{fieldAccessExprNode},
-      "times_two");
+      BIGINT(), "times_two", fieldAccessExprNode);
 
   // Lastly, ExprSet contains the main expression evaluation logic. It takes a
   // vector of expression trees (if there are multiple expressions to be

@@ -32,7 +32,8 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
     std::shared_ptr<memory::MemoryPool> pool,
     std::shared_ptr<memory::MemoryPool> expr_pool,
     folly::Executor* spillExecutor,
-    const std::string& queryId) {
+    const std::string& queryId,
+    std::shared_ptr<filesystems::TokenProvider> tokenProvider) {
   std::shared_ptr<QueryCtx> queryCtx(new QueryCtx(
       executor,
       std::move(queryConfig),
@@ -41,7 +42,8 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
       std::move(pool),
       std::move(expr_pool),
       spillExecutor,
-      queryId));
+      queryId,
+      std::move(tokenProvider)));
   queryCtx->maybeSetReclaimer();
   return queryCtx;
 }
@@ -55,7 +57,8 @@ QueryCtx::QueryCtx(
     std::shared_ptr<memory::MemoryPool> pool,
     std::shared_ptr<memory::MemoryPool> expr_pool,
     folly::Executor* spillExecutor,
-    const std::string& queryId)
+    const std::string& queryId,
+    std::shared_ptr<filesystems::TokenProvider> tokenProvider)
     : queryId_(queryId),
       executor_(executor),
       spillExecutor_(spillExecutor),
@@ -63,7 +66,8 @@ QueryCtx::QueryCtx(
       connectorSessionProperties_(connectorSessionProperties),
       pool_(std::move(pool)),
       expr_memory_pool_(std::move(expr_pool)),
-      queryConfig_{std::move(queryConfig)} {
+      queryConfig_{std::move(queryConfig)},
+      fsTokenProvider_(std::move(tokenProvider)) {
   initPool(queryId);
 }
 
@@ -105,8 +109,10 @@ void QueryCtx::updateTracedBytesAndCheckLimit(uint64_t bytes) {
 std::unique_ptr<memory::MemoryReclaimer> QueryCtx::MemoryReclaimer::create(
     QueryCtx* queryCtx,
     memory::MemoryPool* pool) {
-  return std::unique_ptr<memory::MemoryReclaimer>(
-      new QueryCtx::MemoryReclaimer(queryCtx->shared_from_this(), pool));
+  return std::unique_ptr<memory::MemoryReclaimer>(new QueryCtx::MemoryReclaimer(
+      queryCtx->shared_from_this(),
+      pool,
+      queryCtx->queryConfig().queryMemoryReclaimerPriority()));
 }
 
 uint64_t QueryCtx::MemoryReclaimer::reclaim(
@@ -128,7 +134,12 @@ uint64_t QueryCtx::MemoryReclaimer::reclaim(
 
 bool QueryCtx::checkUnderArbitration(ContinueFuture* future) {
   VELOX_CHECK_NOT_NULL(future);
+  if (!underArbitration_) {
+    return false;
+  }
+
   std::lock_guard<std::mutex> l(mutex_);
+  // Check again under the lock to avoid data race.
   if (!underArbitration_) {
     VELOX_CHECK(arbitrationPromises_.empty());
     return false;

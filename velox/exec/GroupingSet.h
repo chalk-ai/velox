@@ -43,7 +43,8 @@ class GroupingSet {
       const std::optional<column_index_t>& groupIdChannel,
       const common::SpillConfig* spillConfig,
       tsan_atomic<bool>* nonReclaimableSection,
-      OperatorCtx* operatorCtx,
+      const core::QueryConfig* queryConfig,
+      memory::MemoryPool* pool,
       folly::Synchronized<common::SpillStats>* spillStats);
 
   ~GroupingSet();
@@ -148,7 +149,7 @@ class GroupingSet {
       RowContainerIterator& iterator,
       RowVectorPtr& result);
 
-  memory::MemoryPool& testingPool() const {
+  memory::MemoryPool* testingPool() const {
     return pool_;
   }
 
@@ -251,6 +252,9 @@ class GroupingSet {
       int32_t maxOutputRows,
       const RowVectorPtr& result);
 
+  // Returns the currently accummulated bytes of the unspill merge rows.
+  uint64_t mergeRowBytes() const;
+
   // Initializes a new row in 'mergeRows' with the keys from the
   // current element from 'stream'. Accumulators are left in the initial
   // state with no data accumulated. This is called each time a new
@@ -275,6 +279,10 @@ class GroupingSet {
   // groups.
   void extractSpillResult(const RowVectorPtr& result);
 
+  // Clears the merge results, including 'mergeRows_' and 'sortedAggregations_'
+  // if applicable.
+  void clearMergeRows();
+
   // Returns a list of accumulators for 'aggregates_', plus one more accumulator
   // for 'sortedAggregations_', and one for each 'distinctAggregations_'.  When
   // 'excludeToIntermediate' is true, skip the functions that support
@@ -295,7 +303,8 @@ class GroupingSet {
   const bool isGlobal_;
   const bool isPartial_;
   const bool isRawInput_;
-  const core::QueryConfig& queryConfig_;
+  const core::QueryConfig* const queryConfig_;
+  memory::MemoryPool* const pool_;
 
   std::vector<AggregateInfo> aggregates_;
   AggregationMasks masks_;
@@ -384,9 +393,6 @@ class GroupingSet {
   // to merge.
   SelectivityVector mergeSelection_;
 
-  // Pool of the OperatorCtx. Used for spilling.
-  memory::MemoryPool& pool_;
-
   // True if partial aggregation has been given up as non-productive.
   bool abandonedPartialAggregation_{false};
 
@@ -414,8 +420,7 @@ class AggregationInputSpiller : public SpillerBase {
       RowContainer* container,
       RowTypePtr rowType,
       const HashBitRange& hashBitRange,
-      int32_t numSortingKeys,
-      const std::vector<CompareFlags>& sortCompareFlags,
+      const std::vector<SpillSortKey>& sortingKeys,
       const common::SpillConfig* spillConfig,
       folly::Synchronized<common::SpillStats>* spillStats);
 

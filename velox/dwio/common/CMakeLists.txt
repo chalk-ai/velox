@@ -14,6 +14,7 @@
 add_subdirectory(compression)
 add_subdirectory(encryption)
 add_subdirectory(exception)
+add_subdirectory(wrap)
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)
@@ -53,6 +54,7 @@ velox_add_library(
   SeekableInputStream.cpp
   SelectiveByteRleColumnReader.cpp
   SelectiveColumnReader.cpp
+  SelectiveFlatMapColumnReader.cpp
   SelectiveRepeatedColumnReader.cpp
   SelectiveStructColumnReader.cpp
   SortingWriter.cpp
@@ -61,7 +63,8 @@ velox_add_library(
   TypeUtils.cpp
   TypeWithId.cpp
   Writer.cpp
-  WriterFactory.cpp)
+  WriterFactory.cpp
+)
 
 velox_include_directories(velox_dwio_common PRIVATE ${Protobuf_INCLUDE_DIRS})
 
@@ -81,4 +84,5 @@ velox_link_libraries(
   Boost::regex
   Folly::folly
   glog::glog
-  protobuf::libprotobuf)
+  protobuf::libprotobuf
+)

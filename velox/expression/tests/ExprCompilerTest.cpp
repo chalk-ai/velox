@@ -15,11 +15,11 @@
  */
 #include "gtest/gtest.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
 #include "velox/expression/Expr.h"
 #include "velox/expression/FieldReference.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/prestosql/types/JsonType.h"
-#include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
 #include "velox/parse/TypeResolver.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
@@ -32,7 +32,7 @@ class ExprCompilerTest : public testing::Test,
   static void SetUpTestCase() {
     parse::registerTypeResolver();
     functions::prestosql::registerAllScalarFunctions();
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
@@ -49,15 +49,13 @@ class ExprCompilerTest : public testing::Test,
   core::TypedExprPtr andCall(
       const core::TypedExprPtr& a,
       const core::TypedExprPtr& b) {
-    return std::make_shared<core::CallTypedExpr>(
-        BOOLEAN(), std::vector<core::TypedExprPtr>{a, b}, "and");
+    return std::make_shared<core::CallTypedExpr>(BOOLEAN(), "and", a, b);
   }
 
   core::TypedExprPtr orCall(
       const core::TypedExprPtr& a,
       const core::TypedExprPtr& b) {
-    return std::make_shared<core::CallTypedExpr>(
-        BOOLEAN(), std::vector<core::TypedExprPtr>{a, b}, "or");
+    return std::make_shared<core::CallTypedExpr>(BOOLEAN(), "or", a, b);
   }
 
   core::TypedExprPtr concatCall(
@@ -252,9 +250,7 @@ TEST_F(ExprCompilerTest, concatArrayFlattening) {
 
 TEST_F(ExprCompilerTest, functionNameNotRegistered) {
   auto expression = std::make_shared<core::CallTypedExpr>(
-      VARCHAR(),
-      std::vector<core::TypedExprPtr>{varchar("---"), varchar("...")},
-      "not_registered_function");
+      VARCHAR(), "not_registered_function", varchar("---"), varchar("..."));
 
   VELOX_ASSERT_THROW(
       compile(expression),

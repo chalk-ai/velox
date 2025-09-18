@@ -81,11 +81,16 @@ class AggregationFuzzerBase {
                                       : getFuzzerOptions(timestampPrecision),
             pool_.get()} {
     filesystems::registerLocalFileSystem();
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
     registerHiveConnector(hiveConfigs);
     dwrf::registerDwrfReaderFactory();
     dwrf::registerDwrfWriterFactory();
+
+    for (const auto& type : referenceQueryRunner_->supportedScalarTypes()) {
+      if (!type->isReal() && !type->isDouble()) {
+        supportedKeyTypes_.push_back(type);
+      }
+    }
+
     seed(initialSeed);
   }
 
@@ -282,6 +287,7 @@ class AggregationFuzzerBase {
   std::shared_ptr<memory::MemoryPool> writerPool_{
       rootPool_->addAggregateChild("aggregationFuzzerWriter")};
   VectorFuzzer vectorFuzzer_;
+  std::vector<TypePtr> supportedKeyTypes_;
 };
 
 // Returns true if the elapsed time is greater than or equal to

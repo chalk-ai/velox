@@ -21,11 +21,10 @@ namespace facebook::velox::wave {
 using namespace connector::hive;
 
 WaveHiveDataSource::WaveHiveDataSource(
-    const std::shared_ptr<HiveTableHandle>& hiveTableHandle,
+    const HiveTableHandlePtr& hiveTableHandle,
     const std::shared_ptr<common::ScanSpec>& scanSpec,
     const RowTypePtr& readerOutputType,
-    std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-        partitionKeys,
+    std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
     FileHandleFactory* fileHandleFactory,
     folly::Executor* executor,
     const connector::ConnectorQueryCtx* connectorQueryCtx,
@@ -161,17 +160,14 @@ void WaveHiveDataSource::registerConnector() {
       std::unordered_map<std::string, std::string>());
 
   // Create hive connector with config...
-  auto hiveConnector =
-      connector::getConnectorFactory(
-          connector::hive::HiveConnectorFactory::kHiveConnectorName)
-          ->newConnector("wavemock", config, nullptr);
+  connector::hive::HiveConnectorFactory factory;
+  auto hiveConnector = factory.newConnector("wavemock", config, nullptr);
   connector::registerConnector(hiveConnector);
   connector::hive::HiveDataSource::registerWaveDelegateHook(
-      [](const std::shared_ptr<HiveTableHandle>& hiveTableHandle,
+      [](const HiveTableHandlePtr& hiveTableHandle,
          const std::shared_ptr<common::ScanSpec>& scanSpec,
          const RowTypePtr& readerOutputType,
-         std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-             partitionKeys,
+         std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
          FileHandleFactory* fileHandleFactory,
          folly::Executor* executor,
          const connector::ConnectorQueryCtx* connectorQueryCtx,
@@ -183,7 +179,6 @@ void WaveHiveDataSource::registerConnector() {
             hiveTableHandle,
             scanSpec,
             readerOutputType,
-
             partitionKeys,
             fileHandleFactory,
             executor,

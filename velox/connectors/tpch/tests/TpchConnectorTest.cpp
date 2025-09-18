@@ -22,6 +22,8 @@
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
+DECLARE_int32(velox_tpch_text_pool_size_mb);
+
 namespace {
 
 using namespace facebook::velox;
@@ -35,23 +37,18 @@ class TpchConnectorTest : public exec::test::OperatorTestBase {
   const std::string kTpchConnectorId = "test-tpch";
 
   void SetUp() override {
+    FLAGS_velox_tpch_text_pool_size_mb = 10;
     OperatorTestBase::SetUp();
-    connector::registerConnectorFactory(
-        std::make_shared<connector::tpch::TpchConnectorFactory>());
-    auto tpchConnector =
-        connector::getConnectorFactory(
-            connector::tpch::TpchConnectorFactory::kTpchConnectorName)
-            ->newConnector(
-                kTpchConnectorId,
-                std::make_shared<config::ConfigBase>(
-                    std::unordered_map<std::string, std::string>()));
+    connector::tpch::TpchConnectorFactory factory;
+    auto tpchConnector = factory.newConnector(
+        kTpchConnectorId,
+        std::make_shared<config::ConfigBase>(
+            std::unordered_map<std::string, std::string>()));
     connector::registerConnector(tpchConnector);
   }
 
   void TearDown() override {
     connector::unregisterConnector(kTpchConnectorId);
-    connector::unregisterConnectorFactory(
-        connector::tpch::TpchConnectorFactory::kTpchConnectorName);
     OperatorTestBase::TearDown();
   }
 
@@ -97,11 +94,11 @@ TEST_F(TpchConnectorTest, simple) {
       makeFlatVector<int64_t>({0, 1, 1, 1, 4}),
       // n_comment
       makeFlatVector<StringView>({
-          " haggle. carefully final deposits detect slyly agai",
-          "al foxes promise slyly according to the regular accounts. bold requests alon",
-          "y alongside of the pending deposits. carefully special packages are about the ironic forges. slyly special ",
-          "eas hang ironic, silent packages. slyly regular packages are furiously over the tithes. fluffily bold",
-          "y above the carefully unusual theodolites. final dugouts are quickly across the furiously regular d",
+          "furiously regular requests. platelets affix furious",
+          "instructions wake quickly. final deposits haggle. final, silent theodolites ",
+          "asymptotes use fluffily quickly bold instructions. slyly bold dependencies sleep carefully pending accounts",
+          "ss deposits wake across the pending foxes. packages after the carefully bold requests integrate caref",
+          "usly ironic, pending foxes. even, special instructions nag. sly, final foxes detect slyly fluffily ",
       }),
   });
   test::assertEqualVectors(expected, output);
@@ -246,6 +243,147 @@ TEST_F(TpchConnectorTest, multipleSplits) {
   }
 }
 
+// Test filtering in the TpchConnector.
+TEST_F(TpchConnectorTest, filterPushdown) {
+  // Test equality filter
+  auto plan = PlanBuilder(pool())
+                  .tpchTableScan(
+                      Table::TBL_NATION,
+                      {"n_nationkey", "n_name", "n_regionkey"},
+                      1.0,
+                      kTpchConnectorId,
+                      "n_regionkey = 1")
+                  .planNode();
+
+  auto output = getResults(plan, {makeTpchSplit()});
+
+  // Should only return nations with regionkey = 1
+  auto expected = makeRowVector({
+      // n_nationkey
+      makeFlatVector<int64_t>({1, 2, 3, 17, 24}),
+      // n_name
+      makeFlatVector<StringView>({
+          "ARGENTINA",
+          "BRAZIL",
+          "CANADA",
+          "PERU",
+          "UNITED STATES",
+      }),
+      // n_regionkey
+      makeFlatVector<int64_t>({1, 1, 1, 1, 1}),
+  });
+  test::assertEqualVectors(expected, output);
+}
+
+// Test more complex filters in the TpchConnector.
+TEST_F(TpchConnectorTest, complexFilterPushdown) {
+  // Test range filter
+  auto plan = PlanBuilder(pool())
+                  .tpchTableScan(
+                      Table::TBL_NATION,
+                      {"n_nationkey", "n_name", "n_regionkey"},
+                      1.0,
+                      kTpchConnectorId,
+                      "n_nationkey < 5 AND n_regionkey > 0")
+                  .planNode();
+
+  auto output = getResults(plan, {makeTpchSplit()});
+
+  // Should only return nations with nationkey < 5 AND regionkey > 0
+  auto expected = makeRowVector({
+      // n_nationkey
+      makeFlatVector<int64_t>({1, 2, 3, 4}),
+      // n_name
+      makeFlatVector<StringView>({
+          "ARGENTINA",
+          "BRAZIL",
+          "CANADA",
+          "EGYPT",
+      }),
+      // n_regionkey
+      makeFlatVector<int64_t>({1, 1, 1, 4}),
+  });
+  test::assertEqualVectors(expected, output);
+}
+
+// Test filtering with LIKE operator
+TEST_F(TpchConnectorTest, likeFilterPushdown) {
+  // Test LIKE filter
+  auto plan = PlanBuilder(pool())
+                  .tpchTableScan(
+                      Table::TBL_NATION,
+                      {"n_nationkey", "n_name", "n_regionkey"},
+                      1.0,
+                      kTpchConnectorId,
+                      "n_name LIKE 'A%'")
+                  .planNode();
+
+  auto output = getResults(plan, {makeTpchSplit()});
+
+  // Should only return nations with names starting with 'A'
+  auto expected = makeRowVector({
+      // n_nationkey
+      makeFlatVector<int64_t>({0, 1}),
+      // n_name
+      makeFlatVector<StringView>({
+          "ALGERIA",
+          "ARGENTINA",
+      }),
+      // n_regionkey
+      makeFlatVector<int64_t>({0, 1}),
+  });
+  test::assertEqualVectors(expected, output);
+}
+
+// Test filtering with IN operator
+TEST_F(TpchConnectorTest, inFilterPushdown) {
+  // Test IN filter
+  auto plan = PlanBuilder(pool())
+                  .tpchTableScan(
+                      Table::TBL_NATION,
+                      {"n_nationkey", "n_name", "n_regionkey"},
+                      1.0,
+                      kTpchConnectorId,
+                      "n_nationkey IN (0, 5, 10, 15, 20)")
+                  .planNode();
+
+  auto output = getResults(plan, {makeTpchSplit()});
+
+  // Should only return nations with nationkey in the specified list
+  auto expected = makeRowVector({
+      // n_nationkey
+      makeFlatVector<int64_t>({0, 5, 10, 15, 20}),
+      // n_name
+      makeFlatVector<StringView>({
+          "ALGERIA",
+          "ETHIOPIA",
+          "IRAN",
+          "MOROCCO",
+          "SAUDI ARABIA",
+      }),
+      // n_regionkey
+      makeFlatVector<int64_t>({0, 0, 4, 0, 4}),
+  });
+  test::assertEqualVectors(expected, output);
+}
+
+TEST_F(TpchConnectorTest, namespaceInfer) {
+  std::vector<std::pair<double, std::string>> expect = {
+      {0.05, "tiny.customer"},
+      {1.0, "sf1.customer"},
+      {5.0, "sf5.customer"},
+      {10.0, "sf10.customer"},
+      {100.0, "sf100.customer"},
+      {300.0, "sf300.customer"},
+      {10000.0, "sf10000.customer"},
+  };
+  for (const auto& expectpair : expect) {
+    auto handle = std::make_shared<TpchTableHandle>(
+        kTpchConnectorId, Table::TBL_CUSTOMER, expectpair.first);
+    EXPECT_EQ(handle->name(), expectpair.second);
+  }
+}
+
 // Join nation and region.
 TEST_F(TpchConnectorTest, join) {
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
@@ -297,6 +435,20 @@ TEST_F(TpchConnectorTest, orderDateCount) {
   EXPECT_EQ("1992-01-01", DATE()->toString(orderDate->valueAt(0)));
   // Match with count obtained from Java.
   EXPECT_EQ(9, orderDate->size());
+}
+
+TEST_F(TpchConnectorTest, config) {
+  std::unordered_map<std::string, std::string> properties = {
+      {"property", "value"}};
+  connector::tpch::TpchConnectorFactory factory;
+  auto connector = factory.newConnector(
+      kTpchConnectorId,
+      std::make_shared<config::ConfigBase>(std::move(properties)));
+
+  const auto& config = connector->connectorConfig();
+  auto val = config->get<std::string>("property");
+  EXPECT_TRUE(val.has_value());
+  EXPECT_EQ(val.value(), "value");
 }
 
 } // namespace

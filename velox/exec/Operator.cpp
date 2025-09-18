@@ -68,9 +68,12 @@ OperatorCtx::createConnectorQueryCtx(
       driverCtx_->driverId,
       driverCtx_->queryConfig().sessionTimezone(),
       driverCtx_->queryConfig().adjustTimestampToTimezone(),
-      task->getCancellationToken());
+      task->getCancellationToken(),
+      task->queryCtx()->fsTokenProvider());
   connectorQueryCtx->setSelectiveNimbleReaderEnabled(
       driverCtx_->queryConfig().selectiveNimbleReaderEnabled());
+  connectorQueryCtx->setRowSizeTrackingEnabled(
+      driverCtx_->queryConfig().rowSizeTrackingEnabled());
   return connectorQueryCtx;
 }
 
@@ -88,6 +91,9 @@ Operator::Operator(
           operatorType)),
       outputType_(std::move(outputType)),
       spillConfig_(std::move(spillConfig)),
+      dryRun_(
+          operatorCtx_->driverCtx()->traceConfig().has_value() &&
+          operatorCtx_->driverCtx()->traceConfig()->dryRun),
       stats_(OperatorStats{
           operatorId,
           driverCtx->pipelineId,
@@ -111,7 +117,7 @@ void Operator::maybeSetTracer() {
   }
 
   const auto nodeId = planNodeId();
-  if (traceConfig->queryNodes.count(nodeId) == 0) {
+  if (traceConfig->queryNodeId.empty() || traceConfig->queryNodeId != nodeId) {
     return;
   }
 
@@ -141,7 +147,7 @@ void Operator::maybeSetTracer() {
       opTraceDirPath,
       operatorCtx_->driverCtx()->queryConfig().opTraceDirectoryCreateConfig());
 
-  if (operatorType() == "TableScan") {
+  if (dynamic_cast<SourceOperator*>(this) != nullptr) {
     setupSplitTracer(opTraceDirPath);
   } else {
     setupInputTracer(opTraceDirPath);
@@ -364,13 +370,18 @@ vector_size_t Operator::outputBatchRows(
   return std::max<vector_size_t>(batchSize, 1);
 }
 
+void Operator::loadLazyReclaimable(RowVectorPtr& vector) {
+  ReclaimableSectionGuard guard(this);
+  vector->loadedVector();
+}
+
 void Operator::recordBlockingTime(uint64_t start, BlockingReason reason) {
   uint64_t now =
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::high_resolution_clock::now().time_since_epoch())
           .count();
   const auto wallNanos = (now - start) * 1000;
-  const auto blockReason = blockingReasonToString(reason).substr(1);
+  const auto blockReason = BlockingReasonName::toName(reason).substr(1);
 
   auto lockedStats = stats_.wlock();
   lockedStats->blockedWallNanos += wallNanos;
@@ -382,7 +393,7 @@ void Operator::recordBlockingTime(uint64_t start, BlockingReason reason) {
 }
 
 void Operator::recordSpillStats() {
-  const auto lockedSpillStats = spillStats_.wlock();
+  const auto lockedSpillStats = spillStats_->wlock();
   auto lockedStats = stats_.wlock();
   lockedStats->spilledInputBytes += lockedSpillStats->spilledInputBytes;
   lockedStats->spilledBytes += lockedSpillStats->spilledBytes;
@@ -584,6 +595,14 @@ void OperatorStats::add(const OperatorStats& other) {
     }
   }
 
+  for (const auto& [name, exprStats] : other.expressionStats) {
+    if (UNLIKELY(expressionStats.count(name) == 0)) {
+      expressionStats.insert(std::make_pair(name, exprStats));
+    } else {
+      expressionStats.at(name).add(exprStats);
+    }
+  }
+
   numDrivers += other.numDrivers;
   spilledInputBytes += other.spilledInputBytes;
   spilledBytes += other.spilledBytes;
@@ -620,6 +639,7 @@ void OperatorStats::clear() {
   memoryStats.clear();
 
   runtimeStats.clear();
+  expressionStats.clear();
 
   numDrivers = 0;
   spilledInputBytes = 0;
@@ -629,6 +649,25 @@ void OperatorStats::clear() {
   spilledFiles = 0;
 
   dynamicFilterStats.clear();
+}
+
+bool Operator::isDraining() const {
+  return operatorCtx_->driver() != nullptr &&
+      operatorCtx_->driver()->isDraining(operatorId());
+}
+
+bool Operator::hasDrained() const {
+  return operatorCtx_->driver()->hasDrained(operatorId());
+}
+
+void Operator::finishDrain() {
+  VELOX_CHECK(isDraining());
+  operatorCtx_->driver()->finishDrain(operatorId());
+  VELOX_CHECK(!isDraining());
+}
+
+bool Operator::shouldDropOutput() const {
+  return operatorCtx_->driver()->shouldDropOutput(operatorId());
 }
 
 std::unique_ptr<memory::MemoryReclaimer> Operator::MemoryReclaimer::create(

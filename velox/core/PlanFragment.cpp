@@ -28,6 +28,12 @@ bool PlanFragment::canSpill(const QueryConfig& queryConfig) const {
              }) != nullptr;
 }
 
+const PlanNode* PlanFragment::firstNodeNotSupportingBarrier() const {
+  return PlanNode::findFirstNode(
+      planNode.get(),
+      [&](const core::PlanNode* node) { return !node->supportsBarrier(); });
+}
+
 std::string executionStrategyToString(ExecutionStrategy strategy) {
   switch (strategy) {
     case ExecutionStrategy::kGrouped:

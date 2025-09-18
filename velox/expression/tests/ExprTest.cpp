@@ -22,22 +22,22 @@
 #include "glog/logging.h"
 #include "gtest/gtest.h"
 
-#include "velox/expression/Expr.h"
-
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/expression/CoalesceExpr.h"
 #include "velox/expression/ConjunctExpr.h"
 #include "velox/expression/ConstantExpr.h"
+#include "velox/expression/Expr.h"
 #include "velox/expression/SwitchExpr.h"
 #include "velox/functions/Udf.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
-#include "velox/functions/prestosql/tests/utils/FunctionBaseTest.h"
 #include "velox/functions/prestosql/types/JsonType.h"
-#include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
 #include "velox/parse/TypeResolver.h"
 #include "velox/vector/SelectivityVector.h"
+#include "velox/vector/VariantToVector.h"
 #include "velox/vector/VectorSaver.h"
 #include "velox/vector/tests/TestingAlwaysThrowsFunction.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
@@ -50,12 +50,19 @@ namespace {
 class ExprTest : public testing::Test, public VectorTestBase {
  protected:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
     functions::prestosql::registerAllScalarFunctions();
     parse::registerTypeResolver();
+  }
+
+  void setQueryTimeZone(const std::string& timeZone) {
+    queryCtx_->testingOverrideConfigUnsafe({
+        {core::QueryConfig::kSessionTimezone, timeZone},
+        {core::QueryConfig::kAdjustTimestampToTimezone, "true"},
+    });
   }
 
   core::TypedExprPtr parseExpression(
@@ -512,14 +519,10 @@ TEST_P(ParameterizedExprTest, constantNull) {
   // Builds the following expression: "plus(c0, plus(c0, null))"
   auto expression = std::make_shared<core::CallTypedExpr>(
       INTEGER(),
-      std::vector<core::TypedExprPtr>{
-          inputExpr,
-          std::make_shared<core::CallTypedExpr>(
-              INTEGER(),
-              std::vector<core::TypedExprPtr>{inputExpr, nullConstant},
-              "plus"),
-      },
-      "plus");
+      "plus",
+      inputExpr,
+      std::make_shared<core::CallTypedExpr>(
+          INTEGER(), "plus", inputExpr, nullConstant));
 
   // Execute it and check it returns all null results.
   auto vector = makeNullableFlatVector<int32_t>({1, std::nullopt, 3});
@@ -544,7 +547,7 @@ TEST_P(ParameterizedExprTest, validateReturnType) {
 
   // Builds a "eq(c0, c0)" expression.
   auto expression = std::make_shared<core::CallTypedExpr>(
-      INTEGER(), std::vector<core::TypedExprPtr>{inputExpr, inputExpr}, "eq");
+      INTEGER(), "eq", inputExpr, inputExpr);
 
   // Execute it and check it returns all null results.
   auto vector = makeNullableFlatVector<int32_t>({1, 2, 3});
@@ -1406,9 +1409,10 @@ TEST_P(ParameterizedExprTest, selectiveLazyLoadingIf) {
 namespace {
 class StatefulVectorFunction : public exec::VectorFunction {
  public:
-  explicit StatefulVectorFunction(
+  StatefulVectorFunction(
       const std::string& /*name*/,
-      const std::vector<exec::VectorFunctionArg>& inputs)
+      const std::vector<exec::VectorFunctionArg>& inputs,
+      const core::QueryConfig& /* config */)
       : numInputs_(inputs.size()) {}
 
   void apply(
@@ -2568,21 +2572,119 @@ TEST_P(ParameterizedExprTest, stdExceptionContext) {
 
 /// Verify the output of ConstantExpr::toString().
 TEST_P(ParameterizedExprTest, constantToString) {
-  auto arrayVector =
-      makeNullableArrayVector<float>({{1.2, 3.4, std::nullopt, 5.6}});
+  auto arrayVector = makeArrayVectorFromJson<int32_t>(
+      {"[1, 2, null, 4]", "[1, 2, 3, 4, 5, 6, 7, 8, 9]"});
 
   exec::ExprSet exprSet(
-      {std::make_shared<core::ConstantTypedExpr>(INTEGER(), 23),
-       std::make_shared<core::ConstantTypedExpr>(
-           DOUBLE(), variant::null(TypeKind::DOUBLE)),
-       makeConstantExpr(arrayVector, 0)},
+      {
+          std::make_shared<core::ConstantTypedExpr>(INTEGER(), 23),
+          std::make_shared<core::ConstantTypedExpr>(
+              DOUBLE(), variant::null(TypeKind::DOUBLE)),
+          makeConstantExpr(arrayVector, 0),
+          makeConstantExpr(arrayVector, 1),
+      },
       execCtx_.get());
 
-  ASSERT_EQ("23:INTEGER", exprSet.exprs()[0]->toString());
-  ASSERT_EQ("null:DOUBLE", exprSet.exprs()[1]->toString());
-  ASSERT_EQ(
-      "4 elements starting at 0 {1.2000000476837158, 3.4000000953674316, null, 5.599999904632568}:ARRAY<REAL>",
-      exprSet.exprs()[2]->toString());
+  const auto& exprs = exprSet.exprs();
+
+  EXPECT_EQ("23:INTEGER", exprs[0]->toString());
+  EXPECT_EQ("null:DOUBLE", exprs[1]->toString());
+  EXPECT_EQ("{1, 2, null, 4}:ARRAY<INTEGER>", exprs[2]->toString());
+  EXPECT_EQ("{1, 2, 3, 4, 5, ...4 more}:ARRAY<INTEGER>", exprs[3]->toString());
+}
+
+TEST_F(ExprTest, constantEqualsNullConsistency) {
+  // Constant expr created using variant
+  auto nullVariantToExpr =
+      std::make_shared<core::ConstantTypedExpr>(VARCHAR(), Variant{});
+  auto nonNullVariantToExpr =
+      std::make_shared<core::ConstantTypedExpr>(VARCHAR(), Variant{"test"});
+
+  // Constant expr created using vectors
+  auto nullBaseVectorToExpr = std::make_shared<core::ConstantTypedExpr>(
+      BaseVector::createNullConstant(VARCHAR(), 1, pool()));
+  auto nonNullBaseVectorToExpr = std::make_shared<core::ConstantTypedExpr>(
+      BaseVector::createConstant(VARCHAR(), Variant{"test"}, 1, pool()));
+
+  EXPECT_FALSE(nonNullVariantToExpr->equals(*nullBaseVectorToExpr));
+  EXPECT_FALSE(nullVariantToExpr->equals(*nonNullBaseVectorToExpr));
+  EXPECT_TRUE(nonNullVariantToExpr->equals(*nonNullBaseVectorToExpr));
+  EXPECT_TRUE(nullVariantToExpr->equals(*nullBaseVectorToExpr));
+}
+
+// Verify consistency of ConstantTypeExpr::toString/hash/equals APIs. The
+// outcome should not depend on whether expression was created using a Variant
+// of a Vector.
+TEST_F(ExprTest, constantToStringEqualsHashConsistency) {
+  auto testValue = [&](const TypePtr& type, const Variant& value) {
+    SCOPED_TRACE(fmt::format(
+        "Type: {}, Value: {}", type->toString(), value.toJson(type)));
+
+    auto a = std::make_shared<core::ConstantTypedExpr>(type, value);
+
+    auto b = std::make_shared<core::ConstantTypedExpr>(
+        variantToVector(type, value, pool()));
+
+    EXPECT_EQ(a->toString(), b->toString());
+
+    EXPECT_TRUE(a->equals(*b));
+    EXPECT_TRUE(b->equals(*a));
+
+    EXPECT_EQ(a->hash(), b->hash());
+
+    auto baseVector = BaseVector::create(type, 2, pool());
+    baseVector->setNull(0, true);
+    baseVector->copy(b->valueVector().get(), 1, 0, 1);
+
+    auto c = std::make_shared<core::ConstantTypedExpr>(
+        wrapInDictionary(makeIndices({1, 0}), baseVector));
+
+    EXPECT_EQ(a->toString(), c->toString());
+
+    EXPECT_TRUE(a->equals(*c));
+    EXPECT_TRUE(c->equals(*a));
+
+    EXPECT_EQ(a->hash(), c->hash());
+  };
+
+  testValue(TINYINT(), Variant::create<TypeKind::TINYINT>(1));
+  testValue(SMALLINT(), Variant::create<TypeKind::SMALLINT>(123));
+  testValue(INTEGER(), 12345);
+  testValue(BIGINT(), -12345678LL);
+
+  testValue(BOOLEAN(), true);
+  testValue(BOOLEAN(), false);
+
+  testValue(VARCHAR(), "test");
+  testValue(VARBINARY(), Variant::binary("test"));
+
+  testValue(ARRAY(INTEGER()), Variant::array({1, 2, 3, 4, 5, 6, 7}));
+  testValue(ARRAY(VARCHAR()), Variant::array({}));
+
+  testValue(
+      MAP(INTEGER(), INTEGER()), Variant::map({{1, 10}, {2, 20}, {3, 30}}));
+  testValue(MAP(INTEGER(), REAL()), Variant::map({}));
+
+  testValue(
+      ROW({BOOLEAN(), INTEGER(), VARCHAR(), ARRAY(INTEGER())}),
+      Variant::row({false, 123, "apples", Variant::array({1, 2, 3})}));
+
+  testValue(ROW({}), Variant::row({}));
+
+  auto opaqueType = OpaqueType::create<OpaqueState>();
+
+  OpaqueType::registerSerialization<OpaqueState>(
+      "test-serde",
+      [](const std::shared_ptr<OpaqueState>& value) {
+        return std::to_string(value->x);
+      },
+      [](const std::string& value) -> std::shared_ptr<OpaqueState> {
+        return std::make_shared<OpaqueState>(atoi(value.c_str()));
+      });
+
+  testValue(
+      opaqueType,
+      Variant::opaque(std::make_shared<OpaqueState>(123), opaqueType));
 }
 
 TEST_P(ParameterizedExprTest, fieldAccessToString) {
@@ -2607,12 +2709,14 @@ TEST_P(ParameterizedExprTest, fieldAccessToString) {
            "e")},
       execCtx_.get());
 
-  ASSERT_EQ("a", exprSet.exprs()[0]->toString());
-  ASSERT_EQ("a", exprSet.exprs()[0]->toString(/*recursive*/ false));
-  ASSERT_EQ("(b).c", exprSet.exprs()[1]->toString());
-  ASSERT_EQ("c", exprSet.exprs()[1]->toString(/*recursive*/ false));
-  ASSERT_EQ("((b).d).e", exprSet.exprs()[2]->toString());
-  ASSERT_EQ("e", exprSet.exprs()[2]->toString(/*recursive*/ false));
+  const auto& exprs = exprSet.exprs();
+
+  EXPECT_EQ("a", exprs[0]->toString());
+  EXPECT_EQ("a", exprs[0]->toString(/*recursive*/ false));
+  EXPECT_EQ("(b).c", exprs[1]->toString());
+  EXPECT_EQ("c", exprs[1]->toString(/*recursive*/ false));
+  EXPECT_EQ("((b).d).e", exprs[2]->toString());
+  EXPECT_EQ("e", exprs[2]->toString(/*recursive*/ false));
 }
 
 TEST_P(ParameterizedExprTest, constantToSql) {
@@ -2751,9 +2855,7 @@ TEST_P(ParameterizedExprTest, constantToSql) {
 
 TEST_P(ParameterizedExprTest, constantJsonToSql) {
   core::TypedExprPtr expression = std::make_shared<const core::CallTypedExpr>(
-      VARCHAR(),
-      std::vector<core::TypedExprPtr>{makeConstantExpr("[1, 2, 3]", JSON())},
-      "json_format");
+      VARCHAR(), "json_format", makeConstantExpr("[1, 2, 3]", JSON()));
 
   auto exprSet = compileNoConstantFolding(expression);
 
@@ -2852,6 +2954,9 @@ namespace {
 // A naive function that wraps the input in a dictionary vector.
 class WrapInDictionaryFunc : public exec::VectorFunction {
  public:
+  explicit WrapInDictionaryFunc(bool identityDictionary = true)
+      : identityDictionary_{identityDictionary} {}
+
   void apply(
       const SelectivityVector& rows,
       std::vector<VectorPtr>& args,
@@ -2861,7 +2966,11 @@ class WrapInDictionaryFunc : public exec::VectorFunction {
     BufferPtr indices =
         AlignedBuffer::allocate<vector_size_t>(rows.end(), context.pool());
     auto rawIndices = indices->asMutable<vector_size_t>();
-    rows.applyToSelected([&](int row) { rawIndices[row] = row; });
+    if (identityDictionary_) {
+      rows.applyToSelected([&](int row) { rawIndices[row] = row; });
+    } else {
+      rows.applyToSelected([&](int row) { rawIndices[row] = row / 2; });
+    }
 
     result =
         BaseVector::wrapInDictionary(nullptr, indices, rows.end(), args[0]);
@@ -2873,6 +2982,9 @@ class WrapInDictionaryFunc : public exec::VectorFunction {
                 .argumentType("bigint")
                 .build()};
   }
+
+ private:
+  bool identityDictionary_;
 };
 
 class LastRowNullFunc : public exec::VectorFunction {
@@ -2916,7 +3028,7 @@ TEST_P(ParameterizedExprTest, dictionaryResizedInAddNulls) {
   // This test verifies an edge case where applyFunctionWithPeeling may produce
   // a result vector which is dictionary encoded and has fewer values than
   // are rows.
-  // The expression bellow make sure that we call a resize on a dictonary
+  // The expression below make sure that we call a resize on a dictonary
   // vector during addNulls after function `dict_wrap` is evaluated.
 
   // Making the last rows NULL, so we call addNulls in eval.
@@ -3960,7 +4072,7 @@ TEST_P(ParameterizedExprTest, cseOverLazyDictionary) {
           pool(),
           BIGINT(),
           5,
-          std::make_unique<SimpleVectorLoader>([=](RowSet /*rows*/) {
+          std::make_unique<SimpleVectorLoader>([=, this](RowSet /*rows*/) {
             return wrapInDictionary(
                 makeIndicesInReverse(5),
                 makeFlatVector<int64_t>({8, 9, 10, 11, 12}));
@@ -4587,7 +4699,8 @@ TEST_P(ParameterizedExprTest, switchRowInputTypesAreTheSame) {
       EXPECT_TRUE(false) << "Expected an error";
     } catch (VeloxException& e) {
       EXPECT_EQ(
-          "Switch expression type different than then clause. Expected ROW<f1:BOOLEAN> but got Actual ROW<c0:BOOLEAN>.",
+          "Switch expression type different than then clause. "
+          "Expected ROW<f1:BOOLEAN>, but got ROW<c0:BOOLEAN>.",
           e.message());
     }
   }
@@ -4613,7 +4726,8 @@ TEST_P(ParameterizedExprTest, coalesceRowInputTypesAreTheSame) {
       EXPECT_TRUE(false) << "Expected an error";
     } catch (VeloxException& e) {
       EXPECT_EQ(
-          "Coalesce expression type different than its inputs. Expected ROW<f1:BOOLEAN> but got Actual ROW<c0:BOOLEAN>.",
+          "Coalesce expression type different than its inputs. "
+          "Expected ROW<f1:BOOLEAN>, but got ROW<c0:BOOLEAN>.",
           e.message());
     }
   }
@@ -4624,14 +4738,12 @@ TEST_P(ParameterizedExprTest, coalesceRowInputTypesAreTheSame) {
     // different.
     auto call1 = std::make_shared<const core::CallTypedExpr>(
         ROW({"row_field0"}, {BIGINT()}),
-        std::vector<core::TypedExprPtr>{
-            std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), "c0")},
-        "foo");
+        "foo",
+        std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), "c0"));
     auto call2 = std::make_shared<const core::CallTypedExpr>(
         ROW({""}, {BIGINT()}),
-        std::vector<core::TypedExprPtr>{
-            std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), "c0")},
-        "foo");
+        "foo",
+        std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), "c0"));
     ASSERT_FALSE(*call1 == *call2);
 
     auto fieldAccess1 = std::make_shared<const core::FieldAccessTypedExpr>(
@@ -4672,11 +4784,10 @@ TEST_P(ParameterizedExprTest, coalesceRowInputTypesAreTheSame) {
                 BIGINT(), "c0")});
     core::TypedExprPtr coalesce = std::make_shared<const core::CallTypedExpr>(
         ROW({"row_field0"}, {BIGINT()}),
-        std::vector<core::TypedExprPtr>{
-            std::make_shared<const core::FieldAccessTypedExpr>(
-                ROW({"row_field0"}, {BIGINT()}), "c1"),
-            concat},
-        "coalesce");
+        "coalesce",
+        std::make_shared<const core::FieldAccessTypedExpr>(
+            ROW({"row_field0"}, {BIGINT()}), "c1"),
+        concat);
     core::TypedExprPtr dereference =
         std::make_shared<const core::FieldAccessTypedExpr>(
             BIGINT(), coalesce, "row_field0");
@@ -4687,16 +4798,12 @@ TEST_P(ParameterizedExprTest, coalesceRowInputTypesAreTheSame) {
                 BIGINT(), "c0")});
     ASSERT_FALSE(*concat == *concat2);
     core::TypedExprPtr cast = std::make_shared<const core::CallTypedExpr>(
-        ROW({"row_field0"}, {BIGINT()}),
-        std::vector<core::TypedExprPtr>{concat2},
-        "cast");
+        ROW({"row_field0"}, {BIGINT()}), "cast", concat2);
     core::TypedExprPtr dereference2 =
         std::make_shared<const core::FieldAccessTypedExpr>(
             BIGINT(), cast, "row_field0");
     core::TypedExprPtr plus = std::make_shared<const core::CallTypedExpr>(
-        BIGINT(),
-        std::vector<core::TypedExprPtr>{dereference2, dereference},
-        "plus");
+        BIGINT(), "plus", dereference2, dereference);
 
     ASSERT_NO_THROW(compileExpression(plus));
   }
@@ -4975,8 +5082,14 @@ TEST_F(ExprTest, disabledeferredLazyLoading) {
 
 TEST_F(ExprTest, evaluateConstantExpression) {
   auto eval = [&](const std::string& sql) {
-    auto expr = parseExpression(sql, ROW({}));
-    return exec::evaluateConstantExpression(expr, pool());
+    auto expr = parseExpression(sql, ROW({"a"}, {BIGINT()}));
+    return exec::tryEvaluateConstantExpression(expr, pool(), queryCtx_);
+  };
+
+  auto evalNoThrow = [&](const std::string& sql) {
+    auto expr = parseExpression(sql, ROW({"a"}, {BIGINT()}));
+    return exec::tryEvaluateConstantExpression(
+        expr, pool(), queryCtx_, true /* supressEvaluationFailures */);
   };
 
   assertEqualVectors(eval("1 + 2"), makeConstant<int64_t>(3, 1));
@@ -4984,7 +5097,156 @@ TEST_F(ExprTest, evaluateConstantExpression) {
   assertEqualVectors(
       eval("transform(array[1, 2, 3], x -> (x * 2))"),
       makeArrayVectorFromJson<int64_t>({"[2, 4, 6]"}));
+
+  assertEqualVectors(
+      eval("transform(array[1, 2, 3], x -> (x * (3 - 1)))"),
+      makeArrayVectorFromJson<int64_t>({"[2, 4, 6]"}));
+
+  assertEqualVectors(
+      eval("transform(array[1, 2, 3], x -> 2)"),
+      makeArrayVectorFromJson<int64_t>({"[2, 2, 2]"}));
+
+  assertEqualVectors(
+      eval(
+          "try(coalesce(array_min_by(array[1, 2, 3], x -> x / 0), 0::INTEGER))"),
+      makeNullConstant(TypeKind::INTEGER, 1));
+
+  // Verify that constant folding takes into account query config.
+  setQueryTimeZone("America/Los_Angeles");
+  assertEqualVectors(
+      eval("date_format(from_unixtime(0.0), '%Y-%m-%d %H:%i')"),
+      makeConstant<std::string>("1969-12-31 16:00", 1));
+
+  setQueryTimeZone("America/New_York");
+  assertEqualVectors(
+      eval("date_format(from_unixtime(0.0), '%Y-%m-%d %H:%i')"),
+      makeConstant<std::string>("1969-12-31 19:00", 1));
+
+  EXPECT_TRUE(eval("a + 1") == nullptr);
+
+  EXPECT_TRUE(eval("rand() + 1.0") == nullptr);
+
+  EXPECT_TRUE(eval("transform(array[1, 2, 3], x -> (x * 2) + a)") == nullptr);
+
+  EXPECT_TRUE(eval("transform(array[1, 2, 3], x -> x + rand())") == nullptr);
+
+  VELOX_ASSERT_THROW(eval("5 / 0"), "division by zero");
+  EXPECT_TRUE(evalNoThrow("5 / 0") == nullptr);
+
+  VELOX_ASSERT_THROW(eval("1 + 5 / 0"), "division by zero");
+  EXPECT_TRUE(evalNoThrow("1 + 5 / 0") == nullptr);
+
+  VELOX_ASSERT_THROW(
+      eval("transform(array[1, 2, 3], x -> x / 0)"), "division by zero");
+  EXPECT_TRUE(evalNoThrow("transform(array[1, 2, 3], x -> x / 0)") == nullptr);
 }
 
+TEST_F(ExprTest, isDeterministic) {
+  auto isDeterministic = [&](const std::string& sql) {
+    SCOPED_TRACE(sql);
+    auto exprSet = compileExpression(sql, ROW({"c0"}, {ARRAY(DOUBLE())}));
+    return exprSet->expr(0)->isDeterministic();
+  };
+
+  EXPECT_TRUE(isDeterministic("cardinality(c0) + 5"));
+  EXPECT_TRUE(isDeterministic("transform(c0, x -> x + 5.0)"));
+  EXPECT_TRUE(isDeterministic("filter(c0, x -> (x < 5.0))"));
+
+  EXPECT_FALSE(isDeterministic("rand()"));
+  EXPECT_FALSE(isDeterministic("c0[1] + rand()"));
+  EXPECT_FALSE(isDeterministic("transform(c0, x -> x + rand())"));
+  EXPECT_FALSE(isDeterministic("filter(c0, x -> (x < rand()))"));
+}
+
+TEST_F(ExprTest, peelingOnDeterministicFunctionInNonDeterministicExpr) {
+  exec::registerVectorFunction(
+      "dict_wrap",
+      WrapInDictionaryFunc::signatures(),
+      std::make_unique<WrapInDictionaryFunc>(false),
+      exec::VectorFunctionMetadataBuilder().deterministic(false).build());
+
+  auto input = makeRowVector({makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6})});
+  auto [result, stats] = evaluateMultipleWithStats(
+      {"dict_wrap(c0) + 1"}, input, {}, execCtx_.get());
+
+  // dict_wrap() wraps c0 with indices i -> i / 2, so we expect half of the rows
+  // being processed by "plus" after peeling on dict_wrap's result.
+  ASSERT_TRUE(stats.find("plus") != stats.end());
+  ASSERT_EQ(stats["plus"].numProcessedRows, input->size() / 2);
+}
+
+TEST_F(ExprTest, lambdaConstantFolded) {
+  const auto makeTypedExpr =
+      [this](const std::string& text, const RowTypePtr& rowType) {
+        auto untyped = parse::parseExpr(text, {});
+        return core::Expressions::inferTypes(untyped, rowType, pool());
+      };
+
+  // Test the resource clear of lambda constant folding which relies on an
+  // uninitialized ExprSet for eval.
+  std::string expression =
+      "reduce(regexp_split('a,b,c,d,e,f,g,h',','), array[array['']], (acc, x) -> array[array[x]], (id) -> id)";
+  auto typedExpr = makeTypedExpr(expression, ROW({"c0"}, {INTEGER()}));
+  exec::ExprSet exprSet({typedExpr}, execCtx_.get());
+  exprSet.clear();
+}
+
+TEST_F(ExprTest, simpleExpressionEvaluator) {
+  exec::SimpleExpressionEvaluator evaluator{queryCtx_.get(), pool_.get()};
+  const auto rowType = ROW({"c0", "c1"}, {ARRAY(INTEGER()), INTEGER()});
+  const auto array = makeArrayVectorFromJson<int32_t>(
+      {"[1, 2, 3, 4]", "null", "[5, 6]", "[]", "[null]", "[7, 8, 9]"});
+  const auto data = makeFlatVector<int32_t>({1, 2, 3, 4, 5, 6});
+  const auto input = makeRowVector({array, data});
+
+  const auto parseExpr = [&](const std::string& sql) {
+    return parseExpression(sql, rowType);
+  };
+  const auto arrayExpr = parseExpr("element_at(c0, 1)");
+  const auto expectedArrayExprResult = makeNullableFlatVector<int32_t>(
+      {1, std::nullopt, 5, std::nullopt, std::nullopt, 7});
+  const auto scalarExpr = parseExpr("cast(c1 + 1 as integer)");
+  const auto expectedScalarExprResult =
+      makeFlatVector<int32_t>({2, 3, 4, 5, 6, 7});
+
+  auto validateSingleExpr = [&](const core::TypedExprPtr typedExpr,
+                                const RowVectorPtr& input,
+                                const VectorPtr& expected) {
+    auto exprSet = evaluator.compile(typedExpr);
+    SelectivityVector rows;
+    rows.resize(input->size());
+    VectorPtr result;
+    evaluator.evaluate(exprSet.get(), rows, *input, result);
+    assertEqualVectors(expected, result);
+  };
+  validateSingleExpr(arrayExpr, input, expectedArrayExprResult);
+  validateSingleExpr(scalarExpr, input, expectedScalarExprResult);
+
+  auto validateMultiExprs =
+      [&](const std::vector<core::TypedExprPtr>& typedExprs,
+          const RowVectorPtr& input,
+          const std::vector<VectorPtr>& expectedResults) {
+        auto exprSet = evaluator.compile(typedExprs);
+        SelectivityVector rows;
+        rows.resize(input->size());
+        std::vector<VectorPtr> results;
+        evaluator.evaluate(exprSet.get(), rows, *input, results);
+        ASSERT_EQ(results.size(), expectedResults.size());
+        for (int i = 0; i < expectedResults.size(); ++i) {
+          assertEqualVectors(expectedResults[i], results[i]);
+        }
+      };
+  validateMultiExprs(
+      {arrayExpr, arrayExpr},
+      input,
+      {expectedArrayExprResult, expectedArrayExprResult});
+  validateMultiExprs({scalarExpr}, input, {expectedScalarExprResult});
+  validateMultiExprs(
+      {arrayExpr, scalarExpr, arrayExpr},
+      input,
+      {expectedArrayExprResult,
+       expectedScalarExprResult,
+       expectedArrayExprResult});
+}
 } // namespace
 } // namespace facebook::velox::test

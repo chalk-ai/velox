@@ -285,7 +285,7 @@ class HashStringAllocator : public StreamArena {
   /// ranges will not overwrite the next pointer.
   ///
   /// May allocate less than 'bytes'.
-  void newRange(int32_t bytes, ByteRange* lastRange, ByteRange* range) override;
+  void newRange(int64_t bytes, ByteRange* lastRange, ByteRange* range) override;
 
   /// Allocates a new range of at least 'bytes' size.
   void newContiguousRange(int32_t bytes, ByteRange* range);
@@ -353,7 +353,7 @@ class HashStringAllocator : public StreamArena {
   static constexpr uint32_t kHeaderSize = sizeof(Header);
 
   void newRange(
-      int32_t bytes,
+      int64_t bytes,
       ByteRange* lastRange,
       ByteRange* range,
       bool contiguous);
@@ -367,7 +367,7 @@ class HashStringAllocator : public StreamArena {
 
   // Allocates a block of specified size. If exactSize is false, the block may
   // be smaller or larger. Checks free list before allocating new memory.
-  Header* allocate(int32_t size, bool exactSize);
+  Header* allocate(int64_t size, bool exactSize);
 
   // Allocates memory from free list. Returns nullptr if no memory in free list,
   // otherwise returns a header of a free block of some size. if 'mustHaveSize'
@@ -591,7 +591,7 @@ class HashStringAllocator::InputStream : public ByteInputStream {
     }
   }
 
-  std::string_view nextView(int32_t size) final {
+  std::string_view nextView(int64_t size) final {
     if (atEnd()) {
       return {};
     }
@@ -685,11 +685,15 @@ struct StlAllocator {
 
   explicit StlAllocator(HashStringAllocator* allocator)
       : allocator_{allocator} {
-    VELOX_CHECK(allocator);
+    VELOX_CHECK_NOT_NULL(allocator);
   }
 
+  // We can use "explicit" here based on the C++ standard. But
+  // libstdc++ 12 or older doesn't work for std::vector<bool> and
+  // "explicit". We can avoid it by not using "explicit" here.
+  // See also: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=115854
   template <class U>
-  explicit StlAllocator(const StlAllocator<U>& allocator)
+  StlAllocator(const StlAllocator<U>& allocator)
       : allocator_{allocator.allocator()} {
     VELOX_CHECK_NOT_NULL(allocator_);
   }
@@ -713,16 +717,10 @@ struct StlAllocator {
     return allocator_;
   }
 
-  friend bool operator==(const StlAllocator& lhs, const StlAllocator& rhs) {
-    return lhs.allocator_ == rhs.allocator_;
-  }
-
-  friend bool operator!=(const StlAllocator& lhs, const StlAllocator& rhs) {
-    return !(lhs == rhs);
-  }
+  bool operator==(const StlAllocator& other) const = default;
 
  private:
-  HashStringAllocator* allocator_;
+  HashStringAllocator* const allocator_;
 };
 
 /// An allocator backed by HashStringAllocator that guaratees a configurable
@@ -803,12 +801,6 @@ struct AlignedStlAllocator {
     return lhs.allocator_ == rhs.allocator_;
   }
 
-  friend bool operator!=(
-      const AlignedStlAllocator& lhs,
-      const AlignedStlAllocator& rhs) {
-    return !(lhs == rhs);
-  }
-
  private:
   // Pad the memory user requested by some padding to facilitate memory
   // alignment later. Memory layout:
@@ -833,7 +825,7 @@ struct AlignedStlAllocator {
     return reinterpret_cast<T*>(alignedPtr);
   }
 
-  HashStringAllocator* allocator_;
+  HashStringAllocator* const allocator_;
   const bool poolAligned_;
 };
 

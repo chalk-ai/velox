@@ -358,6 +358,7 @@ void CacheShard::removeEntryLocked(AsyncDataCacheEntry* entry) {
   const auto numPages = entry->data().numPages();
   if (numPages > 0) {
     cache_->incrementCachedPages(-numPages);
+    ClockTimer t(allocClocks_);
     cache_->allocator()->freeNonContiguous(entry->data());
   }
   entry->tinyData_.clear();
@@ -661,7 +662,7 @@ AsyncDataCache::AsyncDataCache(
 AsyncDataCache::AsyncDataCache(
     memory::MemoryAllocator* allocator,
     std::unique_ptr<SsdCache> ssdCache)
-    : AsyncDataCache({}, allocator, std::move(ssdCache)){};
+    : AsyncDataCache({}, allocator, std::move(ssdCache)) {}
 
 AsyncDataCache::AsyncDataCache(
     const Options& options,
@@ -883,7 +884,7 @@ bool AsyncDataCache::canTryAllocate(
     return true;
   }
   return numPages - acquired.numPages() <=
-      (memory::AllocationTraits::numPages(allocator_->capacity())) -
+      memory::AllocationTraits::numPages(allocator_->capacity()) -
       allocator_->numAllocated();
 }
 

@@ -367,6 +367,7 @@ class AlignedBuffer : public Buffer {
     }
 
     void* memory = pool->allocate(preferredSize);
+    VELOX_CHECK_NOT_NULL(memory);
     auto* buffer = new (memory) ImplClass<T>(pool, preferredSize - kPaddedSize);
     // set size explicitly instead of setSize because `fillNewMemory` already
     // called the constructors
@@ -374,6 +375,18 @@ class AlignedBuffer : public Buffer {
     BufferPtr result(buffer);
     buffer->template fillNewMemory<T>(0, size, initValue);
     return result;
+  }
+
+  /// A verbose version of the allocate() with the exact size.
+  /// May allocate slightly more memory than strictly necessary. Guarantees that
+  /// simd::kPadding bytes past capacity() are addressable and asserts that
+  /// these do not get overrun.
+  template <typename T>
+  static BufferPtr allocateExact(
+      size_t numElements,
+      velox::memory::MemoryPool* pool,
+      const std::optional<T>& initValue = std::nullopt) {
+    return allocate<T>(numElements, pool, initValue, true);
   }
 
   // Changes the capacity of '*buffer'. The buffer may grow/shrink in
@@ -650,10 +663,12 @@ class NonPODAlignedBuffer : public Buffer {
     int oldNum = oldBytes / sizeof(T);
     int newNum = newBytes / sizeof(T);
     auto data = asMutable<T>();
-    for (int i = oldNum; i < newNum; ++i) {
-      if (initValue) {
+    if (initValue) {
+      for (int i = oldNum; i < newNum; ++i) {
         new (data + i) T(*initValue);
-      } else {
+      }
+    } else {
+      for (int i = oldNum; i < newNum; ++i) {
         new (data + i) T();
       }
     }
@@ -681,6 +696,13 @@ class BufferView : public Buffer {
     BufferView<Releaser>* view = new BufferView(data, size, releaser, podType);
     BufferPtr result(view);
     return result;
+  }
+
+  // Helper method to create a buffer view referencing another existing Buffer.
+  static BufferPtr
+  create(BufferPtr innerBuffer, Releaser releaser, bool podType = true) {
+    return create(
+        innerBuffer->as<uint8_t>(), innerBuffer->size(), releaser, podType);
   }
 
   ~BufferView() override {

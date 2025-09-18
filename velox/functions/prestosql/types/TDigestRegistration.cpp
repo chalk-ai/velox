@@ -15,13 +15,13 @@
  */
 
 #include "velox/functions/prestosql/types/TDigestRegistration.h"
-
+#include "velox/common/fuzzer/ConstrainedGenerators.h"
 #include "velox/functions/prestosql/types/TDigestType.h"
 #include "velox/type/Type.h"
 
 namespace facebook::velox {
 namespace {
-class TDigestTypeFactories : public CustomTypeFactories {
+class TDigestTypeFactory : public CustomTypeFactory {
  public:
   TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
     VELOX_CHECK_EQ(parameters.size(), 1);
@@ -35,13 +35,15 @@ class TDigestTypeFactories : public CustomTypeFactories {
   }
 
   AbstractInputGeneratorPtr getInputGenerator(
-      const InputGeneratorConfig& /*config*/) const override {
-    return nullptr;
+      const InputGeneratorConfig& config) const override {
+    fuzzer::FuzzerGenerator rng(config.seed_);
+    return std::make_shared<fuzzer::TDigestInputGenerator>(
+        config.seed_, TDIGEST(DOUBLE()), config.nullRatio_);
   }
 };
 } // namespace
 
 void registerTDigestType() {
-  registerCustomType("tdigest", std::make_unique<const TDigestTypeFactories>());
+  registerCustomType("tdigest", std::make_unique<const TDigestTypeFactory>());
 }
 } // namespace facebook::velox

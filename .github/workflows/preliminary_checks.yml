@@ -29,52 +29,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check-matrix:
-    name: ${{ matrix.config.name }}
+  pre-commit:
     runs-on: ubuntu-latest
-    container: ghcr.io/facebookincubator/velox-dev:check
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - { name: "License Header",
-              command: "header-fix",
-              message: "Found missing License Header(s)",
-            }
-          - { name: "Code Format",
-              command: "format-fix",
-              message: "Found format issues"
-            }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
-          fetch-depth: 0
-
-      - name: Fix git permissions
-        # Usually actions/checkout does this but as we run in a container
-        # it doesn't work
-        run: git config --global --add safe.directory ${GITHUB_WORKSPACE}
-
-      - name: Check ${{ matrix.config.name }}
-        run: |
-          make ${{ matrix.config.command }}
-
-          if ! git diff --quiet; then
-            diff=`git --no-pager diff`
-            echo "${{ matrix.command.message }} in the following files:"
-            git --no-pager diff --name-only
-            echo "Check the Job summary for a copy-pasteable patch."
-
-            echo "> [!IMPORTANT]" >> $GITHUB_STEP_SUMMARY
-            echo "${{ matrix.config.message }}" >> $GITHUB_STEP_SUMMARY
-            echo "> Please apply fix using:"  >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`sh" >> $GITHUB_STEP_SUMMARY
-            echo "patch -p1 <<EOF" >> $GITHUB_STEP_SUMMARY
-            echo "$diff" >> $GITHUB_STEP_SUMMARY
-            echo "EOF" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   title-check:
     name: PR Title Format
@@ -82,7 +44,7 @@ jobs:
     steps:
       - shell: python
         env:
-          title: "${{ github.event.pull_request.title }}"
+          title: '${{ github.event.pull_request.title }}'
         run: |
           import re
           import os

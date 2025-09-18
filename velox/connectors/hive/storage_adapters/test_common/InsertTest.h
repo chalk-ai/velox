@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "velox/common/memory/Memory.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/TableWriter.h"
@@ -29,7 +30,26 @@
 namespace facebook::velox::test {
 
 class InsertTest : public velox::test::VectorTestBase {
- public:
+ protected:
+  void SetUp(
+      std::shared_ptr<const config::ConfigBase> hiveConfig,
+      folly::Executor* ioExecutor) {
+    connector::hive::HiveConnectorFactory factory;
+    auto hiveConnector = factory.newConnector(
+        exec::test::kHiveConnectorId, hiveConfig, ioExecutor);
+    connector::registerConnector(hiveConnector);
+
+    parquet::registerParquetReaderFactory();
+    parquet::registerParquetWriterFactory();
+  }
+
+  void TearDown() {
+    parquet::unregisterParquetReaderFactory();
+    parquet::unregisterParquetWriterFactory();
+
+    connector::unregisterConnector(exec::test::kHiveConnectorId);
+  }
+
   void runInsertTest(
       std::string_view outputDirectory,
       int numRows,

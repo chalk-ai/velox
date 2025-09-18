@@ -26,9 +26,8 @@ namespace facebook::velox::connector::hive::iceberg {
 
 IcebergSplitReader::IcebergSplitReader(
     const std::shared_ptr<const hive::HiveConnectorSplit>& hiveSplit,
-    const std::shared_ptr<const HiveTableHandle>& hiveTableHandle,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-        partitionKeys,
+    const HiveTableHandlePtr& hiveTableHandle,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
     const ConnectorQueryCtx* connectorQueryCtx,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const RowTypePtr& readerOutputType,
@@ -67,7 +66,7 @@ void IcebergSplitReader::prepareSplit(
     return;
   }
 
-  createRowReader(std::move(metadataFilter), std::move(rowType));
+  createRowReader(std::move(metadataFilter), std::move(rowType), std::nullopt);
 
   std::shared_ptr<const HiveIcebergSplit> icebergSplit =
       std::dynamic_pointer_cast<const HiveIcebergSplit>(hiveSplit_);
@@ -85,7 +84,7 @@ void IcebergSplitReader::prepareSplit(
                 hiveSplit_->filePath,
                 fileHandleFactory_,
                 connectorQueryCtx_,
-                executor_,
+                ioExecutor_,
                 hiveConfig_,
                 ioStats_,
                 fsStats_,
@@ -110,7 +109,7 @@ uint64_t IcebergSplitReader::next(uint64_t size, VectorPtr& output) {
   }
 
   const auto actualSize = baseRowReader_->nextReadSize(size);
-
+  baseReadOffset_ = baseRowReader_->nextRowNumber() - splitOffset_;
   if (actualSize == dwio::common::RowReader::kAtEnd) {
     return 0;
   }
@@ -137,7 +136,6 @@ uint64_t IcebergSplitReader::next(uint64_t size, VectorPtr& output) {
       : nullptr;
 
   auto rowsScanned = baseRowReader_->next(actualSize, output, &mutation);
-  baseReadOffset_ += rowsScanned;
 
   return rowsScanned;
 }

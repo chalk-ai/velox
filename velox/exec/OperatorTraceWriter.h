@@ -36,7 +36,7 @@ class OperatorTraceInputWriter {
  public:
   /// 'traceOp' is the operator to trace. 'traceDir' specifies the trace
   /// directory for the operator.
-  explicit OperatorTraceInputWriter(
+  OperatorTraceInputWriter(
       Operator* traceOp,
       std::string traceDir,
       memory::MemoryPool* pool,
@@ -59,7 +59,7 @@ class OperatorTraceInputWriter {
       true,
       common::CompressionKind::CompressionKind_ZSTD,
       0.8,
-      /*nullsFirst=*/true};
+      /*_nullsFirst=*/true};
   const std::shared_ptr<filesystems::FileSystem> fs_;
   memory::MemoryPool* const pool_;
   VectorSerde* const serde_;

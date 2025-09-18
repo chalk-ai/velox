@@ -15,6 +15,7 @@
  */
 
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
 #include "velox/functions/sparksql/tests/SparkFunctionBaseTest.h"
 
 namespace facebook::velox::functions::sparksql::test {
@@ -35,7 +36,7 @@ class MakeDecimalTest : public SparkFunctionBaseTest {
         outputType, std::move(inputs), "make_decimal");
     if (tryMakeDecimal) {
       return std::make_shared<core::CallTypedExpr>(
-          outputType, std::vector<core::TypedExprPtr>{makeDecimal}, "try");
+          outputType, "try", makeDecimal);
     } else {
       return makeDecimal;
     }

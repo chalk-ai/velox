@@ -21,6 +21,7 @@
 #include "folly/dynamic.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/OperatorTraceReader.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/TraceUtil.h"
@@ -58,11 +59,9 @@ class PartitionedOutputReplayerTest
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
+    velox::exec::trace::registerDummySourceSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
   }
@@ -110,7 +109,7 @@ class PartitionedOutputReplayerTest
              {core::QueryConfig::kQueryTraceMaxBytes,
               std::to_string(100UL << 30)},
              {core::QueryConfig::kQueryTraceTaskRegExp, ".*"},
-             {core::QueryConfig::kQueryTraceNodeIds, capturedPlanNodeId},
+             {core::QueryConfig::kQueryTraceNodeId, capturedPlanNodeId},
              {core::QueryConfig::kMaxPartitionedOutputBufferSize,
               std::to_string(8UL << 20)},
              {core::QueryConfig::kMaxOutputBufferSize,

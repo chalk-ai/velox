@@ -20,6 +20,7 @@ add_executable(
   CentralMomentsAggregationTest.cpp
   CollectListAggregateTest.cpp
   CollectSetAggregateTest.cpp
+  CovarianceAggregatesTest.cpp
   FirstAggregateTest.cpp
   LastAggregateTest.cpp
   Main.cpp
@@ -27,10 +28,11 @@ add_executable(
   MinMaxByAggregationTest.cpp
   ModeAggregateTest.cpp
   RegrReplacementAggregationTest.cpp
-  SumAggregationTest.cpp)
+  SumAggregationTest.cpp
+  VarianceAggregationTest.cpp
+)
 
-add_test(velox_functions_spark_aggregates_test
-         velox_functions_spark_aggregates_test)
+add_test(velox_functions_spark_aggregates_test velox_functions_spark_aggregates_test)
 
 target_link_libraries(
   velox_functions_spark_aggregates_test
@@ -43,14 +45,5 @@ target_link_libraries(
   velox_vector_fuzzer
   gflags::gflags
   GTest::gtest
-  GTest::gtest_main)
-
-add_executable(velox_spark_aggregate_function_registry_test
-               AggregateRegisterTest.cpp)
-
-add_test(velox_spark_aggregate_function_registry_test
-         velox_spark_aggregate_function_registry_test)
-
-target_link_libraries(
-  velox_spark_aggregate_function_registry_test velox_functions_spark_aggregates
-  GTest::gtest GTest::gtest_main)
+  GTest::gtest_main
+)

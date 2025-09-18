@@ -112,6 +112,12 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
     /// memory pools whose name matches the specified regular expression. Empty
     /// string means no match for all.
     std::string debugPoolNameRegex;
+
+    /// Warning threshold in bytes for debug memory pools. When set to a
+    /// non-zero value, a warning will be logged once per memory pool when
+    /// allocations cause the pool to exceed this threshold. A value of
+    /// 0 means no warning threshold is enforced.
+    uint64_t debugPoolWarnThresholdBytes{0};
   };
 
   struct Options {
@@ -684,7 +690,7 @@ class MemoryPoolImpl final : public MemoryPool {
   ///
   /// Exceeded memory cap of 5.00MB when requesting 2.00MB
   /// default_root_1 usage 5.00MB peak 5.00MB
-  ///     task.test_cursor 1 usage 5.00MB peak 5.00MB
+  ///     task.test_cursor_1 usage 5.00MB peak 5.00MB
   ///         node.N/A usage 0B peak 0B
   ///             op.N/A.0.0.CallbackSink usage 0B peak 0B
   ///         node.2 usage 4.00MB peak 4.00MB
@@ -763,7 +769,7 @@ class MemoryPoolImpl final : public MemoryPool {
       std::unique_ptr<MemoryReclaimer> reclaimer) override;
 
   FOLLY_ALWAYS_INLINE int64_t capacityLocked() const {
-    return parent_ != nullptr ? toImpl(parent_)->capacity_ : capacity_;
+    return toImpl(root())->capacity_;
   }
 
   FOLLY_ALWAYS_INLINE int64_t availableReservationLocked() const {
@@ -997,6 +1003,10 @@ class MemoryPoolImpl final : public MemoryPool {
   // pool is enabled.
   void leakCheckDbg();
 
+  // Dump the recorded call sites of the memory allocations in
+  // 'debugAllocRecords_' to the string.
+  std::string dumpRecordsDbg();
+
   void handleAllocationFailure(const std::string& failureMessage);
 
   MemoryManager* const manager_;
@@ -1064,6 +1074,9 @@ class MemoryPoolImpl final : public MemoryPool {
 
   // Map from address to 'AllocationRecord'.
   std::unordered_map<uint64_t, AllocationRecord> debugAllocRecords_;
+
+  // Flag to track if warning threshold has been exceeded once for this pool.
+  bool debugWarnThresholdExceeded_{false};
 };
 
 /// An Allocator backed by a memory pool for STL containers.
@@ -1092,11 +1105,6 @@ class StlAllocator {
       return &this->pool == &rhs.pool;
     }
     return false;
-  }
-
-  template <typename T1>
-  bool operator!=(const StlAllocator<T1>& rhs) const {
-    return !(*this == rhs);
   }
 };
 } // namespace facebook::velox::memory

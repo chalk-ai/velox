@@ -70,14 +70,14 @@ class BaseVector {
   BaseVector(const BaseVector&) = delete;
   BaseVector& operator=(const BaseVector&) = delete;
 
-  static constexpr uint64_t kNullHash = 1;
+  static constexpr uint64_t kNullHash = bits::kNullHash;
 
   BaseVector(
       velox::memory::MemoryPool* pool,
       TypePtr type,
       VectorEncoding::Simple encoding,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       std::optional<vector_size_t> distinctValueCount = std::nullopt,
       std::optional<vector_size_t> nullCount = std::nullopt,
       std::optional<ByteCount> representedByteCount = std::nullopt,
@@ -107,7 +107,7 @@ class BaseVector {
 
   inline bool isIndexInRange(vector_size_t index) const {
     // This compiles better than index >= 0 && index < length_.
-    return static_cast<uint32_t>(index) < length_;
+    return static_cast<uint32_t>(index) < static_cast<uint32_t>(length_);
   }
 
   template <typename T>
@@ -335,9 +335,10 @@ class BaseVector {
   /// When CompareFlags is ASCENDING, returns < 0 if 'this' at 'index' is less
   /// than 'other' at 'otherIndex', 0 if equal and > 0 otherwise.
   /// When CompareFlags is DESCENDING, returns < 0 if 'this' at 'index' is
-  /// larger than 'other' at 'otherIndex', 0 if equal and < 0 otherwise. If
-  /// flags.nullHandlingMode is not NullAsValue, the function may returns
-  /// std::nullopt if null encountered.
+  /// larger than 'other' at 'otherIndex', 0 if equal and < 0 otherwise.
+  ///
+  /// If flags.nullHandlingMode is not NullAsValue, the function may return
+  /// std::nullopt if nulls are encountered.
   virtual std::optional<int32_t> compare(
       const BaseVector* other,
       vector_size_t index,
@@ -430,6 +431,12 @@ class BaseVector {
     vector_size_t sourceIndex;
     vector_size_t targetIndex;
     vector_size_t count;
+
+    /// Whether `next` can be merged with this range to form a new range.
+    bool mergeable(const CopyRange& next) const {
+      return next.sourceIndex == sourceIndex + count &&
+          next.targetIndex == targetIndex + count;
+    }
   };
 
   /// Sets null flags for each row in 'ranges' to 'isNull'.
@@ -537,7 +544,7 @@ class BaseVector {
 
   /// This makes a deep copy of the Vector allocating new child Vectors and
   /// Buffers recursively.  Unlike copy, this preserves encodings recursively.
-  virtual VectorPtr copyPreserveEncodings(
+  virtual VectorPtr testingCopyPreserveEncodings(
       velox::memory::MemoryPool* pool = nullptr) const = 0;
 
   /// Construct a zero-copy slice of the vector with the indicated offset and
@@ -591,7 +598,7 @@ class BaseVector {
 
   static VectorPtr createConstant(
       const TypePtr& type,
-      variant value,
+      Variant value,
       vector_size_t size,
       velox::memory::MemoryPool* pool);
 
@@ -621,14 +628,9 @@ class BaseVector {
   /// before making a new ConstantVector. The result vector is either a
   /// ConstantVector holding a scalar value or a ConstantVector wrapping flat or
   /// lazy vector. The result cannot be a wrapping over another constant or
-  /// dictionary vector. If copyBase is true and the result vector wraps a
-  /// vector, the wrapped vector is newly constructed by copying the value from
-  /// the original, guaranteeing no Vectors are shared with 'vector'.
-  static VectorPtr wrapInConstant(
-      vector_size_t length,
-      vector_size_t index,
-      VectorPtr vector,
-      bool copyBase = false);
+  /// dictionary vector.
+  static VectorPtr
+  wrapInConstant(vector_size_t length, vector_size_t index, VectorPtr vector);
 
   /// Makes 'result' writable for 'rows'. A wrapper (e.g. dictionary, constant,
   /// sequence) is flattened and a multiply referenced flat vector is copied.
@@ -655,7 +657,7 @@ class BaseVector {
   /// Returns true if the following conditions hold:
   ///  * The vector is singly referenced.
   ///  * The vector has a Flat-like encoding (Flat, Array, Map, Row).
-  ///  * Any child Buffers are mutable  and singly referenced.
+  ///  * Any child Buffers are mutable and singly referenced.
   ///  * All of these conditions hold for child Vectors recursively.
   /// This function is templated rather than taking a
   /// std::shared_ptr<BaseVector> because if we were to do that the compiler
@@ -774,7 +776,7 @@ class BaseVector {
       velox::memory::MemoryPool* pool,
       BufferPtr* buffer,
       RawT** raw) {
-    vector_size_t minBytes = byteSize<T>(size);
+    auto minBytes = static_cast<uint64_t>(byteSize<T>(size));
     if (*buffer && (*buffer)->capacity() >= minBytes && (*buffer)->unique()) {
       (*buffer)->setSize(minBytes);
       if (raw) {
@@ -843,6 +845,11 @@ class BaseVector {
   std::string toString() const {
     return toString(false);
   }
+
+  static constexpr std::string_view kNullValueString = "null";
+
+  /// Returns the value at specified index as a Variant.
+  Variant variantAt(vector_size_t index) const;
 
   /// Returns string representation of the value in the specified row.
   virtual std::string toString(vector_size_t index) const;

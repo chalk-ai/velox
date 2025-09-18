@@ -31,7 +31,7 @@ using namespace facebook::velox::memory;
 
 std::string ArbitrationParticipant::Config::toString() const {
   return fmt::format(
-      "initCapacity {}, minCapacity {}, fastExponentialGrowthCapacityLimit {}, slowCapacityGrowRatio {}, minFreeCapacity {}, minFreeCapacityRatio {}, minReclaimBytes {}, abortCapacityLimit {}",
+      "initCapacity {}, minCapacity {}, fastExponentialGrowthCapacityLimit {}, slowCapacityGrowRatio {}, minFreeCapacity {}, minFreeCapacityRatio {}, minReclaimBytes {}, minReclaimPct {}",
       succinctBytes(initCapacity),
       succinctBytes(minCapacity),
       succinctBytes(fastExponentialGrowthCapacityLimit),
@@ -39,7 +39,7 @@ std::string ArbitrationParticipant::Config::toString() const {
       succinctBytes(minFreeCapacity),
       minFreeCapacityRatio,
       succinctBytes(minReclaimBytes),
-      succinctBytes(abortCapacityLimit));
+      minReclaimPct);
 }
 
 ArbitrationParticipant::Config::Config(
@@ -50,7 +50,7 @@ ArbitrationParticipant::Config::Config(
     uint64_t _minFreeCapacity,
     double _minFreeCapacityRatio,
     uint64_t _minReclaimBytes,
-    uint64_t _abortCapacityLimit)
+    double _minReclaimPct)
     : initCapacity(_initCapacity),
       minCapacity(_minCapacity),
       fastExponentialGrowthCapacityLimit(_fastExponentialGrowthCapacityLimit),
@@ -58,7 +58,7 @@ ArbitrationParticipant::Config::Config(
       minFreeCapacity(_minFreeCapacity),
       minFreeCapacityRatio(_minFreeCapacityRatio),
       minReclaimBytes(_minReclaimBytes),
-      abortCapacityLimit(_abortCapacityLimit) {
+      minReclaimPct(_minReclaimPct) {
   VELOX_CHECK_GE(slowCapacityGrowRatio, 0);
   VELOX_CHECK_EQ(
       fastExponentialGrowthCapacityLimit == 0,
@@ -80,9 +80,9 @@ ArbitrationParticipant::Config::Config(
       minFreeCapacity,
       minFreeCapacityRatio);
   VELOX_CHECK(
-      bits::isPowerOfTwo(abortCapacityLimit),
-      "abortCapacityLimit {} not a power of two",
-      abortCapacityLimit);
+      0 <= minReclaimPct && minReclaimPct <= 1,
+      "minReclaimPct {} must be in [0, 1]",
+      minReclaimPct);
 }
 
 std::shared_ptr<ArbitrationParticipant> ArbitrationParticipant::create(
@@ -278,15 +278,18 @@ uint64_t ArbitrationParticipant::reclaim(
     uint64_t targetBytes,
     uint64_t maxWaitTimeNs,
     MemoryReclaimer::Stats& stats) noexcept {
-  targetBytes = std::max(targetBytes, config_->minReclaimBytes);
+  const auto minReclaimBytes = std::max(
+      config_->minReclaimBytes,
+      static_cast<uint64_t>(capacity() * config_->minReclaimPct));
+  targetBytes = std::max(targetBytes, minReclaimBytes);
   if (targetBytes == 0) {
     return 0;
   }
-  ArbitrationTimedLock l(reclaimMutex_, maxWaitTimeNs);
-  TestValue::adjust(
-      "facebook::velox::memory::ArbitrationParticipant::reclaim", this);
   uint64_t reclaimedCapacity{0};
   try {
+    ArbitrationTimedLock l(reclaimMutex_, maxWaitTimeNs);
+    TestValue::adjust(
+        "facebook::velox::memory::ArbitrationParticipant::reclaim", this);
     ++numReclaims_;
     VELOX_MEM_LOG(INFO) << "Reclaiming from memory pool " << pool_->name()
                         << " with target " << succinctBytes(targetBytes);
@@ -352,7 +355,9 @@ uint64_t ArbitrationParticipant::abortLocked(
     if (aborted_) {
       return 0;
     }
+    aborted_ = true;
   }
+
   try {
     VELOX_MEM_LOG(WARNING) << "Memory pool " << pool_->name()
                            << " is being aborted";
@@ -367,8 +372,6 @@ uint64_t ArbitrationParticipant::abortLocked(
   VELOX_CHECK(pool_->aborted());
 
   std::lock_guard<std::mutex> l(stateLock_);
-  VELOX_CHECK(!aborted_);
-  aborted_ = true;
   return shrinkLocked(/*reclaimAll=*/true);
 }
 

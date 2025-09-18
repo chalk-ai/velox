@@ -22,7 +22,6 @@
 #include "velox/connectors/hive/FileHandle.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
-#include "velox/connectors/hive/HivePartitionFunction.h"
 #include "velox/connectors/hive/SplitReader.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/dwio/common/Statistics.h"
@@ -37,10 +36,8 @@ class HiveDataSource : public DataSource {
  public:
   HiveDataSource(
       const RowTypePtr& outputType,
-      const std::shared_ptr<connector::ConnectorTableHandle>& tableHandle,
-      const std::unordered_map<
-          std::string,
-          std::shared_ptr<connector::ColumnHandle>>& columnHandles,
+      const connector::ConnectorTableHandlePtr& tableHandle,
+      const connector::ColumnHandleMap& columnHandles,
       FileHandleFactory* fileHandleFactory,
       folly::Executor* executor,
       const ConnectorQueryCtx* connectorQueryCtx,
@@ -73,15 +70,18 @@ class HiveDataSource : public DataSource {
 
   int64_t estimatedRowSize() override;
 
+  const common::SubfieldFilters* getFilters() const override {
+    return &filters_;
+  }
+
   std::shared_ptr<wave::WaveDataSource> toWaveDataSource() override;
 
   using WaveDelegateHookFunction =
       std::function<std::shared_ptr<wave::WaveDataSource>(
-          const std::shared_ptr<HiveTableHandle>& hiveTableHandle,
+          const HiveTableHandlePtr& hiveTableHandle,
           const std::shared_ptr<common::ScanSpec>& scanSpec,
           const RowTypePtr& readerOutputType,
-          std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>*
-              partitionKeys,
+          std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
           FileHandleFactory* fileHandleFactory,
           folly::Executor* executor,
           const ConnectorQueryCtx* connectorQueryCtx,
@@ -102,13 +102,13 @@ class HiveDataSource : public DataSource {
   virtual std::unique_ptr<SplitReader> createSplitReader();
 
   FileHandleFactory* const fileHandleFactory_;
-  folly::Executor* const executor_;
+  folly::Executor* const ioExecutor_;
   const ConnectorQueryCtx* const connectorQueryCtx_;
   const std::shared_ptr<HiveConfig> hiveConfig_;
   memory::MemoryPool* const pool_;
 
   std::shared_ptr<HiveConnectorSplit> split_;
-  std::shared_ptr<HiveTableHandle> hiveTableHandle_;
+  HiveTableHandlePtr hiveTableHandle_;
   std::shared_ptr<common::ScanSpec> scanSpec_;
   VectorPtr output_;
   std::unique_ptr<SplitReader> splitReader_;
@@ -120,17 +120,13 @@ class HiveDataSource : public DataSource {
 
   // Column handles for the partition key columns keyed on partition key column
   // name.
-  std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>
-      partitionKeys_;
+  std::unordered_map<std::string, HiveColumnHandlePtr> partitionKeys_;
 
   std::shared_ptr<io::IoStatistics> ioStats_;
   std::shared_ptr<filesystems::File::IoStats> fsStats_;
 
  private:
-  std::unique_ptr<HivePartitionFunction> setupBucketConversion();
-  vector_size_t applyBucketConversion(
-      const RowVectorPtr& rowVector,
-      BufferPtr& indices);
+  std::vector<column_index_t> setupBucketConversion();
 
   void setupRowIdColumn();
 
@@ -156,9 +152,9 @@ class HiveDataSource : public DataSource {
   core::ExpressionEvaluator* const expressionEvaluator_;
 
   // Column handles for the Split info columns keyed on their column names.
-  std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>
-      infoColumns_;
+  std::unordered_map<std::string, HiveColumnHandlePtr> infoColumns_;
   SpecialColumnNames specialColumns_{};
+  std::vector<common::Subfield> remainingFilterSubfields_;
   folly::F14FastMap<std::string, std::vector<const common::Subfield*>>
       subfields_;
   common::SubfieldFilters filters_;
@@ -176,8 +172,6 @@ class HiveDataSource : public DataSource {
   std::shared_ptr<random::RandomSkipTracker> randomSkip_;
 
   int64_t numBucketConversion_ = 0;
-  std::unique_ptr<HivePartitionFunction> partitionFunction_;
-  std::vector<uint32_t> partitions_;
 
   // Reusable memory for remaining filter evaluation.
   VectorPtr filterResult_;

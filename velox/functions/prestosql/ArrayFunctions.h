@@ -22,10 +22,12 @@
 #include "velox/functions/Udf.h"
 #include "velox/functions/lib/CheckedArithmetic.h"
 #include "velox/functions/lib/ComparatorUtil.h"
+#include "velox/functions/prestosql/json/JsonStringUtil.h"
 #include "velox/functions/prestosql/json/SIMDJsonUtil.h"
 #include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/type/Conversions.h"
 #include "velox/type/FloatingPointUtil.h"
+#include "velox/type/SimpleFunctionApi.h"
 
 #include <queue>
 
@@ -197,13 +199,19 @@ struct ArrayJoinFunction {
   void writeValue(out_type<velox::Varchar>& result, const StringView& value) {
     // To VARCHAR converter never throws.
     if (isJsonType(arrayElementType_)) {
-      if (value.size() >= 2 && *value.begin() == '"' &&
-          *(value.end() - 1) == '"') {
-        result += util::Converter<TypeKind::VARCHAR>::tryCast(
-                      std::string_view(value.data() + 1, value.size() - 2))
-                      .value();
-        return;
+      std::string unescapedStr;
+      auto size =
+          unescapeSizeForJsonFunctions(value.data(), value.size(), true);
+      unescapedStr.resize(size);
+      unescapeForJsonFunctions(
+          value.data(), value.size(), unescapedStr.data(), true);
+      if (unescapedStr.size() >= 2 && *unescapedStr.begin() == '"' &&
+          *(unescapedStr.end() - 1) == '"') {
+        unescapedStr =
+            std::string_view(unescapedStr.data() + 1, unescapedStr.size() - 2);
       }
+      result += unescapedStr;
+      return;
     }
     result += util::Converter<TypeKind::VARCHAR>::tryCast(value).value();
   }
@@ -442,19 +450,20 @@ struct ArraySumFunction {
 template <typename TExecCtx, typename T>
 struct ArrayCumSumFunction {
   VELOX_DEFINE_FUNCTION_TYPES(TExecCtx)
+  using NativeType = typename SimpleTypeTrait<T>::NativeType;
 
   FOLLY_ALWAYS_INLINE void call(
       out_type<velox::Array<T>>& out,
       const arg_type<velox::Array<T>>& in) {
-    T sum = 0;
+    NativeType sum = 0;
     auto len = in.size();
 
     for (auto i = 0; i < len; ++i) {
       if (in[i].has_value()) {
-        if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        if constexpr (std::is_floating_point_v<NativeType>) {
           sum += in[i].value();
         } else {
-          sum = checkedPlus<T>(sum, in[i].value());
+          sum = checkedPlus<NativeType>(sum, in[i].value());
         }
         out.add_item() = sum;
       } else {
@@ -470,13 +479,13 @@ struct ArrayCumSumFunction {
   FOLLY_ALWAYS_INLINE void callNullFree(
       out_type<velox::Array<T>>& out,
       const null_free_arg_type<velox::Array<T>>& in) {
-    T sum = 0;
+    NativeType sum = 0;
 
     for (const auto& item : in) {
-      if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+      if constexpr (std::is_floating_point_v<NativeType>) {
         sum += item;
       } else {
-        sum = checkedPlus<T>(sum, item);
+        sum = checkedPlus<NativeType>(sum, item);
       }
       out.add_item() = sum;
     }
@@ -934,51 +943,6 @@ struct ArrayTrimFunctionString {
 };
 
 template <typename T>
-struct ArrayRemoveNullFunction {
-  VELOX_DEFINE_FUNCTION_TYPES(T);
-
-  // Fast path for primitives.
-  template <typename Out, typename In>
-  FOLLY_ALWAYS_INLINE void call(Out& out, const In& inputArray) {
-    for (int i = 0; i < inputArray.size(); ++i) {
-      if (inputArray[i].has_value()) {
-        out.push_back(inputArray[i].value());
-      }
-    }
-  }
-
-  // Generic implementation.
-  FOLLY_ALWAYS_INLINE void call(
-      out_type<Array<Generic<T1>>>& out,
-      const arg_type<Array<Generic<T1>>>& inputArray) {
-    for (int i = 0; i < inputArray.size(); ++i) {
-      if (inputArray[i].has_value()) {
-        out.push_back(inputArray[i].value());
-      }
-    }
-  }
-};
-
-template <typename T>
-struct ArrayRemoveNullFunctionString {
-  VELOX_DEFINE_FUNCTION_TYPES(T);
-
-  static constexpr int32_t reuse_strings_from_arg = 0;
-
-  // String version that avoids copy of strings.
-  FOLLY_ALWAYS_INLINE void call(
-      out_type<Array<Varchar>>& out,
-      const arg_type<Array<Varchar>>& inputArray) {
-    for (int i = 0; i < inputArray.size(); ++i) {
-      if (inputArray[i].has_value()) {
-        auto& newItem = out.add_item();
-        newItem.setNoCopy(inputArray[i].value());
-      }
-    }
-  }
-};
-
-template <typename T>
 struct ArrayNGramsFunction {
   VELOX_DEFINE_FUNCTION_TYPES(T)
 
@@ -1061,34 +1025,6 @@ struct ArrayNGramsFunctionString {
         } else {
           newItem.add_null();
         }
-      }
-    }
-  }
-};
-
-/// This class implements the array flatten function.
-///
-/// DEFINITION:
-/// flatten(x) → array
-/// Flattens an array(array(T)) to an array(T) by concatenating the contained
-/// arrays.
-template <typename T>
-struct ArrayFlattenFunction {
-  VELOX_DEFINE_FUNCTION_TYPES(T)
-
-  FOLLY_ALWAYS_INLINE void call(
-      out_type<Array<Generic<T1>>>& out,
-      const arg_type<Array<Array<Generic<T1>>>>& arrays) {
-    int64_t elementCount = 0;
-    for (const auto& array : arrays) {
-      if (array.has_value()) {
-        elementCount += array.value().size();
-      }
-    }
-    out.reserve(elementCount);
-    for (const auto& array : arrays) {
-      if (array.has_value()) {
-        out.add_items(array.value());
       }
     }
   }
@@ -1199,7 +1135,7 @@ struct ArrayRemoveFunctionString {
       if (item.has_value()) {
         auto result = element.compare(item.value());
         if (result) {
-          out.push_back(item.value());
+          out.add_item().setNoCopy(item.value());
         }
       } else {
         out.add_null();

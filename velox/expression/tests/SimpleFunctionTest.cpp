@@ -991,11 +991,11 @@ VectorPtr testVariadicArgReuse(
   // This is a bit of a round about way of creating the SimpleFunctionAdapter,
   // especially since it requires the caller to register the function as well,
   // but it should be easier to maintain.
-  auto function =
-      exec::simpleFunctions()
-          .resolveFunction(functionName, {})
-          ->createFunction()
-          ->createVectorFunction({}, {}, execCtx->queryCtx()->queryConfig());
+  auto resolved = exec::simpleFunctions().resolveFunction(functionName, {});
+  EXPECT_TRUE(resolved.has_value());
+
+  auto function = resolved->createFunction()->createVectorFunction(
+      {}, {}, execCtx->queryCtx()->queryConfig());
 
   // Create a dummy EvalCtx.
   SelectivityVector rows(inputs[0]->size());
@@ -1653,6 +1653,52 @@ TEST_F(SimpleFunctionTest, toDebugString) {
       "Logical signature: (decimal(i1,i5), integer) -> decimal(i2,i5)\n"
       "Physical signature: (HUGEINT, INTEGER) -> HUGEINT\n"
       "Priority: 999997\nDefaultNullBehavior: true");
+}
+
+template <typename T>
+struct TimePlusOneFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  void call(out_type<Time>& out, const arg_type<Time>& input) {
+    out = input + 1;
+  }
+};
+
+template <typename T>
+struct ArrayTimeFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  void call(out_type<Array<Time>>& out, const arg_type<Array<Time>>& input) {
+    for (int i = 0; i < input.size(); i++) {
+      if (input[i].has_value()) {
+        out.push_back(input[i].value());
+      }
+    }
+  }
+};
+
+TEST_F(SimpleFunctionTest, timeTypeTest) {
+  registerFunction<TimePlusOneFunction, Time, Time>({"time_plus_one"});
+  auto data = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3}, TIME()),
+  });
+  auto result = evaluate("time_plus_one(c0)", data);
+  auto expected = makeFlatVector<int64_t>({2, 3, 4}, TIME());
+  assertEqualVectors(expected, result);
+
+  // Test out Time in complex type.
+  {
+    registerFunction<ArrayTimeFunction, Array<Time>, Array<Time>>(
+        {"array_time"});
+
+    auto data = makeRowVector({
+        makeArrayVector<int64_t>({{1, 2, 3}, {4, 5, 6}}, TIME()),
+    });
+
+    auto result = evaluate("array_time(c0)", data);
+    auto expected = makeArrayVector<int64_t>({{1, 2, 3}, {4, 5, 6}}, TIME());
+    assertEqualVectors(expected, result);
+  }
 }
 
 } // namespace

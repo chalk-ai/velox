@@ -37,6 +37,11 @@ MATCHER(IsInf, "is Infinity") {
   return arg && std::isinf(*arg);
 }
 
+auto roundToPrecision(double num, int precision) {
+  double factor = pow(10.0, precision);
+  return round(num * factor) / factor;
+};
+
 class ProbabilityTest : public functions::test::FunctionBaseTest {
  protected:
   template <typename ValueType>
@@ -102,6 +107,7 @@ class ProbabilityTest : public functions::test::FunctionBaseTest {
         0.0);
     EXPECT_EQ(binomialCDF<ValueType>(10, 0.1, -2), 0.0);
     EXPECT_EQ(binomialCDF<ValueType>(25, 0.5, -100), 0.0);
+    EXPECT_EQ(binomialCDF<ValueType>(2, 0.1, 3), 1.0);
 
     // Invalid inputs
     VELOX_ASSERT_THROW(
@@ -613,17 +619,13 @@ TEST_F(ProbabilityTest, invGammaCDF) {
         "inverse_gamma_cdf(c0, c1, c2)", shape, scale, p);
   };
 
-  const auto roundToPrecision = [&](double num, int precision) {
-    double factor = pow(10.0, precision);
-    return round(num * factor) / factor;
-  };
-
   EXPECT_EQ(0, invGammaCDF(3, 3.6, 0.0));
   EXPECT_EQ(33.624, roundToPrecision(invGammaCDF(3, 4, 0.99).value(), 3));
   EXPECT_EQ(10.696, roundToPrecision(invGammaCDF(3, 4, 0.50).value(), 3));
   EXPECT_EQ(
       9999.333,
       roundToPrecision(invGammaCDF(10000.0 / 2, 2.0, 0.50).value(), 3));
+  EXPECT_EQ(std::numeric_limits<double>::infinity(), invGammaCDF(1, 1, 1));
 
   // This is an example to illustrate the precision differences
   // Java: exactly 0.0,
@@ -671,6 +673,184 @@ TEST_F(ProbabilityTest, invGammaCDF) {
   VELOX_ASSERT_THROW(
       invGammaCDF(1, 0.5, kNan),
       "inverseGammaCdf Function: p must be in the interval [0, 1]");
+}
+
+TEST_F(ProbabilityTest, invBinomialCDF) {
+  const auto invBinomialCDF = [&](std::optional<int32_t> numberOfTrials,
+                                  std::optional<double> successProbability,
+                                  std::optional<double> p) {
+    return evaluateOnce<int32_t>(
+        "inverse_binomial_cdf(c0, c1, c2)",
+        numberOfTrials,
+        successProbability,
+        p);
+  };
+
+  EXPECT_EQ(0, invBinomialCDF(20, 0.5, 0.0));
+  EXPECT_EQ(10, invBinomialCDF(20, 0.5, 0.5));
+  EXPECT_EQ(20, invBinomialCDF(20, 0.5, 1.0));
+  EXPECT_EQ(INT32_MAX, invBinomialCDF(INT32_MAX, 0.5, 1));
+  EXPECT_EQ(611204, invBinomialCDF(1223340, 0.5, 0.2));
+
+  EXPECT_EQ(std::nullopt, invBinomialCDF(std::nullopt, 1, 1));
+  EXPECT_EQ(std::nullopt, invBinomialCDF(1, std::nullopt, 1));
+  EXPECT_EQ(std::nullopt, invBinomialCDF(1, 1, std::nullopt));
+
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(5, -0.5, 0.3),
+      "inverseBinomialCdf Function: successProbability must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(5, 1.5, 0.3),
+      "inverseBinomialCdf Function: successProbability must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(5, 0.5, -3.0),
+      "inverseBinomialCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(5, 0.5, 3.0),
+      "inverseBinomialCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(-5, 0.5, 0.3),
+      "inverseBinomialCdf Function: numberOfTrials must be greater than 0");
+
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(1, kInf, 0.5),
+      "inverseBinomialCdf Function: successProbability must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(1, kNan, 0.5),
+      "inverseBinomialCdf Function: successProbability must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(1, 0.5, kInf),
+      "inverseBinomialCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      invBinomialCDF(1, 0.5, kNan),
+      "inverseBinomialCdf Function: p must be in the interval [0, 1]");
+}
+
+TEST_F(ProbabilityTest, invPoissonCDF) {
+  const auto invPoissonCDF = [&](std::optional<double> lambda,
+                                 std::optional<double> p) {
+    return evaluateOnce<int32_t>("inverse_poisson_cdf(c0, c1)", lambda, p);
+  };
+
+  EXPECT_EQ(0, invPoissonCDF(3, 0));
+  // EXPECT_EQ(2, invPoissonCDF(3, 0.3)); // 1.499999... round to floor to 1
+  EXPECT_EQ(6, invPoissonCDF(3, 0.95));
+  EXPECT_EQ(17, invPoissonCDF(3, 0.99999999));
+  EXPECT_EQ(
+      std::numeric_limits<int32_t>::max(),
+      invPoissonCDF(1.8819579427461317E18, 0.659094));
+
+  EXPECT_EQ(std::nullopt, invPoissonCDF(std::nullopt, 0.5));
+  EXPECT_EQ(std::nullopt, invPoissonCDF(0.5, std::nullopt));
+
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(-3, 0.3),
+      "inversePoissonCdf Function: lambda must be greater than 0");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(kInf, 0),
+      "inversePoissonCdf Function: lambda must be greater than 0");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(kNan, 0),
+      "inversePoissonCdf Function: lambda must be greater than 0");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(0, 0),
+      "inversePoissonCdf Function: lambda must be greater than 0");
+
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(0.5, kInf),
+      "inversePoissonCdf Function: p must be in the interval [0, 1)");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(0.5, kNan),
+      "inversePoissonCdf Function: p must be in the interval [0, 1)");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(3, 1.1),
+      "inversePoissonCdf Function: p must be in the interval [0, 1)");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(3, 1),
+      "inversePoissonCdf Function: p must be in the interval [0, 1)");
+  VELOX_ASSERT_THROW(
+      invPoissonCDF(3, -0.1),
+      "inversePoissonCdf Function: p must be in the interval [0, 1)");
+}
+
+TEST_F(ProbabilityTest, inverseFCDF) {
+  const auto inverseFCDF = [&](std::optional<double> df1,
+                               std::optional<double> df2,
+                               std::optional<double> p) {
+    return evaluateOnce<double>("inverse_f_cdf(c0, c1, c2)", df1, df2, p);
+  };
+
+  EXPECT_EQ(0, inverseFCDF(2.0, 5.0, 0.0));
+  EXPECT_EQ(0.7988, roundToPrecision((inverseFCDF(2.0, 5.0, 0.5)).value(), 4));
+  EXPECT_EQ(3.7797, roundToPrecision((inverseFCDF(2.0, 5.0, 0.9)).value(), 4));
+
+  VELOX_ASSERT_THROW(
+      inverseFCDF(0, 3, 0.5),
+      "inverseFCdf Function: numerator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(3, 0, 0.5),
+      "inverseFCdf Function: denominator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(3, 5, -0.1),
+      "inverseFCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(3, 5, 1.1),
+      "inverseFCdf Function: p must be in the interval [0, 1]");
+
+  VELOX_ASSERT_THROW(
+      inverseFCDF(kNan, 1, 0.5),
+      "inverseFCdf Function: numerator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(kInf, 1, 0.5),
+      "inverseFCdf Function: numerator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(1, kNan, 0.5),
+      "inverseFCdf Function: denominator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(1, kInf, 0.5),
+      "inverseFCdf Function: denominator df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(1, 1, kNan),
+      "inverseFCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      inverseFCDF(1, 1, kInf),
+      "inverseFCdf Function: p must be in the interval [0, 1]");
+}
+
+TEST_F(ProbabilityTest, inverseChiSquaredCdf) {
+  const auto inverseChiSquaredCdf = [&](std::optional<double> df,
+                                        std::optional<double> p) {
+    return evaluateOnce<double>("inverse_chi_squared_cdf(c0, c1)", df, p);
+  };
+
+  EXPECT_EQ(0, inverseChiSquaredCdf(3, 0.0));
+  EXPECT_EQ(
+      11.3449, roundToPrecision(inverseChiSquaredCdf(3, 0.99).value(), 4));
+  EXPECT_EQ(1.42, roundToPrecision(inverseChiSquaredCdf(3, 0.3).value(), 2));
+  EXPECT_EQ(7.81, roundToPrecision(inverseChiSquaredCdf(3, 0.95).value(), 2));
+
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(-3, 0.3),
+      "inverseChiSquaredCdf Function: df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(3, -0.1),
+      "inverseChiSquaredCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(3, 1.1),
+      "inverseChiSquaredCdf Function: p must be in the interval [0, 1]");
+
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(kNan, 0.5),
+      "inverseChiSquaredCdf Function: df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(kInf, 0.5),
+      "inverseChiSquaredCdf Function: df must be greater than 0");
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(1, kNan),
+      "inverseChiSquaredCdf Function: p must be in the interval [0, 1]");
+  VELOX_ASSERT_THROW(
+      inverseChiSquaredCdf(1, kInf),
+      "inverseChiSquaredCdf Function: p must be in the interval [0, 1]");
 }
 
 } // namespace

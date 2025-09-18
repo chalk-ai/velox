@@ -53,6 +53,10 @@ inline constexpr auto kErrorSourceRuntime = "RUNTIME"_fs;
 /// Errors where the root cause of the problem is some unreliable aspect of the
 /// system are classified with source SYSTEM.
 inline constexpr auto kErrorSourceSystem = "SYSTEM"_fs;
+
+/// Errors where the root cause of the problem is some external dependency (e.g.
+/// storage)
+inline constexpr auto kErrorSourceExternal = "EXTERNAL"_fs;
 } // namespace error_source
 
 namespace error_code {
@@ -438,7 +442,7 @@ ExceptionContext& getExceptionContext();
 /// exception context with the previous context held by the thread_local
 /// variable to allow retrieving the top-level context when there is an
 /// exception context hierarchy.
-class ExceptionContextSetter {
+class [[nodiscard]] ExceptionContextSetter {
  public:
   explicit ExceptionContextSetter(ExceptionContext value)
       : prev_{getExceptionContext()} {

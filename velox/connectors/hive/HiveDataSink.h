@@ -25,10 +25,6 @@
 #include "velox/dwio/common/WriterFactory.h"
 #include "velox/exec/MemoryReclaimer.h"
 
-namespace facebook::velox::dwrf {
-class Writer;
-}
-
 namespace facebook::velox::connector::hive {
 
 class LocationHandle;
@@ -194,6 +190,49 @@ FOLLY_ALWAYS_INLINE std::ostream& operator<<(
 class HiveInsertTableHandle;
 using HiveInsertTableHandlePtr = std::shared_ptr<HiveInsertTableHandle>;
 
+class FileNameGenerator : public ISerializable {
+ public:
+  virtual ~FileNameGenerator() = default;
+
+  virtual std::pair<std::string, std::string> gen(
+      std::optional<uint32_t> bucketId,
+      const std::shared_ptr<const HiveInsertTableHandle> insertTableHandle,
+      const ConnectorQueryCtx& connectorQueryCtx,
+      bool commitRequired) const = 0;
+
+  virtual std::string toString() const = 0;
+};
+
+class HiveInsertFileNameGenerator : public FileNameGenerator {
+ public:
+  HiveInsertFileNameGenerator() {}
+
+  std::pair<std::string, std::string> gen(
+      std::optional<uint32_t> bucketId,
+      const std::shared_ptr<const HiveInsertTableHandle> insertTableHandle,
+      const ConnectorQueryCtx& connectorQueryCtx,
+      bool commitRequired) const override;
+
+  /// Version of file generation that takes hiveConfig into account when
+  /// generating file names
+  std::pair<std::string, std::string> gen(
+      std::optional<uint32_t> bucketId,
+      const std::shared_ptr<const HiveInsertTableHandle> insertTableHandle,
+      const ConnectorQueryCtx& connectorQueryCtx,
+      const std::shared_ptr<const HiveConfig>& hiveConfig,
+      bool commitRequired) const;
+
+  static void registerSerDe();
+
+  folly::dynamic serialize() const override;
+
+  static std::shared_ptr<HiveInsertFileNameGenerator> deserialize(
+      const folly::dynamic& obj,
+      void* context);
+
+  std::string toString() const override;
+};
+
 /// Represents a request for Hive write.
 class HiveInsertTableHandle : public ConnectorInsertTableHandle {
  public:
@@ -209,7 +248,9 @@ class HiveInsertTableHandle : public ConnectorInsertTableHandle {
       // When this option is set the HiveDataSink will always write a file even
       // if there's no data. This is useful when the table is bucketed, but the
       // engine handles ensuring a 1 to 1 mapping from task to bucket.
-      const bool ensureFiles = false)
+      const bool ensureFiles = false,
+      std::shared_ptr<const FileNameGenerator> fileNameGenerator =
+          std::make_shared<const HiveInsertFileNameGenerator>())
       : inputColumns_(std::move(inputColumns)),
         locationHandle_(std::move(locationHandle)),
         storageFormat_(storageFormat),
@@ -217,7 +258,8 @@ class HiveInsertTableHandle : public ConnectorInsertTableHandle {
         compressionKind_(compressionKind),
         serdeParameters_(serdeParameters),
         writerOptions_(writerOptions),
-        ensureFiles_(ensureFiles) {
+        ensureFiles_(ensureFiles),
+        fileNameGenerator_(std::move(fileNameGenerator)) {
     if (compressionKind.has_value()) {
       VELOX_CHECK(
           compressionKind.value() != common::CompressionKind_MAX,
@@ -271,6 +313,10 @@ class HiveInsertTableHandle : public ConnectorInsertTableHandle {
     return ensureFiles_;
   }
 
+  const std::shared_ptr<const FileNameGenerator>& fileNameGenerator() const {
+    return fileNameGenerator_;
+  }
+
   bool supportsMultiThreading() const override {
     return true;
   }
@@ -300,6 +346,7 @@ class HiveInsertTableHandle : public ConnectorInsertTableHandle {
   const std::unordered_map<std::string, std::string> serdeParameters_;
   const std::shared_ptr<dwio::common::WriterOptions> writerOptions_;
   const bool ensureFiles_;
+  const std::shared_ptr<const FileNameGenerator> fileNameGenerator_;
 };
 
 /// Parameters for Hive writers.
@@ -474,16 +521,22 @@ class HiveDataSink : public DataSink {
       CommitStrategy commitStrategy,
       const std::shared_ptr<const HiveConfig>& hiveConfig);
 
-  static uint32_t maxBucketCount() {
-    static const uint32_t kMaxBucketCount = 100'000;
-    return kMaxBucketCount;
-  }
+  HiveDataSink(
+      RowTypePtr inputType,
+      std::shared_ptr<const HiveInsertTableHandle> insertTableHandle,
+      const ConnectorQueryCtx* connectorQueryCtx,
+      CommitStrategy commitStrategy,
+      const std::shared_ptr<const HiveConfig>& hiveConfig,
+      uint32_t bucketCount,
+      std::unique_ptr<core::PartitionFunction> bucketFunction);
 
   void appendData(RowVectorPtr input) override;
 
   bool finish() override;
 
   Stats stats() const override;
+
+  std::unordered_map<std::string, RuntimeCounter> runtimeStats() const override;
 
   std::vector<std::string> close() override;
 
@@ -607,6 +660,15 @@ class HiveDataSink : public DataSink {
 
   void closeInternal();
 
+  // IMPORTANT NOTE: these are passed to writers as raw pointers. HiveDataSink
+  // owns the lifetime of these objects, and therefore must destroy them last.
+  // Additionally, we must assume that no objects which hold a reference to
+  // these stats will outlive the HiveDataSink instance. This is a reasonable
+  // assumption given the semantics of these stats objects.
+  std::vector<std::unique_ptr<io::IoStatistics>> ioStats_;
+  // Generic filesystem stats, exposed as RuntimeStats
+  std::unique_ptr<filesystems::File::IoStats> fileSystemStats_;
+
   const RowTypePtr inputType_;
   const std::shared_ptr<const HiveInsertTableHandle> insertTableHandle_;
   const ConnectorQueryCtx* const connectorQueryCtx_;
@@ -639,8 +701,6 @@ class HiveDataSink : public DataSink {
   // writers_ are both indexed by partitionId.
   std::vector<std::shared_ptr<HiveWriterInfo>> writerInfo_;
   std::vector<std::unique_ptr<dwio::common::Writer>> writers_;
-  // IO statistics collected for each writer.
-  std::vector<std::shared_ptr<io::IoStatistics>> ioStats_;
 
   // Below are structures updated when processing current input. partitionIds_
   // are indexed by the row of input_. partitionRows_, rawPartitionRows_ and
@@ -652,6 +712,9 @@ class HiveDataSink : public DataSink {
 
   // Reusable buffers for bucket id calculations.
   std::vector<uint32_t> bucketIds_;
+
+  // Strategy for naming writer files
+  std::shared_ptr<const FileNameGenerator> fileNameGenerator_;
 };
 
 FOLLY_ALWAYS_INLINE std::ostream& operator<<(

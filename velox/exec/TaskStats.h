@@ -20,7 +20,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "velox/exec/Driver.h"
+#include "velox/exec/BlockingReason.h"
+#include "velox/exec/DriverStats.h"
+#include "velox/exec/OperatorStats.h"
 #include "velox/exec/OutputBuffer.h"
 
 namespace facebook::velox::exec {
@@ -64,6 +66,9 @@ struct TaskStats {
   int32_t numRunningSplits{0};
   int32_t numQueuedSplits{0};
   std::unordered_set<int32_t> completedSplitGroups;
+
+  // The number of barriers that have been processed by the task.
+  int32_t numBarriers{0};
 
   /// Table scan split stats.
   int32_t numRunningTableScanSplits{0};

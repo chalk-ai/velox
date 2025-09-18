@@ -21,7 +21,12 @@
 
 namespace facebook::velox::exec {
 
-enum PolicyType { LegacyCastPolicy = 1, PrestoCastPolicy, SparkCastPolicy };
+enum PolicyType {
+  LegacyCastPolicy = 1,
+  PrestoCastPolicy,
+  SparkCastPolicy,
+  SparkTryCastPolicy
+};
 
 fmt::underlying_t<PolicyType> format_as(PolicyType f);
 
@@ -37,29 +42,39 @@ class CastHooks {
 
   virtual Expected<Timestamp> castIntToTimestamp(int64_t seconds) const = 0;
 
+  virtual Expected<int64_t> castTimestampToInt(Timestamp timestamp) const = 0;
+
   virtual Expected<std::optional<Timestamp>> castDoubleToTimestamp(
       double seconds) const = 0;
 
   virtual Expected<int32_t> castStringToDate(
       const StringView& dateString) const = 0;
 
-  // 'data' is guaranteed to be non-empty and has been processed by
-  // removeWhiteSpaces.
+  /// 'data' is guaranteed to be non-empty and has been processed by
+  /// removeWhiteSpaces.
   virtual Expected<float> castStringToReal(const StringView& data) const = 0;
 
-  // 'data' is guaranteed to be non-empty and has been processed by
-  // removeWhiteSpaces.
+  /// 'data' is guaranteed to be non-empty and has been processed by
+  /// removeWhiteSpaces.
   virtual Expected<double> castStringToDouble(const StringView& data) const = 0;
 
-  // Trims all leading and trailing UTF8 whitespaces.
+  /// Trims all leading and trailing UTF8 whitespaces.
   virtual StringView removeWhiteSpaces(const StringView& view) const = 0;
 
-  // Returns the options to cast from timestamp to string.
+  /// Returns the options to cast from timestamp to string.
   virtual const TimestampToStringOptions& timestampToStringOptions() const = 0;
 
-  // Returns whether to cast to int by truncate.
+  /// Returns whether to cast to int by truncate.
   virtual bool truncate() const = 0;
 
+  /// Returns whether to apply try_cast recursively rather than only at the top
+  /// level. E.g. if true, an element inside an array would be null rather than
+  /// the entire array if the cast of that element fails.
+  virtual bool applyTryCastRecursively() const = 0;
+
   virtual PolicyType getPolicy() const = 0;
+
+  /// Converts boolean to timestamp type.
+  virtual Expected<Timestamp> castBooleanToTimestamp(bool seconds) const = 0;
 };
 } // namespace facebook::velox::exec

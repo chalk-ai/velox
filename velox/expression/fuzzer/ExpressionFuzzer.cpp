@@ -278,6 +278,10 @@ ExpressionFuzzer::ExpressionFuzzer(
         argValuesGenerators)
     : options_(options.value_or(Options())),
       vectorFuzzer_(vectorFuzzer),
+      supportedScalarTypes_(
+          options_.referenceQueryRunner == nullptr
+              ? velox::defaultScalarTypes()
+              : options_.referenceQueryRunner->supportedScalarTypes()),
       state_{rng_, std::max(1, options_.maxLevelOfNesting)},
       argTypesGenerators_(argTypesGenerators),
       argValuesGenerators_(argValuesGenerators) {
@@ -417,19 +421,18 @@ ExpressionFuzzer::ExpressionFuzzer(
   sortSignatureTemplates(signatureTemplates_);
 
   for (const auto& it : signatureTemplates_) {
-    const auto returnType =
-        exec::sanitizeName(it.signature->returnType().baseName());
-    const auto* returnTypeKey = &returnType;
+    const auto returnType = it.signature->returnType().baseName();
+    std::string returnTypeKey = exec::sanitizeName(returnType);
 
     if (it.typeVariables.find(returnType) != it.typeVariables.end()) {
       // Return type is a template variable.
-      returnTypeKey = &kTypeParameterName;
+      returnTypeKey = kTypeParameterName;
     }
-    if (typeToExpressionList_[*returnTypeKey].empty() ||
-        typeToExpressionList_[*returnTypeKey].back() != it.name) {
-      addToTypeToExpressionListByTicketTimes(*returnTypeKey, it.name);
+    if (typeToExpressionList_[returnTypeKey].empty() ||
+        typeToExpressionList_[returnTypeKey].back() != it.name) {
+      addToTypeToExpressionListByTicketTimes(returnTypeKey, it.name);
     }
-    expressionToTemplatedSignature_[it.name][*returnTypeKey].push_back(&it);
+    expressionToTemplatedSignature_[it.name][returnTypeKey].push_back(&it);
   }
 
   if (options_.enableDereference) {
@@ -446,9 +449,12 @@ bool ExpressionFuzzer::isSupportedSignature(
   // Not supporting functions using custom types, timestamp with time zone types
   // and interval day to second types.
   if (usesTypeName(signature, "opaque") ||
-      usesTypeName(signature, "timestamp with time zone") ||
       usesTypeName(signature, "interval day to second") ||
       usesTypeName(signature, "ipprefix") ||
+      usesTypeName(
+          signature,
+          "sfmsketch") || // See Issue :
+                          // https://github.com/facebookincubator/velox/issues/14643
       (!options_.enableDecimalType && usesTypeName(signature, "decimal")) ||
       (!options_.enableComplexTypes && useComplexType) ||
       (options_.enableComplexTypes && usesTypeName(signature, "unknown"))) {
@@ -644,8 +650,7 @@ core::TypedExprPtr ExpressionFuzzer::generateArgFunction(const TypePtr& arg) {
 
   std::vector<std::string> eligible;
   for (const auto& functionName : baseList) {
-    if (auto* signature =
-            findConcreteSignature(args, returnType, functionName)) {
+    if (findConcreteSignature(args, returnType, functionName)) {
       eligible.push_back(functionName);
     } else if (
         auto* signatureTemplate =
@@ -655,8 +660,7 @@ core::TypedExprPtr ExpressionFuzzer::generateArgFunction(const TypePtr& arg) {
   }
 
   for (const auto& functionName : templateList) {
-    if (auto* signatureTemplate =
-            findSignatureTemplate(args, returnType, baseType, functionName)) {
+    if (findSignatureTemplate(args, returnType, baseType, functionName)) {
       eligible.push_back(functionName);
     }
   }
@@ -771,7 +775,9 @@ core::TypedExprPtr ExpressionFuzzer::generateExpression(
   }
   auto baseType = typeToBaseName(returnType);
   VELOX_CHECK_NE(
-      baseType, "T", "returnType should have all concrete types defined");
+      baseType,
+      kTypeParameterName,
+      "returnType should have all concrete types defined");
   // Randomly pick among all functions that support this return type. Also,
   // consider all functions that have return type "T" as they can
   // support any concrete return type.
@@ -1034,7 +1040,8 @@ core::TypedExprPtr ExpressionFuzzer::generateExpressionFromSignatureTemplate(
   }
 
   auto chosenSignature = *chosen->signature;
-  ArgumentTypeFuzzer fuzzer{chosenSignature, returnType, rng_};
+  ArgumentTypeFuzzer fuzzer{
+      chosenSignature, returnType, rng_, supportedScalarTypes_};
 
   std::vector<TypePtr> argumentTypes;
   if (fuzzer.fuzzArgumentTypes(options_.maxNumVarArgs)) {
@@ -1089,8 +1096,8 @@ core::TypedExprPtr ExpressionFuzzer::generateCastExpression(
   markSelected("cast");
 
   // Generate try_cast expression with 50% chance.
-  bool nullOnFailure = vectorFuzzer_->coinToss(0.5);
-  return std::make_shared<core::CastTypedExpr>(returnType, args, nullOnFailure);
+  bool isTryCast = vectorFuzzer_->coinToss(0.5);
+  return std::make_shared<core::CastTypedExpr>(returnType, args, isTryCast);
 }
 
 core::TypedExprPtr ExpressionFuzzer::generateRowConstructorExpression(
@@ -1114,7 +1121,7 @@ TypePtr ExpressionFuzzer::generateRandomRowTypeWithReferencedField(
     if (i == referencedIndex) {
       fieldTypes[i] = referencedType;
     } else {
-      fieldTypes[i] = vectorFuzzer_->randType();
+      fieldTypes[i] = vectorFuzzer_->randType(supportedScalarTypes_);
     }
     fieldNames[i] = fmt::format("row_field{}", i);
   }
@@ -1147,7 +1154,7 @@ TypePtr ExpressionFuzzer::fuzzReturnType() {
     // Dereference does not have signatures in either list. So even if these
     // signature lists are both empty, we can still generate a random return
     // type for dereference.
-    rootType = vectorFuzzer_->randType();
+    rootType = vectorFuzzer_->randType(supportedScalarTypes_);
   } else if (chooseFromConcreteSignatures) {
     // Pick a random signature to choose the root return type.
     VELOX_CHECK(!signatures_.empty(), "No function signature available.");
@@ -1159,7 +1166,8 @@ TypePtr ExpressionFuzzer::fuzzReturnType() {
     VELOX_CHECK(
         !signatureTemplates_.empty(), "No function signature available.");
     size_t idx = rand32(0, signatureTemplates_.size() - 1);
-    ArgumentTypeFuzzer typeFuzzer{*signatureTemplates_[idx].signature, rng_};
+    ArgumentTypeFuzzer typeFuzzer{
+        *signatureTemplates_[idx].signature, rng_, supportedScalarTypes_};
     rootType = typeFuzzer.fuzzReturnType();
   }
   return rootType;

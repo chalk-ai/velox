@@ -20,9 +20,7 @@
 #include "duckdb/common/types.hpp" // @manual
 #include "velox/duckdb/conversion/DuckConversion.h"
 #include "velox/exec/Cursor.h"
-#include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
-#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/vector/VectorTypeUtils.h"
 
 using facebook::velox::duckdb::duckdbTimestampToVelox;
@@ -455,93 +453,6 @@ std::vector<MaterializedRow> materialize(
   return rows;
 }
 
-template <TypeKind kind>
-variant variantAt(VectorPtr vector, int32_t row) {
-  using T = typename KindToFlatVector<kind>::WrapperType;
-  return variant(vector->as<SimpleVector<T>>()->valueAt(row));
-}
-
-template <>
-variant variantAt<TypeKind::VARBINARY>(VectorPtr vector, int32_t row) {
-  return variant::binary(vector->as<SimpleVector<StringView>>()->valueAt(row));
-}
-
-variant variantAt(const VectorPtr& vector, vector_size_t row);
-
-variant arrayVariantAt(const VectorPtr& vector, vector_size_t row) {
-  auto arrayVector = vector->wrappedVector()->as<ArrayVector>();
-  auto& elements = arrayVector->elements();
-
-  auto wrappedRow = vector->wrappedIndex(row);
-  auto offset = arrayVector->offsetAt(wrappedRow);
-  auto size = arrayVector->sizeAt(wrappedRow);
-
-  std::vector<variant> array;
-  array.reserve(size);
-  for (auto i = 0; i < size; i++) {
-    auto innerRow = offset + i;
-    array.push_back(variantAt(elements, innerRow));
-  }
-  return variant::array(array);
-}
-
-variant mapVariantAt(const VectorPtr& vector, vector_size_t row) {
-  auto mapVector = vector->wrappedVector()->as<MapVector>();
-  auto& mapKeys = mapVector->mapKeys();
-  auto& mapValues = mapVector->mapValues();
-
-  auto wrappedRow = vector->wrappedIndex(row);
-  auto offset = mapVector->offsetAt(wrappedRow);
-  auto size = mapVector->sizeAt(wrappedRow);
-
-  std::map<variant, variant> map;
-  for (auto i = 0; i < size; i++) {
-    auto innerRow = offset + i;
-    auto key = variantAt(mapKeys, innerRow);
-    auto value = variantAt(mapValues, innerRow);
-    map.insert({key, value});
-  }
-  return variant::map(map);
-}
-
-variant rowVariantAt(const VectorPtr& vector, vector_size_t row) {
-  auto rowValues = vector->wrappedVector()->as<RowVector>();
-  auto wrappedRow = vector->wrappedIndex(row);
-
-  std::vector<variant> values;
-  for (auto& child : rowValues->children()) {
-    values.push_back(variantAt(child, wrappedRow));
-  }
-  return variant::row(std::move(values));
-}
-
-variant variantAt(const VectorPtr& vector, vector_size_t row) {
-  if (vector->isNullAt(row)) {
-    return nullVariant(vector->type());
-  }
-
-  auto typeKind = vector->typeKind();
-  if (typeKind == TypeKind::ROW) {
-    return rowVariantAt(vector, row);
-  }
-
-  if (typeKind == TypeKind::ARRAY) {
-    return arrayVariantAt(vector, row);
-  }
-
-  if (typeKind == TypeKind::MAP) {
-    return mapVariantAt(vector, row);
-  }
-
-  if (isTimestampWithTimeZoneType(vector->type())) {
-    return variant::typeWithCustomComparison<TypeKind::BIGINT>(
-        vector->as<SimpleVector<int64_t>>()->valueAt(row),
-        TIMESTAMP_WITH_TIME_ZONE());
-  }
-
-  return VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(variantAt, typeKind, vector, row);
-}
-
 MaterializedRow getColumns(
     const MaterializedRow& row,
     const std::vector<uint32_t>& columnIndices) {
@@ -899,7 +810,7 @@ std::vector<MaterializedRow> materialize(const RowVectorPtr& vector) {
     MaterializedRow row;
     row.reserve(numColumns);
     for (size_t j = 0; j < numColumns; ++j) {
-      row.push_back(variantAt(simpleVectors[j], i));
+      row.push_back(simpleVectors[j]->variantAt(i));
     }
     rows.push_back(row);
   }
@@ -987,14 +898,18 @@ std::shared_ptr<Task> assertQuery(
     DuckDbQueryRunner& duckDbQueryRunner,
     std::optional<std::vector<uint32_t>> sortingKeys) {
   return assertQuery(
-      plan, [](Task*) {}, duckDbSql, duckDbQueryRunner, sortingKeys);
+      plan,
+      [](TaskCursor* taskCursor) { taskCursor->setNoMoreSplits(); },
+      duckDbSql,
+      duckDbQueryRunner,
+      sortingKeys);
 }
 
 std::shared_ptr<Task> assertQueryReturnsEmptyResult(
     const core::PlanNodePtr& plan) {
   CursorParameters params;
   params.planNode = plan;
-  auto [cursor, results] = readCursor(params, [](Task*) {});
+  auto [cursor, results] = readCursor(params);
   assertEmptyResults(results);
   return cursor->task();
 }
@@ -1002,7 +917,7 @@ std::shared_ptr<Task> assertQueryReturnsEmptyResult(
 std::shared_ptr<Task> assertQueryReturnsEmptyResult(
     const CursorParameters& params) {
   VELOX_DCHECK_NOT_NULL(params.planNode);
-  auto [cursor, results] = readCursor(params, [](Task*) {});
+  auto [cursor, results] = readCursor(params);
   assertEmptyResults(results);
   return cursor->task();
 }
@@ -1063,11 +978,11 @@ bool assertEqualResults(
     const core::PlanNodePtr& plan2) {
   CursorParameters params1;
   params1.planNode = plan1;
-  auto [cursor1, results1] = readCursor(params1, [](Task*) {});
+  auto [cursor1, results1] = readCursor(params1);
 
   CursorParameters params2;
   params2.planNode = plan2;
-  auto [cursor2, results2] = readCursor(params2, [](Task*) {});
+  auto [cursor2, results2] = readCursor(params2);
   return assertEqualResults(results1, results2);
 }
 
@@ -1423,18 +1338,20 @@ bool testingMaybeTriggerAbort(exec::Task* task) {
 
 std::pair<std::unique_ptr<TaskCursor>, std::vector<RowVectorPtr>> readCursor(
     const CursorParameters& params,
-    std::function<void(exec::Task*)> addSplits,
+    std::function<void(TaskCursor*)> addSplits,
     uint64_t maxWaitMicros) {
   auto cursor = TaskCursor::create(params);
   // 'result' borrows memory from cursor so the life cycle must be shorter.
   std::vector<RowVectorPtr> result;
   auto* task = cursor->task().get();
-  addSplits(task);
-
-  while (cursor->moveNext()) {
-    result.push_back(cursor->current());
-    addSplits(task);
-    testingMaybeTriggerAbort(task);
+  while (!cursor->noMoreSplits()) {
+    addSplits(cursor.get());
+    while (cursor->moveNext()) {
+      auto vector = cursor->current();
+      vector->loadedVector();
+      result.push_back(std::move(vector));
+      testingMaybeTriggerAbort(task);
+    }
   }
 
   if (!waitForTaskCompletion(task, maxWaitMicros)) {
@@ -1502,7 +1419,7 @@ bool waitForTaskStateChange(
 void waitForAllTasksToBeDeleted(uint64_t maxWaitUs) {
   uint64_t waitUs = 0;
   while (Task::numRunningTasks() != 0) {
-    constexpr uint64_t kWaitInternalUs = 1'000;
+    constexpr uint64_t kWaitInternalUs = 50'000;
     std::this_thread::sleep_for(std::chrono::microseconds(kWaitInternalUs));
     waitUs += kWaitInternalUs;
     if (waitUs >= maxWaitUs) {
@@ -1526,7 +1443,7 @@ void waitForAllTasksToBeDeleted(uint64_t maxWaitUs) {
 
 std::shared_ptr<Task> assertQuery(
     const core::PlanNodePtr& plan,
-    std::function<void(exec::Task*)> addSplits,
+    std::function<void(exec::TaskCursor*)> addSplits,
     const std::string& duckDbSql,
     DuckDbQueryRunner& duckDbQueryRunner,
     std::optional<std::vector<uint32_t>> sortingKeys) {
@@ -1538,7 +1455,7 @@ std::shared_ptr<Task> assertQuery(
 
 std::shared_ptr<Task> assertQuery(
     const CursorParameters& params,
-    std::function<void(exec::Task*)> addSplits,
+    std::function<void(TaskCursor*)> addSplits,
     const std::string& duckDbSql,
     DuckDbQueryRunner& duckDbQueryRunner,
     std::optional<std::vector<uint32_t>> sortingKeys) {
@@ -1575,7 +1492,7 @@ std::shared_ptr<Task> assertQuery(
 std::shared_ptr<Task> assertQuery(
     const CursorParameters& params,
     const std::vector<RowVectorPtr>& expectedResults) {
-  auto result = readCursor(params, [](Task*) {});
+  auto result = readCursor(params);
 
   assertEqualResults(expectedResults, result.second);
   return result.first->task();
@@ -1585,7 +1502,7 @@ variant readSingleValue(const core::PlanNodePtr& plan, int32_t maxDrivers) {
   CursorParameters params;
   params.planNode = plan;
   params.maxDrivers = maxDrivers;
-  auto result = readCursor(params, [](Task*) {});
+  auto result = readCursor(params);
 
   EXPECT_EQ(1, result.second.size());
   EXPECT_EQ(1, result.second[0]->size());

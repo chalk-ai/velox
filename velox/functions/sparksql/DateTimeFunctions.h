@@ -20,6 +20,7 @@
 
 #include "velox/functions/lib/DateTimeFormatter.h"
 #include "velox/functions/lib/TimeUtils.h"
+#include "velox/functions/sparksql/TimestampUtils.h"
 #include "velox/type/TimestampConversion.h"
 #include "velox/type/tz/TimeZoneMap.h"
 
@@ -170,7 +171,8 @@ struct UnixTimestampParseFunction {
     if (dateTimeResult.hasError()) {
       return false;
     }
-    (*dateTimeResult).timestamp.toGMT(*getTimeZone(*dateTimeResult));
+    toGMTWithGapCorrection(
+        (*dateTimeResult).timestamp, *getTimeZone(*dateTimeResult));
     result = (*dateTimeResult).timestamp.getSeconds();
     return true;
   }
@@ -254,7 +256,8 @@ struct UnixTimestampParseWithFormatFunction
     if (dateTimeResult.hasError()) {
       return false;
     }
-    (*dateTimeResult).timestamp.toGMT(*this->getTimeZone(*dateTimeResult));
+    toGMTWithGapCorrection(
+        (*dateTimeResult).timestamp, *this->getTimeZone(*dateTimeResult));
     result = (*dateTimeResult).timestamp.getSeconds();
     return true;
   }
@@ -267,8 +270,19 @@ struct UnixTimestampParseWithFormatFunction
 
   FOLLY_ALWAYS_INLINE void call(int64_t& result, const arg_type<Date>& input) {
     auto timestamp = Timestamp::fromDate(input);
-    timestamp.toGMT(*this->sessionTimeZone_);
-    result = timestamp.getSeconds();
+    toGMTWithGapCorrection(timestamp, *this->sessionTimeZone_);
+
+    int64_t seconds = timestamp.getSeconds();
+    // Spark converts days as microseconds and then divide it by 10e6 to get
+    // seconds. Spark throws exception if the microseconds overflows.
+    int128_t microseconds =
+        static_cast<int128_t>(seconds) * Timestamp::kMicrosecondsInSecond;
+    if (microseconds < INT64_MIN || microseconds > INT64_MAX) {
+      VELOX_USER_FAIL(
+          "Could not convert date {} to unix timestamp.",
+          DATE()->toString(input));
+    }
+    result = seconds;
   }
 
  private:
@@ -361,7 +375,7 @@ struct ToUtcTimestampFunction {
         : tz::locateZone(std::string_view(timezone), false);
     VELOX_USER_CHECK_NOT_NULL(
         fromTimezone, "Unknown time zone: '{}'", timezone);
-    result.toGMT(*fromTimezone);
+    toGMTWithGapCorrection(result, *fromTimezone);
   }
 
  private:
@@ -445,7 +459,8 @@ struct GetTimestampFunction {
     if (dateTimeResult.hasError()) {
       return false;
     }
-    (*dateTimeResult).timestamp.toGMT(*getTimeZone(*dateTimeResult));
+    toGMTWithGapCorrection(
+        (*dateTimeResult).timestamp, *getTimeZone(*dateTimeResult));
     result = (*dateTimeResult).timestamp;
     return true;
   }
@@ -543,6 +558,7 @@ struct DateTruncFunction {
   FOLLY_ALWAYS_INLINE void initialize(
       const std::vector<TypePtr>& /*inputTypes*/,
       const core::QueryConfig& config,
+      const arg_type<Varchar>* /*format*/,
       const arg_type<Timestamp>* /*timestamp*/) {
     timeZone_ = getTimeZoneFromConfig(config);
   }
@@ -566,6 +582,51 @@ struct DateTruncFunction {
 
  private:
   const tz::TimeZone* timeZone_ = nullptr;
+};
+
+/// Truncates a date to a specified time unit. Return NULL if the format is
+/// invalid. Format as abbreviated unit string is allowed.
+template <typename T>
+struct TruncFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<Date>* /*date*/,
+      const arg_type<Varchar>* format) {
+    if (format != nullptr) {
+      unit_ = fromDateTimeUnitString(
+          *format,
+          /*throwIfInvalid=*/false,
+          /*allowMicro=*/false,
+          /*allowAbbreviated=*/true);
+    }
+  }
+
+  FOLLY_ALWAYS_INLINE bool call(
+      out_type<Date>& result,
+      const arg_type<Date>& date,
+      const arg_type<Varchar>& format) {
+    const auto unitOption = unit_.has_value() ? unit_
+                                              : fromDateTimeUnitString(
+                                                    format,
+                                                    /*throwIfInvalid=*/false,
+                                                    /*allowMicro=*/false,
+                                                    /*allowAbbreviated=*/true);
+    // Return NULL if unit is illegal or unit is less than week.
+    if (!unitOption.has_value() || unitOption.value() < DateTimeUnit::kWeek) {
+      return false;
+    }
+    auto dateTime = getDateTime(date);
+    adjustDateTime(dateTime, unitOption.value());
+
+    result = Timestamp::calendarUtcToEpoch(dateTime) / kSecondsInDay;
+    return true;
+  }
+
+ private:
+  std::optional<DateTimeUnit> unit_;
 };
 
 template <typename T>
@@ -892,6 +953,133 @@ struct MillisToTimestampFunction {
   FOLLY_ALWAYS_INLINE void call(out_type<Timestamp>& result, const T& millis) {
     result = Timestamp::fromMillisNoError(millis);
   }
+};
+
+template <typename TExec>
+struct SecondsToTimestampFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(TExec);
+
+  template <typename T>
+  FOLLY_ALWAYS_INLINE void call(out_type<Timestamp>& result, T seconds) {
+    if constexpr (std::is_integral_v<T>) {
+      result = Timestamp(static_cast<int64_t>(seconds), 0);
+    } else {
+      // Cast to double and check bounds to prevent ensuing overflow.
+      const double secondsD = static_cast<double>(seconds);
+
+      if (secondsD >= kMaxSecondsD) {
+        result = Timestamp(kMaxSeconds, kMaxNanoseconds);
+        return;
+      }
+      if (secondsD <= kMinSecondsD) {
+        result = Timestamp(kMinSeconds, kMinNanoseconds);
+        return;
+      }
+
+      // Scale to microseconds and truncate toward zero.
+      const double microsD = secondsD * Timestamp::kMicrosecondsInSecond;
+      const int64_t micros = static_cast<int64_t>(microsD);
+
+      // Split into whole seconds and remaining microseconds.
+      int64_t wholeSeconds = micros / util::kMicrosPerSec;
+      int64_t remainingMicros = micros % util::kMicrosPerSec;
+      if (remainingMicros < 0) {
+        wholeSeconds -= 1;
+        remainingMicros += util::kMicrosPerSec;
+      }
+
+      const int64_t nano =
+          remainingMicros * Timestamp::kNanosecondsInMicrosecond;
+      result = Timestamp(wholeSeconds, nano);
+    }
+  }
+
+ private:
+  static constexpr double kMaxMicrosD =
+      static_cast<double>(std::numeric_limits<int64_t>::max());
+  static constexpr double kMinMicrosD =
+      static_cast<double>(std::numeric_limits<int64_t>::min());
+  static constexpr double kMaxSecondsD =
+      kMaxMicrosD / Timestamp::kMicrosecondsInSecond;
+  static constexpr double kMinSecondsD =
+      kMinMicrosD / Timestamp::kMicrosecondsInSecond;
+
+  // Cutoff values are based on Java's Long.MAX_VALUE and Long.MIN_VALUE.
+  static constexpr int64_t kMaxSeconds = 9223372036854LL;
+  static constexpr int64_t kMaxNanoseconds = 775807000LL;
+  static constexpr int64_t kMinSeconds = -9223372036855LL;
+  static constexpr int64_t kMinNanoseconds = 224192000LL;
+};
+
+template <typename T>
+struct TimestampDiffFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<Varchar>* unitString,
+      const arg_type<Timestamp>* /*timestamp1*/,
+      const arg_type<Timestamp>* /*timestamp2*/) {
+    VELOX_USER_CHECK_NOT_NULL(unitString);
+    unit_ = fromDateTimeUnitString(
+        *unitString, /*throwIfInvalid=*/true, /*allowMicro=*/true);
+    sessionTimeZone_ = getTimeZoneFromConfig(config);
+  }
+
+  FOLLY_ALWAYS_INLINE void call(
+      int64_t& result,
+      const arg_type<Varchar>& /*unitString*/,
+      const arg_type<Timestamp>& timestamp1,
+      const arg_type<Timestamp>& timestamp2) {
+    const auto unit = unit_.value();
+    result = diffTimestamp(
+        unit,
+        timestamp1,
+        timestamp2,
+        sessionTimeZone_,
+        /*respectLastDay=*/false);
+  }
+
+ private:
+  const tz::TimeZone* sessionTimeZone_ = nullptr;
+  std::optional<DateTimeUnit> unit_ = std::nullopt;
+};
+
+template <typename T>
+struct TimestampAddFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(T);
+
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<Varchar>* unitString,
+      const int32_t* /*value*/,
+      const arg_type<Timestamp>* /*timestamp*/) {
+    VELOX_USER_CHECK_NOT_NULL(unitString);
+    std::string unitStr(*unitString);
+    folly::toLowerAscii(unitStr);
+    if (unitStr == "dayofyear") {
+      unit_ = DateTimeUnit::kDay;
+    } else {
+      unit_ = fromDateTimeUnitString(
+          *unitString, /*throwIfInvalid=*/true, /*allowMicro=*/true);
+    }
+    sessionTimeZone_ = getTimeZoneFromConfig(config);
+  }
+
+  FOLLY_ALWAYS_INLINE void call(
+      out_type<Timestamp>& result,
+      const arg_type<Varchar>& /*unitString*/,
+      const int32_t value,
+      const arg_type<Timestamp>& timestamp) {
+    const auto unit = unit_.value();
+    result = addToTimestamp(unit, value, timestamp, sessionTimeZone_);
+  }
+
+ private:
+  const tz::TimeZone* sessionTimeZone_ = nullptr;
+  std::optional<DateTimeUnit> unit_ = std::nullopt;
 };
 
 } // namespace facebook::velox::functions::sparksql

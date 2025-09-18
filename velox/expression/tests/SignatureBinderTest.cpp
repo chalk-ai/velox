@@ -18,8 +18,11 @@
 #include <velox/type/HugeInt.h>
 #include <vector>
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/functions/prestosql/types/BigintEnumRegistration.h"
+#include "velox/functions/prestosql/types/BigintEnumType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneRegistration.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
+#include "velox/type/OpaqueCustomTypes.h"
 
 namespace facebook::velox::exec::test {
 namespace {
@@ -31,16 +34,30 @@ void testSignatureBinder(
   exec::SignatureBinder binder(*signature, actualTypes);
   ASSERT_TRUE(binder.tryBind());
 
+  std::vector<Coercion> coercions;
+  ASSERT_TRUE(binder.tryBindWithCoercions(coercions));
+
+  ASSERT_EQ(coercions.size(), actualTypes.size());
+  for (const auto& coercion : coercions) {
+    ASSERT_TRUE(coercion.type == nullptr);
+  }
+
   auto returnType = binder.tryResolveReturnType();
   ASSERT_TRUE(returnType != nullptr);
-  ASSERT_TRUE(expectedReturnType->equivalent(*returnType));
+  ASSERT_EQ(*expectedReturnType, *returnType);
 }
 
 void assertCannotResolve(
     const std::shared_ptr<exec::FunctionSignature>& signature,
-    const std::vector<TypePtr>& actualTypes) {
+    const std::vector<TypePtr>& actualTypes,
+    bool allowCoercion = false) {
   exec::SignatureBinder binder(*signature, actualTypes);
   ASSERT_FALSE(binder.tryBind());
+
+  if (allowCoercion) {
+    std::vector<Coercion> coercions;
+    ASSERT_FALSE(binder.tryBindWithCoercions(coercions));
+  }
 }
 
 TEST(SignatureBinderTest, decimals) {
@@ -230,7 +247,7 @@ TEST(SignatureBinderTest, decimals) {
       std::unordered_map<std::string, int> integerVariables;
       ASSERT_EQ(
           exec::SignatureBinder::tryResolveType(
-              typeSignature, {}, {}, integerVariables),
+              typeSignature, {}, {}, integerVariables, {}, {}),
           nullptr);
     }
     // Type parameter + constraint = error.
@@ -265,6 +282,19 @@ TEST(SignatureBinderTest, decimals) {
       assertCannotResolve(signature, {DECIMAL(11, 6), DECIMAL(20, 4)});
       assertCannotResolve(signature, {DECIMAL(11, 8), DECIMAL(18, 4)});
     }
+  }
+
+  // The precision and scale are fixed to the constraints.
+  {
+    auto signature = exec::FunctionSignatureBuilder()
+                         .integerVariable("a_precision", "38")
+                         .integerVariable("a_scale", "0")
+                         .returnType("varchar")
+                         .argumentType("decimal(a_precision, a_scale)")
+                         .build();
+
+    testSignatureBinder(signature, {DECIMAL(38, 0)}, VARCHAR());
+    assertCannotResolve(signature, {DECIMAL(18, 6)});
   }
 }
 
@@ -789,6 +819,7 @@ TEST(SignatureBinderTest, logicalType) {
 
 TEST(SignatureBinderTest, customType) {
   registerTimestampWithTimeZoneType();
+  registerBigintEnumType();
 
   // Custom type as an argument type.
   {
@@ -802,7 +833,7 @@ TEST(SignatureBinderTest, customType) {
   }
 
   {
-    // timestamp with time zone -> bigint
+    // timestamp with time zone, varchar -> array(integer)
     auto signature = exec::FunctionSignatureBuilder()
                          .returnType("array(integer)")
                          .argumentType("timestamp with time zone")
@@ -815,13 +846,25 @@ TEST(SignatureBinderTest, customType) {
 
   // Custom type as a return type.
   {
-    // timestamp with time zone -> bigint
+    // integer -> timestamp with time zone
     auto signature = exec::FunctionSignatureBuilder()
                          .returnType("timestamp with time zone")
                          .argumentType("integer")
                          .build();
 
     testSignatureBinder(signature, {INTEGER()}, TIMESTAMP_WITH_TIME_ZONE());
+  }
+
+  {
+    // bigint_enum(enumParameters) -> bigint
+    auto signature = exec::FunctionSignatureBuilder()
+                         .enumVariable("E")
+                         .returnType("bigint")
+                         .argumentType("bigint_enum(E)")
+                         .build();
+    LongEnumParameter moodInfo(
+        "test.enum.mood", {{"CURIOUS", -2}, {"HAPPY", 0}});
+    testSignatureBinder(signature, {BIGINT_ENUM(moodInfo)}, BIGINT());
   }
 
   // Unknown custom type.
@@ -831,6 +874,59 @@ TEST(SignatureBinderTest, customType) {
           .argumentType("fancy_type")
           .build(),
       "Type doesn't exist: 'FANCY_TYPE'");
+}
+
+// Define a test custom opaque type and ensure signature binder can correctly
+// bind types.
+TEST(SignatureBinderTest, opaqueCustomType) {
+  // This is the C++ type registered within the opaque capsule. This could be
+  // anything.
+  struct Tuple {
+    int64_t x;
+    int64_t y;
+  };
+
+  // Custom type name.
+  static constexpr char kName[] = "my_custom_opaque";
+  using MyOpaqueRegister = OpaqueCustomTypeRegister<Tuple, kName>;
+
+  // Register type and build a TypePtr.
+  MyOpaqueRegister::registerType();
+  auto opaqueType = MyOpaqueRegister::get();
+
+  // Custom opaque type as an argument type.
+  {
+    // my_custom_opaque -> bigint
+    auto signature = exec::FunctionSignatureBuilder()
+                         .returnType("bigint")
+                         .argumentType("my_custom_opaque")
+                         .build();
+    testSignatureBinder(signature, {opaqueType}, BIGINT());
+  }
+  {
+    // varchar, my_custom_opaque, double -> real
+    auto signature = exec::FunctionSignatureBuilder()
+                         .returnType("real")
+                         .argumentType("varchar")
+                         .argumentType("my_custom_opaque")
+                         .argumentType("double")
+                         .build();
+    testSignatureBinder(signature, {VARCHAR(), opaqueType, DOUBLE()}, REAL());
+  }
+
+  // To make it more idiomatic for Velox's coding standards, one could also
+  // define this helper function somewhere:
+  auto MY_CUSTOM_OPAQUE = []() -> TypePtr { return MyOpaqueRegister::get(); };
+
+  // Custom opaque type as a return type.
+  {
+    // integer -> my_custom_opaque
+    auto signature = exec::FunctionSignatureBuilder()
+                         .returnType("my_custom_opaque")
+                         .argumentType("integer")
+                         .build();
+    testSignatureBinder(signature, {INTEGER()}, MY_CUSTOM_OPAQUE());
+  }
 }
 
 TEST(SignatureBinderTest, hugeIntType) {
@@ -918,6 +1014,128 @@ TEST(SignatureBinderTest, namedRows) {
         {ROW({{"my_map", MAP(BIGINT(), ROW({{"bla", VARCHAR()}}))}})},
         VARCHAR());
   }
+
+  // Return named row.
+  {
+    auto signature = exec::FunctionSignatureBuilder()
+                         .returnType("row(foo bigint)")
+                         .argumentType("varchar")
+                         .build();
+    testSignatureBinder(signature, {VARCHAR()}, ROW({{"foo", BIGINT()}}));
+  }
+}
+
+std::string toString(const std::vector<TypePtr>& types) {
+  std::stringstream out;
+
+  for (auto i = 0; i < types.size(); ++i) {
+    if (i > 0) {
+      out << ", ";
+    }
+    out << types.at(i)->toString();
+  }
+
+  return out.str();
+}
+
+void testCoercions(
+    const exec::FunctionSignaturePtr& signature,
+    const std::vector<TypePtr>& actualTypes,
+    const std::vector<TypePtr>& expectedCoercions,
+    const TypePtr& expectedReturnType) {
+  SCOPED_TRACE(fmt::format("Signature: {}", signature->toString()));
+  SCOPED_TRACE(fmt::format("Actual types: {}", toString(actualTypes)));
+
+  exec::SignatureBinder binder(*signature, actualTypes);
+
+  ASSERT_FALSE(binder.tryBind());
+
+  std::vector<Coercion> coercions;
+  ASSERT_TRUE(binder.tryBindWithCoercions(coercions));
+
+  ASSERT_EQ(expectedCoercions.size(), coercions.size());
+  for (auto i = 0; i < expectedCoercions.size(); ++i) {
+    if (expectedCoercions[i] == nullptr) {
+      ASSERT_TRUE(coercions[i].type == nullptr);
+    } else {
+      ASSERT_EQ(*coercions[i].type, *expectedCoercions[i]);
+    }
+  }
+
+  auto returnType = binder.tryResolveReturnType();
+  ASSERT_TRUE(returnType != nullptr);
+  ASSERT_EQ(*expectedReturnType, *returnType);
+}
+
+void testNoCoercions(
+    const exec::FunctionSignaturePtr& signature,
+    const std::vector<TypePtr>& actualTypes,
+    const TypePtr& expectedReturnType) {
+  SCOPED_TRACE(fmt::format("Signature: {}", signature->toString()));
+  SCOPED_TRACE(fmt::format("Actual types: {}", toString(actualTypes)));
+
+  {
+    exec::SignatureBinder binder(*signature, actualTypes);
+    ASSERT_TRUE(binder.tryBind());
+
+    auto returnType = binder.tryResolveReturnType();
+    ASSERT_TRUE(returnType != nullptr);
+    ASSERT_EQ(*expectedReturnType, *returnType);
+  }
+
+  {
+    exec::SignatureBinder binder(*signature, actualTypes);
+
+    std::vector<Coercion> coercions;
+    ASSERT_TRUE(binder.tryBindWithCoercions(coercions));
+
+    auto returnType = binder.tryResolveReturnType();
+    ASSERT_TRUE(returnType != nullptr);
+    ASSERT_EQ(*expectedReturnType, *returnType);
+
+    ASSERT_EQ(actualTypes.size(), coercions.size());
+    for (auto i = 0; i < actualTypes.size(); ++i) {
+      ASSERT_TRUE(coercions[i].type == nullptr);
+    }
+  }
+}
+
+TEST(SignatureBinderTest, coercions) {
+  auto signature = exec::FunctionSignatureBuilder()
+                       .returnType("boolean")
+                       .argumentType("smallint")
+                       .argumentType("integer")
+                       .argumentType("bigint")
+                       .argumentType("real")
+                       .argumentType("double")
+                       .build();
+
+  testCoercions(
+      signature,
+      {TINYINT(), TINYINT(), TINYINT(), TINYINT(), TINYINT()},
+      {SMALLINT(), INTEGER(), BIGINT(), REAL(), DOUBLE()},
+      BOOLEAN());
+
+  testCoercions(
+      signature,
+      {SMALLINT(), SMALLINT(), SMALLINT(), REAL(), REAL()},
+      {nullptr, INTEGER(), BIGINT(), nullptr, DOUBLE()},
+      BOOLEAN());
+
+  testNoCoercions(
+      signature,
+      {SMALLINT(), INTEGER(), BIGINT(), REAL(), DOUBLE()},
+      BOOLEAN());
+
+  assertCannotResolve(
+      signature,
+      {INTEGER(), INTEGER(), INTEGER(), INTEGER(), INTEGER()},
+      /*allowCoercion*/ true);
+
+  assertCannotResolve(
+      signature,
+      {SMALLINT(), INTEGER(), VARCHAR(), INTEGER(), INTEGER()},
+      /*allowCoercion*/ true);
 }
 
 } // namespace

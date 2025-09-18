@@ -47,25 +47,17 @@ class VeloxIn10MinDemo : public VectorTestBase {
     // Register type resolver with DuckDB SQL parser.
     parse::registerTypeResolver();
 
-    // Register the TPC-H Connector Factory.
-    connector::registerConnectorFactory(
-        std::make_shared<connector::tpch::TpchConnectorFactory>());
-
     // Create and register a TPC-H connector.
-    auto tpchConnector =
-        connector::getConnectorFactory(
-            connector::tpch::TpchConnectorFactory::kTpchConnectorName)
-            ->newConnector(
-                kTpchConnectorId,
-                std::make_shared<config::ConfigBase>(
-                    std::unordered_map<std::string, std::string>()));
+    connector::tpch::TpchConnectorFactory factory;
+    auto tpchConnector = factory.newConnector(
+        kTpchConnectorId,
+        std::make_shared<config::ConfigBase>(
+            std::unordered_map<std::string, std::string>()));
     connector::registerConnector(tpchConnector);
   }
 
   ~VeloxIn10MinDemo() {
     connector::unregisterConnector(kTpchConnectorId);
-    connector::unregisterConnectorFactory(
-        connector::tpch::TpchConnectorFactory::kTpchConnectorName);
   }
 
   /// Parse SQL expression into a typed expression tree using DuckDB SQL parser.
@@ -303,7 +295,7 @@ int main(int argc, char** argv) {
   folly::Init init{&argc, &argv, false};
 
   // Initializes the process-wide memory-manager with the default options.
-  memory::initializeMemoryManager({});
+  memory::initializeMemoryManager(memory::MemoryManager::Options{});
 
   VeloxIn10MinDemo demo;
   demo.run();

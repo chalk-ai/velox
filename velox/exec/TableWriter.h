@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include "OperatorUtils.h"
 #include "velox/core/PlanNode.h"
+#include "velox/exec/ColumnStatsCollector.h"
 #include "velox/exec/MemoryReclaimer.h"
 #include "velox/exec/Operator.h"
 
@@ -76,8 +76,8 @@ class TableWriteTraits {
       "pageSinkCommitStrategy";
   static constexpr std::string_view klastPageContextKey = "lastPage";
 
-  static const RowTypePtr outputType(
-      const std::shared_ptr<core::AggregationNode>& aggregationNode = nullptr);
+  static RowTypePtr outputType(
+      const std::optional<core::ColumnStatsSpec>& columnStatsSpec);
 
   /// Returns the parsed commit context from table writer 'output'.
   static folly::dynamic getTableCommitContext(const RowVectorPtr& output);
@@ -102,7 +102,7 @@ class TableWriter : public Operator {
   TableWriter(
       int32_t operatorId,
       DriverCtx* driverCtx,
-      const std::shared_ptr<const core::TableWriteNode>& tableWriteNode);
+      const core::TableWriteNodePtr& tableWriteNode);
 
   BlockingReason isBlocked(ContinueFuture* future) override;
 
@@ -137,6 +137,14 @@ class TableWriter : public Operator {
     // the table writer operator pool. So we report the memory usage from
     // 'connectorPool_'.
     stats.memoryStats = MemoryStats::memStatsFromPool(connectorPool_);
+
+    if (FOLLY_LIKELY(dataSink_ != nullptr)) {
+      const auto connectorStats = dataSink_->runtimeStats();
+      for (const auto& [name, counter] : connectorStats) {
+        stats.runtimeStats[name] = RuntimeMetric(counter.value, counter.unit);
+      }
+    }
+
     return stats;
   }
 
@@ -214,8 +222,7 @@ class TableWriter : public Operator {
 
   // Sets type mappings in `inputMapping_`, `mappedInputType_`, and
   // `mappedOutputType_`.
-  void setTypeMappings(
-      const std::shared_ptr<const core::TableWriteNode>& tableWriteNode);
+  void setTypeMappings(const core::TableWriteNodePtr& tableWriteNode);
 
   std::string createTableCommitContext(bool lastOutput);
 
@@ -223,15 +230,14 @@ class TableWriter : public Operator {
 
   const DriverCtx* const driverCtx_;
   memory::MemoryPool* const connectorPool_;
-  const std::shared_ptr<connector::ConnectorInsertTableHandle>
-      insertTableHandle_;
+  const connector::ConnectorInsertTableHandlePtr insertTableHandle_;
   const connector::CommitStrategy commitStrategy_;
   // Records the writer operator creation time in ns. This is used to record
   // the running wall time of a writer operator. This can helps to detect the
   // slow scaled writer scheduling in Prestissimo.
   const uint64_t createTimeUs_{0};
 
-  std::unique_ptr<Operator> aggregation_;
+  std::unique_ptr<ColumnStatsCollector> statsCollector_;
   std::shared_ptr<connector::Connector> connector_;
   std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
   std::unique_ptr<connector::DataSink> dataSink_;

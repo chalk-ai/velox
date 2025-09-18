@@ -16,15 +16,12 @@
 
 #pragma once
 
-#include <type_traits>
-
 #include <folly/container/F14Map.h>
 #include <folly/hash/Hash.h>
 #include <glog/logging.h>
 
 #include "velox/type/Type.h"
 #include "velox/vector/BaseVector.h"
-#include "velox/vector/LazyVector.h"
 #include "velox/vector/TypeAliases.h"
 
 namespace facebook::velox {
@@ -36,16 +33,16 @@ class RowVector : public BaseVector {
 
   RowVector(
       velox::memory::MemoryPool* pool,
-      std::shared_ptr<const Type> type,
+      const TypePtr& type,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       std::vector<VectorPtr> children,
       std::optional<vector_size_t> nullCount = std::nullopt)
       : BaseVector(
             pool,
             type,
             VectorEncoding::Simple::ROW,
-            nulls,
+            std::move(nulls),
             length,
             std::nullopt,
             nullCount,
@@ -59,7 +56,7 @@ class RowVector : public BaseVector {
 
     // Check child vector types.
     // This can be an expensive operation, so it's only done at debug time.
-    for (auto i = 0; i < children_.size(); i++) {
+    for (size_t i = 0; i < children_.size(); i++) {
       const auto& child = children_[i];
       if (child) {
         VELOX_DCHECK(
@@ -79,7 +76,7 @@ class RowVector : public BaseVector {
       std::shared_ptr<const Type> type,
       velox::memory::MemoryPool* pool);
 
-  virtual ~RowVector() override {}
+  ~RowVector() override = default;
 
   bool containsNullAt(vector_size_t idx) const override;
 
@@ -98,6 +95,11 @@ class RowVector : public BaseVector {
   }
 
   std::unique_ptr<SimpleVector<uint64_t>> hashAll() const override;
+
+  /// Convenience getter. Shortcut for asRowType(type()).
+  RowTypePtr rowType() const {
+    return asRowType(type());
+  }
 
   /// Return the number of child vectors.
   /// This will exactly match the number of fields.
@@ -164,12 +166,12 @@ class RowVector : public BaseVector {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings(
+  VectorPtr testingCopyPreserveEncodings(
       velox::memory::MemoryPool* pool = nullptr) const override {
     std::vector<VectorPtr> copiedChildren(children_.size());
 
-    for (auto i = 0; i < children_.size(); ++i) {
-      copiedChildren[i] = children_[i]->copyPreserveEncodings(pool);
+    for (size_t i = 0; i < children_.size(); ++i) {
+      copiedChildren[i] = children_[i]->testingCopyPreserveEncodings(pool);
     }
 
     auto selfPool = pool ? pool : pool_;
@@ -178,7 +180,7 @@ class RowVector : public BaseVector {
         type_,
         AlignedBuffer::copy(selfPool, nulls_),
         length_,
-        copiedChildren,
+        std::move(copiedChildren),
         nullCount_);
   }
 
@@ -197,6 +199,12 @@ class RowVector : public BaseVector {
   using BaseVector::toString;
 
   std::string toString(vector_size_t index) const override;
+
+  /// For backwards compatibility.
+  /// TODO Remove after updating callsites.
+  [[deprecated]]
+  std::string deprecatedToString(vector_size_t index, vector_size_t limit)
+      const;
 
   void ensureWritable(const SelectivityVector& rows) override;
 
@@ -312,6 +320,7 @@ class RowVector : public BaseVector {
 /// 'sizes' data and provide manipulations on them.
 struct ArrayVectorBase : BaseVector {
   ArrayVectorBase(const ArrayVectorBase&) = delete;
+
   const BufferPtr& offsets() const {
     return offsets_;
   }
@@ -336,12 +345,12 @@ struct ArrayVectorBase : BaseVector {
     return rawSizes_[index];
   }
 
-  BufferPtr mutableOffsets(size_t size) {
+  BufferPtr mutableOffsets(vector_size_t size) {
     BaseVector::resizeIndices(length_, size, pool_, offsets_, &rawOffsets_);
     return offsets_;
   }
 
-  BufferPtr mutableSizes(size_t size) {
+  BufferPtr mutableSizes(vector_size_t size) {
     BaseVector::resizeIndices(length_, size, pool_, sizes_, &rawSizes_);
     return sizes_;
   }
@@ -382,19 +391,24 @@ struct ArrayVectorBase : BaseVector {
       const vector_size_t* sizes,
       std::vector<vector_size_t>& indices);
 
+  /// Ensure the offsets and sizes of null rows are all 0.  It's caller's
+  /// responsibility to make sure the vector as well as offsets and sizes
+  /// buffers are mutable (e.g. singly referenced).
+  void ensureNullRowsEmpty();
+
  protected:
   ArrayVectorBase(
       velox::memory::MemoryPool* pool,
-      std::shared_ptr<const Type> type,
+      TypePtr type,
       VectorEncoding::Simple encoding,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       std::optional<vector_size_t> nullCount,
       BufferPtr offsets,
       BufferPtr lengths)
       : BaseVector(
             pool,
-            type,
+            std::move(type),
             encoding,
             std::move(nulls),
             length,
@@ -436,7 +450,7 @@ class ArrayVector : public ArrayVectorBase {
       velox::memory::MemoryPool* pool,
       std::shared_ptr<const Type> type,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       BufferPtr offsets,
       BufferPtr lengths,
       VectorPtr elements,
@@ -493,7 +507,7 @@ class ArrayVector : public ArrayVectorBase {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings(
+  VectorPtr testingCopyPreserveEncodings(
       velox::memory::MemoryPool* pool = nullptr) const override {
     auto selfPool = pool ? pool : pool_;
     return std::make_shared<ArrayVector>(
@@ -503,7 +517,7 @@ class ArrayVector : public ArrayVectorBase {
         length_,
         AlignedBuffer::copy(selfPool, offsets_),
         AlignedBuffer::copy(selfPool, sizes_),
-        elements_->copyPreserveEncodings(pool),
+        elements_->testingCopyPreserveEncodings(pool),
         nullCount_);
   }
 
@@ -548,9 +562,9 @@ class MapVector : public ArrayVectorBase {
 
   MapVector(
       velox::memory::MemoryPool* pool,
-      std::shared_ptr<const Type> type,
+      const TypePtr& type,
       BufferPtr nulls,
-      size_t length,
+      vector_size_t length,
       BufferPtr offsets,
       BufferPtr sizes,
       VectorPtr keys,
@@ -589,7 +603,7 @@ class MapVector : public ArrayVectorBase {
         type->childAt(1)->toString());
   }
 
-  virtual ~MapVector() override {}
+  ~MapVector() override = default;
 
   bool containsNullAt(vector_size_t idx) const override;
 
@@ -636,7 +650,7 @@ class MapVector : public ArrayVectorBase {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings(
+  VectorPtr testingCopyPreserveEncodings(
       velox::memory::MemoryPool* pool = nullptr) const override {
     auto selfPool = pool ? pool : pool_;
     return std::make_shared<MapVector>(
@@ -646,8 +660,8 @@ class MapVector : public ArrayVectorBase {
         length_,
         AlignedBuffer::copy(selfPool, offsets_),
         AlignedBuffer::copy(selfPool, sizes_),
-        keys_->copyPreserveEncodings(pool),
-        values_->copyPreserveEncodings(pool),
+        keys_->testingCopyPreserveEncodings(pool),
+        values_->testingCopyPreserveEncodings(pool),
         nullCount_,
         sortedKeys_);
   }
@@ -709,7 +723,7 @@ class MapVector : public ArrayVectorBase {
       const folly::Range<DecodedVector*>& others) const;
 
  protected:
-  virtual void resetDataDependentFlags(const SelectivityVector* rows) override {
+  void resetDataDependentFlags(const SelectivityVector* rows) override {
     BaseVector::resetDataDependentFlags(rows);
     sortedKeys_ = false;
   }
