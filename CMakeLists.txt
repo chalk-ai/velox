@@ -179,6 +179,23 @@ option(VELOX_ENABLE_FAISS "Build faiss vector search support" OFF)
 # is broken if you use ninja.
 option(VELOX_FORCE_COLORED_OUTPUT "Always produce ANSI-colored output (GNU/Clang only)." OFF)
 
+if(DEFINED ARROW_INCLUDE_PATH
+   AND ARROW_INCLUDE_PATH STREQUAL "ARROW_INCLUDE_PATH-NOTFOUND")
+  unset(ARROW_INCLUDE_PATH CACHE)
+endif()
+
+if(NOT DEFINED ARROW_INCLUDE_PATH
+   AND DEFINED VCPKG_INSTALLED_DIR
+   AND DEFINED VCPKG_TARGET_TRIPLET)
+  set(_libchalk_default_arrow_include
+      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
+  set(ARROW_INCLUDE_PATH
+      "${_libchalk_default_arrow_include}"
+      CACHE PATH "Path to Apache Arrow headers" FORCE)
+endif()
+
+unset(_libchalk_default_arrow_include)
+
 if(${VELOX_BUILD_MINIMAL} OR ${VELOX_BUILD_MINIMAL_WITH_DWIO})
   # Enable and disable components for velox base build
   set(VELOX_BUILD_TESTING OFF)
