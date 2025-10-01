@@ -1200,12 +1200,19 @@ exec::AggregateRegistrationResult registerMinMaxBy(
             mapAggregationStepToName(step),
             toString(argTypes));
 
-        const bool nAgg = (argTypes.size() == 3) ||
-            (argTypes.size() == 1 && argTypes[0]->size() == 3);
+        if (facebook::velox::exec::isPartialInput(step)) {
+          if (argTypes.size() == 1 && argTypes[0]->size() == 3) {
+            return createNArg<NAggregate>(
+              resultType, argTypes.at(0)->childAt(2)->childAt(0), argTypes.at(0)->childAt(1)->childAt(0), errorMessage);
+          }
+        }
 
-        if (nAgg) {
+        if (argTypes.size() == 3) {
           return createNArg<NAggregate>(
-              resultType, argTypes[0], argTypes[1], errorMessage);
+              resultType, argTypes.at(0), argTypes.at(1), errorMessage);
+        } else if (argTypes.size() == 1 && argTypes[0]->size() == 3) {
+          return createNArg<NAggregate>(
+              resultType, argTypes.at(0)->childAt(1), argTypes.at(0)->childAt(2), errorMessage);
         } else {
           if (argTypes[1]->providesCustomComparison()) {
             return functions::aggregate::
