@@ -19,12 +19,13 @@
 #include "velox/exec/Driver.h"
 #include "velox/exec/Operator.h"
 
+#include <rmm/mr/device/device_memory_resource.hpp>
+
 #include <gflags/gflags.h>
 
 DECLARE_bool(velox_cudf_enabled);
 DECLARE_string(velox_cudf_memory_resource);
 DECLARE_bool(velox_cudf_debug);
-DECLARE_bool(velox_cudf_table_scan);
 
 namespace facebook::velox::cudf_velox {
 
@@ -44,7 +45,7 @@ class CompileState {
 
   // Replaces sequences of Operators in the Driver given at construction with
   // cuDF equivalents. Returns true if the Driver was changed.
-  bool compile();
+  bool compile(bool force_replace);
 
   const exec::DriverFactory& driverFactory_;
   exec::Driver& driver_;
@@ -67,22 +68,31 @@ class CudfOptions {
 
   const bool cudfEnabled;
   const std::string cudfMemoryResource;
-  const bool cudfTableScan;
   // The initial percent of GPU memory to allocate for memory resource for one
   // thread.
   int memoryPercent;
+  const bool force_replace;
+
+  CudfOptions(bool force_repl)
+      : cudfEnabled(FLAGS_velox_cudf_enabled),
+        cudfMemoryResource(FLAGS_velox_cudf_memory_resource),
+        memoryPercent(50),
+        force_replace{force_repl},
+        prefix_("") {}
 
  private:
   CudfOptions()
       : cudfEnabled(FLAGS_velox_cudf_enabled),
         cudfMemoryResource(FLAGS_velox_cudf_memory_resource),
-        cudfTableScan(FLAGS_velox_cudf_table_scan),
         memoryPercent(50),
+        force_replace{false},
         prefix_("") {}
   CudfOptions(const CudfOptions&) = delete;
   CudfOptions& operator=(const CudfOptions&) = delete;
   std::string prefix_;
 };
+
+extern std::shared_ptr<rmm::mr::device_memory_resource> mr_;
 
 /// Registers adapter to add cuDF operators to Drivers.
 void registerCudf(const CudfOptions& options = CudfOptions::getInstance());
@@ -95,10 +105,5 @@ bool cudfIsRegistered();
  * @brief Returns true if the velox_cudf_debug flag is set to true.
  */
 bool cudfDebugEnabled();
-
-/**
- * @brief Returns true if the velox_cudf_table_scan flag is set to true.
- */
-bool cudfTableScanEnabled();
 
 } // namespace facebook::velox::cudf_velox
