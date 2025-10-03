@@ -46,8 +46,6 @@ std::string defaultCacheKey(
   return std::string(httpPath.substr(0, authorityEnd));
 }
 
-} // namespace
-
 std::shared_ptr<FileSystem> fileSystemGenerator(
     std::shared_ptr<const config::ConfigBase> properties,
     std::string_view httpPath) {
@@ -81,6 +79,8 @@ std::shared_ptr<FileSystem> fileSystemGenerator(
         return fs;
       });
 }
+
+} // namespace
 #endif
 
 void registerHttpFileSystem(CacheKeyFn identityFunction) {
