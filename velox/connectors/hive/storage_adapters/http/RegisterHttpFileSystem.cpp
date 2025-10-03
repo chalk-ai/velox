@@ -95,9 +95,10 @@ void registerHttpFileSystem(CacheKeyFn identityFunction) {
 void finalizeHttpFileSystem() {
 #ifdef VELOX_ENABLE_HTTP
   fileSystems().withWLock([&](auto& instanceMap) {
-    bool single_use = std::all_of(instanceMap.begin(), instanceMap.end(), [](const auto& kv) {
-      return kv.second.use_count() == 1;
-    });
+    bool singleUseCount = std::all_of(
+        instanceMap.begin(),
+        instanceMap.end(),
+        [](const auto& kv) { return kv.second.use_count() == 1; });
     VELOX_CHECK(singleUseCount, "Cannot finalize HttpFileSystem while in use");
     instanceMap.clear();
   });
