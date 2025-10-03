@@ -150,7 +150,7 @@ class HttpReadFile : public ReadFile {
       const auto value = options.fileSize.value();
       VELOX_CHECK_GE(value, 0, "File size must not be negative");
       size_.store(value, std::memory_order_release);
-      sizeInitialized_.store(true, std::memory_order_release);
+      folly::set_once(sizeInitialized_);
     }
   }
 
@@ -204,7 +204,7 @@ class HttpReadFile : public ReadFile {
 
   uint64_t size() const override {
     ensureSize();
-    return static_cast<uint64_t>(size_.load(std::memory_order_acquire));
+    return static_cast<uint64_t>(size_.load(std::memory_order_relaxed));
   }
 
   uint64_t memoryUsage() const override {
@@ -225,19 +225,12 @@ class HttpReadFile : public ReadFile {
 
  private:
   void ensureSize() const {
-    if (sizeInitialized_.load(std::memory_order_acquire)) {
-      return;
-    }
-    std::scoped_lock const guard(sizeMutex_);
-    if (sizeInitialized_.load(std::memory_order_relaxed)) {
-      return;
-    }
-    const auto remoteSize = fetchContentLength();
-    size_.store(remoteSize, std::memory_order_release);
-    sizeInitialized_.store(true, std::memory_order_release);
+    folly::call_once(sizeInitialized_, [&]() {
+      size_.store(fetchContentLength(), std::memory_order_release);
+    });
   }
 
-  uint64_t fetchContentLength() const {
+  int64_t fetchContentLength() const {
     CurlEasyHandle handle;
     auto* curl = handle.get();
     applyCommonCurlOptions(curl);
@@ -279,7 +272,7 @@ class HttpReadFile : public ReadFile {
         -1,
         "Server did not provide Content-Length for '{}'", url_);
 
-    return static_cast<uint64_t>(contentLength);
+    return static_cast<int64_t>(contentLength);
   }
 
   void performRead(uint64_t offset, uint64_t length, char* output) const {
@@ -327,9 +320,8 @@ class HttpReadFile : public ReadFile {
   }
 
   std::string url_;
-  mutable std::mutex sizeMutex_;
   mutable std::atomic<int64_t> size_{-1};
-  mutable std::atomic<bool> sizeInitialized_{false};
+  mutable folly::once_flag sizeInitialized_;
 };
 
 } // namespace
