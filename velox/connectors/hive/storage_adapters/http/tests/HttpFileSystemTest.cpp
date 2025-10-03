@@ -36,6 +36,7 @@
 #include <cerrno>
 #include <cstring>
 #include <future>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -49,7 +50,9 @@ class TestHttpServer {
   explicit TestHttpServer(
       std::unordered_map<std::string, std::string> files)
       : files_(std::move(files)) {
-    serverThread_ = std::thread([this]() { run(); });
+    serverThread_ = std::jthread([this](std::stop_token stopToken) {
+      run(std::move(stopToken));
+    });
     port_ = portPromise_.get_future().get();
   }
 
@@ -65,7 +68,9 @@ class TestHttpServer {
     if (stopped_.exchange(true)) {
       return;
     }
-    shouldStop_.store(true);
+    if (serverThread_.joinable()) {
+      serverThread_.request_stop();
+    }
     if (port_ != 0) {
       int fd = ::socket(AF_INET, SOCK_STREAM, 0);
       if (fd >= 0) {
@@ -84,7 +89,7 @@ class TestHttpServer {
   }
 
  private:
-  void run() {
+  void run(std::stop_token stopToken) {
     int const listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     VELOX_CHECK_GE(listenFd, 0, "Failed to create socket");
 
@@ -111,7 +116,7 @@ class TestHttpServer {
         "getsockname failed");
     portPromise_.set_value(ntohs(local.sin_port));
 
-    while (!shouldStop_.load()) {
+    while (!stopToken.stop_requested()) {
       sockaddr_in clientAddr{};
       socklen_t clientLen = sizeof(clientAddr);
       int const clientFd = ::accept(
@@ -120,7 +125,7 @@ class TestHttpServer {
         if (errno == EINTR) {
           continue;
         }
-        if (shouldStop_.load()) {
+        if (stopToken.stop_requested()) {
           break;
         }
         continue;
@@ -242,8 +247,7 @@ class TestHttpServer {
 
   std::unordered_map<std::string, std::string> files_;
   std::promise<uint16_t> portPromise_;
-  std::thread serverThread_;
-  std::atomic<bool> shouldStop_{false};
+  std::jthread serverThread_;
   std::atomic<bool> stopped_{false};
   uint16_t port_{0};
 };
