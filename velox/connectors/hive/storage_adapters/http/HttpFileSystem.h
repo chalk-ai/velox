@@ -6,9 +6,7 @@ namespace facebook::velox::filesystems {
 
 /// Initializes the global curl state required by HttpFileSystem. Safe to call
 /// multiple times; initialization happens once.
-bool initializeHttp(
-    std::string_view logLevel = "FATAL",
-    std::optional<std::string_view> logLocation = std::nullopt);
+bool initializeHttp();
 
 /// Releases global curl state. Safe to call without a preceding initialize.
 void finalizeHttp();

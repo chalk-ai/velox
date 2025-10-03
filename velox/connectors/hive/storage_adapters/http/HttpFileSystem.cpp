@@ -78,7 +78,7 @@ struct WriteCtx {
   size_t capacity;
   size_t offset{0};
   bool overflow{false};
-};
+} __attribute__((aligned(32)));
 
 size_t writeToFixedBuffer(char* ptr, size_t size, size_t nmemb, void* userdata) {
   auto* ctx = static_cast<WriteCtx*>(userdata);
@@ -99,10 +99,8 @@ namespace {
 struct CurlGlobalState {
   CurlGlobalState() = default;
 
-  bool initialize(
-      std::string_view /*logLevel*/,
-      std::optional<std::string_view> /*logLocation*/) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  bool initialize() {
+    std::scoped_lock lock(mutex_);
     if (initialized_) {
       return false;
     }
@@ -119,7 +117,7 @@ struct CurlGlobalState {
   }
 
   void finalize() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (!initialized_) {
       return;
     }
@@ -195,7 +193,7 @@ class HttpReadFile : public ReadFile {
 
     size_t cursor = 0;
     for (const auto& range : buffers) {
-      if (range.data() != nullptr && range.size() > 0) {
+      if (range.data() != nullptr && !range.empty()) {
         memcpy(range.data(), temp.data() + cursor, range.size());
       }
       cursor += range.size();
@@ -230,7 +228,7 @@ class HttpReadFile : public ReadFile {
     if (sizeInitialized_.load(std::memory_order_acquire)) {
       return;
     }
-    std::lock_guard<std::mutex> guard(sizeMutex_);
+    std::scoped_lock const guard(sizeMutex_);
     if (sizeInitialized_.load(std::memory_order_relaxed)) {
       return;
     }
@@ -303,7 +301,7 @@ class HttpReadFile : public ReadFile {
     auto range = fmt::format("{}-{}", offset, offset + length - 1);
     curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
 
-    WriteCtx ctx{output, static_cast<size_t>(length)};
+    WriteCtx ctx{.data=output, .capacity=static_cast<size_t>(length)};
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToFixedBuffer);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
 
@@ -336,12 +334,8 @@ class HttpReadFile : public ReadFile {
 
 } // namespace
 
-bool initializeHttp(
-    std::string_view logLevel,
-    std::optional<std::string_view> logLocation) {
-  (void)logLevel;
-  (void)logLocation;
-  return curlState().initialize(logLevel, logLocation);
+bool initializeHttp() {
+  return curlState().initialize();
 }
 
 void finalizeHttp() {
@@ -363,10 +357,10 @@ std::string HttpFileSystem::name() const {
 }
 
 std::string_view HttpFileSystem::extractPath(std::string_view path) const {
-  if (path.rfind(kHttpScheme, 0) == 0) {
+  if (path.starts_with(kHttpScheme)) {
     return path.substr(kHttpScheme.size());
   }
-  if (path.rfind(kHttpsScheme, 0) == 0) {
+  if (path.starts_with(kHttpsScheme)) {
     return path.substr(kHttpsScheme.size());
   }
   return path;

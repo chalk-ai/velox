@@ -69,10 +69,11 @@ class TestHttpServer {
     if (port_ != 0) {
       int fd = ::socket(AF_INET, SOCK_STREAM, 0);
       if (fd >= 0) {
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port_);
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sockaddr_in addr{
+          .sin_family = AF_INET,
+          .sin_port = htons(port_),
+          .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
+        };
         ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
         ::close(fd);
       }
@@ -84,16 +85,17 @@ class TestHttpServer {
 
  private:
   void run() {
-    int listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
+    int const listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     VELOX_CHECK_GE(listenFd, 0, "Failed to create socket");
 
     int enable = 1;
     ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(0);
+    sockaddr_in addr{
+      .sin_family = AF_INET,
+      .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+      .sin_port = htons(0)
+    };
 
     VELOX_CHECK_EQ(
         ::bind(listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)),
@@ -112,7 +114,7 @@ class TestHttpServer {
     while (!shouldStop_.load()) {
       sockaddr_in clientAddr{};
       socklen_t clientLen = sizeof(clientAddr);
-      int clientFd = ::accept(
+      int const clientFd = ::accept(
           listenFd, reinterpret_cast<sockaddr*>(&clientAddr), &clientLen);
       if (clientFd < 0) {
         if (errno == EINTR) {
@@ -135,14 +137,12 @@ class TestHttpServer {
     request.reserve(1024);
     char buffer[1024];
     while (request.find("\r\n\r\n") == std::string::npos) {
-      ssize_t bytes = ::recv(clientFd, buffer, sizeof(buffer), 0);
+      constexpr int noFlags = 0x0;
+      ssize_t const bytes = ::recv(clientFd, buffer, sizeof(buffer), noFlags);
       if (bytes <= 0) {
         break;
       }
       request.append(buffer, buffer + bytes);
-      if (request.size() > 16 * 1024) {
-        break;
-      }
     }
 
     if (request.empty()) {
@@ -154,8 +154,8 @@ class TestHttpServer {
       return;
     }
     std::string firstLine = request.substr(0, lineEnd);
-    const bool isHead = firstLine.rfind("HEAD", 0) == 0;
-    const bool isGet = firstLine.rfind("GET", 0) == 0;
+    const bool isHead = firstLine.starts_with("HEAD");
+    const bool isGet = firstLine.starts_with("GET");
     if (!isHead && !isGet) {
       respond(clientFd, "405 Method Not Allowed", "");
       return;
@@ -186,7 +186,7 @@ class TestHttpServer {
     }
 
     size_t offset = 0;
-    size_t end = content.size() > 0 ? content.size() - 1 : 0;
+    size_t end = !content.empty() ? content.size() - 1 : 0;
 
     auto rangePos = request.find("Range:");
     if (rangePos != std::string::npos) {

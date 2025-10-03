@@ -15,8 +15,6 @@ using CacheKeyFn = std::function<
 
 void registerHttpFileSystem(CacheKeyFn cacheKeyFunc = nullptr);
 
-void registerHttpMetrics();
-
 void finalizeHttpFileSystem();
 
 } // namespace facebook::velox::filesystems

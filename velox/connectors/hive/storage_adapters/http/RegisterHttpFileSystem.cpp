@@ -7,6 +7,7 @@
 #include <unordered_map>
 #endif
 
+
 namespace facebook::velox::filesystems {
 
 #ifdef VELOX_ENABLE_HTTP
@@ -21,9 +22,11 @@ FileSystemMap& fileSystems() {
 CacheKeyFn cacheKeyFunc;
 
 namespace {
+constexpr std::string_view kHttpScheme{"http://"};
+constexpr std::string_view kHttpsScheme{"https://"};
 
 bool isHttpFile(std::string_view path) {
-  return path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0;
+  return path.starts_with(kHttpScheme) || path.starts_with(kHttpsScheme);
 }
 
 std::string defaultCacheKey(
@@ -91,11 +94,10 @@ void registerHttpFileSystem(CacheKeyFn identityFunction) {
 
 void finalizeHttpFileSystem() {
 #ifdef VELOX_ENABLE_HTTP
-  bool singleUseCount = true;
   fileSystems().withWLock([&](auto& instanceMap) {
-    for (const auto& [id, fs] : instanceMap) {
-      singleUseCount &= (fs.use_count() == 1);
-    }
+    bool single_use = std::all_of(instanceMap.begin(), instanceMap.end(), [](const auto& kv) {
+      return kv.second.use_count() == 1;
+    });
     VELOX_CHECK(singleUseCount, "Cannot finalize HttpFileSystem while in use");
     instanceMap.clear();
   });
@@ -103,11 +105,4 @@ void finalizeHttpFileSystem() {
   finalizeHttp();
 #endif
 }
-
-void registerHttpMetrics() {
-#ifdef VELOX_ENABLE_HTTP
-  // No HTTP-specific metrics are registered yet.
-#endif
-}
-
 } // namespace facebook::velox::filesystems
