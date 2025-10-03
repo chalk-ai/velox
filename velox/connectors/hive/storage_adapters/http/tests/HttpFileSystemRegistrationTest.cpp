@@ -44,5 +44,17 @@ TEST_F(HttpFileSystemRegistrationTest, CacheKeyUsesHost) {
   EXPECT_EQ(baseHttp, otherPath);
 }
 
+TEST_F(HttpFileSystemRegistrationTest, SupportsHttpsScheme) {
+  auto config = std::make_shared<const config::ConfigBase>(
+      std::unordered_map<std::string, std::string>{});
+  const std::string url{"https://secure.example/data"};
+
+  EXPECT_TRUE(isPathSupportedByRegisteredFileSystems(url));
+  auto fs = filesystems::getFileSystem(url, config);
+  ASSERT_NE(fs, nullptr);
+  EXPECT_EQ(fs->name(), "http");
+  EXPECT_NE(std::dynamic_pointer_cast<HttpFileSystem>(fs), nullptr);
+}
+
 } // namespace
 } // namespace facebook::velox::filesystems

@@ -3,6 +3,7 @@
 #ifdef VELOX_ENABLE_HTTP
 #include "velox/connectors/hive/storage_adapters/http/HttpFileSystem.h"
 #include "velox/common/file/FileSystems.h"
+#include <algorithm>
 #include <folly/Synchronized.h>
 #include <unordered_map>
 #endif
