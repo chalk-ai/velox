@@ -1,4 +1,7 @@
-add_executable(velox_httpfile_test HttpFileSystemTest.cpp)
+add_executable(
+  velox_httpfile_test
+  HttpFileSystemTest.cpp
+  HttpFileSystemRegistrationTest.cpp)
 add_test(velox_httpfile_test velox_httpfile_test)
 target_link_libraries(
   velox_httpfile_test
