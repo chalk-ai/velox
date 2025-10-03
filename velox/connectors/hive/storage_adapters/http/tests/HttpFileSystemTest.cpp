@@ -70,9 +70,9 @@ class TestHttpServer {
       int fd = ::socket(AF_INET, SOCK_STREAM, 0);
       if (fd >= 0) {
         sockaddr_in addr{
-          .sin_family = AF_INET,
-          .sin_port = htons(port_),
-          .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
+            .sin_family = AF_INET,
+            .sin_port = htons(port_),
+            .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)},
         };
         ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
         ::close(fd);
@@ -92,9 +92,9 @@ class TestHttpServer {
     ::setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
 
     sockaddr_in addr{
-      .sin_family = AF_INET,
-      .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
-      .sin_port = htons(0)
+        .sin_family = AF_INET,
+        .sin_port = htons(0),
+        .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)},
     };
 
     VELOX_CHECK_EQ(
