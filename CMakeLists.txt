@@ -323,6 +323,10 @@ if(VELOX_ENABLE_S3)
   add_definitions(-DVELOX_ENABLE_S3)
 endif()
 
+if(VELOX_ENABLE_HTTP)
+  add_definitions(-DVELOX_ENABLE_HTTP)
+endif()
+
 if(VELOX_ENABLE_ABFS)
   # Set AZURESDK_ROOT_DIR if you have a custom install location of Azure Storage
   # SDK CPP.
