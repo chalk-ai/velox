@@ -92,10 +92,6 @@ size_t writeToFixedBuffer(char* ptr, size_t size, size_t nmemb, void* userdata) 
   return bytes;
 }
 
-} // namespace
-
-namespace {
-
 struct CurlGlobalState {
   CurlGlobalState() = default;
 

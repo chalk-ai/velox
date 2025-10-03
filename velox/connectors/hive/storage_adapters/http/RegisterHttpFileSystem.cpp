@@ -12,6 +12,8 @@
 namespace facebook::velox::filesystems {
 
 #ifdef VELOX_ENABLE_HTTP
+namespace {
+
 using FileSystemMap = folly::Synchronized<
     std::unordered_map<std::string, std::shared_ptr<FileSystem>>>;
 
@@ -22,7 +24,6 @@ FileSystemMap& fileSystems() {
 
 CacheKeyFn cacheKeyFunc;
 
-namespace {
 constexpr std::string_view kHttpScheme{"http://"};
 constexpr std::string_view kHttpsScheme{"https://"};
 
