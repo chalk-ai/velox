@@ -6,9 +6,13 @@
 #include <curl/curl.h>
 #include <fmt/format.h>
 #include <glog/logging.h>
+#include <folly/Conv.h>
 #include <folly/Range.h>
+#include <folly/String.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -26,6 +30,7 @@ namespace {
 constexpr std::string_view kHttpScheme{"http://"};
 constexpr std::string_view kHttpsScheme{"https://"};
 constexpr long kDefaultMaxRedirects{5};
+constexpr std::string_view kRangeProbe{"0-0"};
 
 class CurlEasyHandle {
  public:
@@ -80,6 +85,18 @@ struct WriteCtx {
   bool overflow{false};
 } __attribute__((aligned(32)));
 
+struct RangeMetadata {
+  int64_t contentRangeTotal{-1};
+  int64_t contentLength{-1};
+};
+
+enum class HeadProbeStatus { kSuccess, kNotFound, kInconclusive };
+
+struct HeadProbeResult {
+  HeadProbeStatus status;
+  std::optional<int64_t> contentLength;
+};
+
 size_t writeToFixedBuffer(char* ptr, size_t size, size_t nmemb, void* userdata) {
   auto* ctx = static_cast<WriteCtx*>(userdata);
   const size_t bytes = size * nmemb;
@@ -90,6 +107,126 @@ size_t writeToFixedBuffer(char* ptr, size_t size, size_t nmemb, void* userdata) 
   memcpy(ctx->data + ctx->offset, ptr, bytes);
   ctx->offset += bytes;
   return bytes;
+}
+
+size_t discardBody(char*, size_t size, size_t nmemb, void*) {
+  return size * nmemb;
+}
+
+bool iequals(folly::StringPiece lhs, folly::StringPiece rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  return std::equal(
+      lhs.begin(),
+      lhs.end(),
+      rhs.begin(),
+      [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) ==
+            std::tolower(static_cast<unsigned char>(b));
+      });
+}
+
+void parseHeader(std::string_view header, RangeMetadata& metadata) {
+  folly::StringPiece piece(header.data(), header.size());
+  piece = folly::trimWhitespace(piece);
+  if (piece.empty()) {
+    return;
+  }
+
+  auto colonPos = piece.find(':');
+  if (colonPos == folly::StringPiece::npos) {
+    return;
+  }
+
+  auto name = folly::trimWhitespace(piece.subpiece(0, colonPos));
+  auto value = folly::trimWhitespace(piece.subpiece(colonPos + 1));
+  if (value.empty()) {
+    return;
+  }
+
+  if (iequals(name, "Content-Range")) {
+    auto slash = value.find('/');
+    if (slash == folly::StringPiece::npos) {
+      return;
+    }
+    auto totalPart = folly::trimWhitespace(value.subpiece(slash + 1));
+    if (totalPart.empty() || totalPart == "*") {
+      return;
+    }
+    try {
+      auto total = folly::to<int64_t>(totalPart);
+      if (total >= 0) {
+        metadata.contentRangeTotal = total;
+      }
+    } catch (const folly::ConversionError&) {
+    }
+  } else if (iequals(name, "Content-Length")) {
+    try {
+      auto len = folly::to<int64_t>(value);
+      if (len >= 0) {
+        metadata.contentLength = len;
+      }
+    } catch (const folly::ConversionError&) {
+    }
+  }
+}
+
+size_t captureRangeHeaders(char* buffer, size_t size, size_t nitems, void* userdata) {
+  const size_t bytes = size * nitems;
+  if (bytes == 0 || userdata == nullptr) {
+    return bytes;
+  }
+
+  auto* metadata = static_cast<RangeMetadata*>(userdata);
+  std::string_view header(buffer, bytes);
+  parseHeader(header, *metadata);
+  return bytes;
+}
+
+HeadProbeResult probeWithHead(const std::string& url) {
+  CurlEasyHandle handle;
+  auto* curl = handle.get();
+  applyCommonCurlOptions(curl);
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+  curl_easy_setopt(curl, CURLOPT_HEADER, 0L);
+  curl_easy_setopt(curl, CURLOPT_HTTPGET, 0L);
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
+
+  const auto result = curl_easy_perform(curl);
+  if (result != CURLE_OK) {
+    VLOG(1) << fmt::format(
+        "HTTP HEAD for '{}' failed with {} ({})",
+        url,
+        static_cast<int>(result),
+        curl_easy_strerror(result));
+    return {HeadProbeStatus::kInconclusive, std::nullopt};
+  }
+
+  long responseCode = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+  if (responseCode == 404 || responseCode == 410) {
+    return {HeadProbeStatus::kNotFound, std::nullopt};
+  }
+
+  if (responseCode >= 200 && responseCode < 300) {
+    curl_off_t contentLength = -1;
+    auto infoRes = curl_easy_getinfo(
+        curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
+    if (infoRes == CURLE_OK && contentLength >= 0) {
+      return {
+          HeadProbeStatus::kSuccess,
+          static_cast<int64_t>(contentLength)};
+    }
+    return {HeadProbeStatus::kSuccess, std::nullopt};
+  }
+
+  VLOG(1) << fmt::format(
+      "HTTP HEAD for '{}' returned status {}",
+      url,
+      responseCode);
+  return {HeadProbeStatus::kInconclusive, std::nullopt};
 }
 
 struct CurlGlobalState {
@@ -227,20 +364,42 @@ class HttpReadFile : public ReadFile {
   }
 
   int64_t fetchContentLength() const {
+    const auto headResult = probeWithHead(url_);
+    if (headResult.status == HeadProbeStatus::kNotFound) {
+      VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
+    }
+    if (headResult.status == HeadProbeStatus::kSuccess &&
+        headResult.contentLength.has_value()) {
+      return headResult.contentLength.value();
+    }
+
+    VLOG(1) << fmt::format(
+        "Falling back to ranged GET probe for '{}'", url_);
+    return fetchContentLengthViaGet();
+  }
+
+  int64_t fetchContentLengthViaGet() const {
     CurlEasyHandle handle;
     auto* curl = handle.get();
+    RangeMetadata metadata;
+
+    const std::string rangeRequest(kRangeProbe);
+
     applyCommonCurlOptions(curl);
     curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-    curl_easy_setopt(curl, CURLOPT_HEADER, 0L);
-    curl_easy_setopt(curl, CURLOPT_HTTPGET, 0L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl, CURLOPT_RANGE, rangeRequest.c_str());
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, captureRangeHeaders);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &metadata);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
 
     const auto result = curl_easy_perform(curl);
     VELOX_CHECK_EQ(
         static_cast<int>(result),
         static_cast<int>(CURLE_OK),
-        "HTTP HEAD request for '{}' failed with code {} ({})",
+        "HTTP ranged GET request for '{}' failed with code {} ({})",
         url_,
         static_cast<int>(result),
         curl_easy_strerror(result));
@@ -251,24 +410,31 @@ class HttpReadFile : public ReadFile {
       VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
     }
     VELOX_CHECK(
-        responseCode >= 200 && responseCode < 300,
-        "Unexpected HTTP status {} for HEAD {}",
+        responseCode == 200 || responseCode == 206,
+        "Unexpected HTTP status {} for ranged GET {}",
         responseCode,
         url_);
 
-    curl_off_t contentLength = -1;
-    auto infoRes = curl_easy_getinfo(
-        curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
-    VELOX_CHECK_EQ(
-        static_cast<int>(infoRes),
-        static_cast<int>(CURLE_OK),
-        "Failed to obtain Content-Length for '{}'", url_);
-    VELOX_CHECK_GT(
-        contentLength,
-        -1,
-        "Server did not provide Content-Length for '{}'", url_);
+    if (metadata.contentRangeTotal >= 0) {
+      return metadata.contentRangeTotal;
+    }
 
-    return static_cast<int64_t>(contentLength);
+    if (responseCode == 200 && metadata.contentLength >= 0) {
+      return metadata.contentLength;
+    }
+
+    if (responseCode == 200) {
+      curl_off_t contentLength = -1;
+      auto infoRes = curl_easy_getinfo(
+          curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
+      if (infoRes == CURLE_OK && contentLength >= 0) {
+        return static_cast<int64_t>(contentLength);
+      }
+    }
+
+    VELOX_FAIL(
+        "Server did not provide Content-Range total for '{}'",
+        url_);
   }
 
   void performRead(uint64_t offset, uint64_t length, char* output) const {
@@ -384,17 +550,30 @@ void HttpFileSystem::rename(
 
 bool HttpFileSystem::exists(std::string_view path) {
   std::string url(path);
+  const auto headResult = probeWithHead(url);
+  if (headResult.status == HeadProbeStatus::kNotFound) {
+    return false;
+  }
+  if (headResult.status == HeadProbeStatus::kSuccess) {
+    return true;
+  }
+
   CurlEasyHandle handle;
   auto* curl = handle.get();
+  const std::string rangeRequest(kRangeProbe);
+
   applyCommonCurlOptions(curl);
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+  curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+  curl_easy_setopt(curl, CURLOPT_RANGE, rangeRequest.c_str());
   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
 
   const auto result = curl_easy_perform(curl);
   if (result != CURLE_OK) {
     LOG(WARNING) << fmt::format(
-        "HTTP HEAD for '{}' failed with {} ({})",
+        "HTTP GET exists probe for '{}' failed with {} ({})",
         url,
         static_cast<int>(result),
         curl_easy_strerror(result));
@@ -409,6 +588,7 @@ bool HttpFileSystem::exists(std::string_view path) {
   if (responseCode >= 200 && responseCode < 300) {
     return true;
   }
+
   VELOX_FAIL(
       "Unexpected HTTP status {} while checking existence of '{}'",
       responseCode,

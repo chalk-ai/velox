@@ -1,19 +1,3 @@
-/*
- * Copyright (c) Facebook, Inc. and its affiliates.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include "velox/connectors/hive/storage_adapters/http/HttpFileSystem.h"
 
 #include "velox/common/base/Exceptions.h"
@@ -45,11 +29,17 @@
 namespace facebook::velox::filesystems {
 namespace {
 
+struct ResourceConfig {
+  std::string body;
+  bool allowHead{true};
+  bool includeContentLength{true};
+};
+
 class TestHttpServer {
  public:
   explicit TestHttpServer(
-      std::unordered_map<std::string, std::string> files)
-      : files_(std::move(files)) {
+      std::unordered_map<std::string, ResourceConfig> resources)
+      : resources_(std::move(resources)) {
     serverThread_ = std::jthread([this](std::stop_token stopToken) {
       run(std::move(stopToken));
     });
@@ -174,19 +164,28 @@ class TestHttpServer {
     }
     std::string path = firstLine.substr(pathStart + 1, pathEnd - pathStart - 1);
 
-    auto it = files_.find(path);
-    if (it == files_.end()) {
+    auto it = resources_.find(path);
+    if (it == resources_.end()) {
       respond(clientFd, "404 Not Found", "");
       return;
     }
 
-    const std::string& content = it->second;
+    const auto& resource = it->second;
+    const std::string& content = resource.body;
     if (isHead) {
-      respond(
-          clientFd,
-          "200 OK",
-          fmt::format(
-              "Content-Length: {}\r\nAccept-Ranges: bytes\r\n", content.size()));
+      if (!resource.allowHead) {
+        respond(clientFd, "405 Method Not Allowed", "");
+        return;
+      }
+
+      std::string headers = "Accept-Ranges: bytes\r\n";
+      if (resource.includeContentLength) {
+        headers = fmt::format(
+            "Content-Length: {}\r\n{}",
+            content.size(),
+            headers);
+      }
+      respond(clientFd, "200 OK", headers);
       return;
     }
 
@@ -245,7 +244,7 @@ class TestHttpServer {
     ::send(clientFd, response.data(), response.size(), 0);
   }
 
-  std::unordered_map<std::string, std::string> files_;
+  std::unordered_map<std::string, ResourceConfig> resources_;
   std::promise<uint16_t> portPromise_;
   std::jthread serverThread_;
   std::atomic<bool> stopped_{false};
@@ -270,7 +269,7 @@ class HttpFileSystemTest : public ::testing::Test {
 TEST_F(HttpFileSystemTest, BasicRead) {
   const std::string kPath = "/data";
   const std::string kContent = "abcdefghijklmnopqrstuvwxyz";
-  TestHttpServer server({{kPath, kContent}});
+  TestHttpServer server({{kPath, {kContent}}});
 
   auto url = fmt::format("http://127.0.0.1:{}{}", server.port(), kPath);
   auto file = fs_->openFileForRead(url);
@@ -285,10 +284,33 @@ TEST_F(HttpFileSystemTest, BasicRead) {
   EXPECT_EQ(file->size(), kContent.size());
 }
 
+TEST_F(HttpFileSystemTest, RangeProbeUsedWhenHeadNotAllowed) {
+  const std::string kPath = "/no-head";
+  const std::string kContent = "0123456789abcdef";
+  TestHttpServer server({{kPath, {kContent, /*allowHead=*/false}}});
+
+  auto url = fmt::format("http://127.0.0.1:{}{}", server.port(), kPath);
+  EXPECT_TRUE(fs_->exists(url));
+
+  auto file = fs_->openFileForRead(url);
+  EXPECT_EQ(file->size(), kContent.size());
+  EXPECT_EQ(file->pread(0, kContent.size()), kContent);
+}
+
+TEST_F(HttpFileSystemTest, RangeProbeUsedWhenHeadMissingContentLength) {
+  const std::string kPath = "/head-no-length";
+  const std::string kContent = "VeloxHttpFileSystem";
+  TestHttpServer server({{kPath, {kContent, /*allowHead=*/true, /*includeContentLength=*/false}}});
+
+  auto url = fmt::format("http://127.0.0.1:{}{}", server.port(), kPath);
+  auto file = fs_->openFileForRead(url);
+  EXPECT_EQ(file->size(), kContent.size());
+}
+
 TEST_F(HttpFileSystemTest, VectorRead) {
   const std::string kPath = "/vector";
   const std::string kContent = "0123456789abcdefghij";
-  TestHttpServer server({{kPath, kContent}});
+  TestHttpServer server({{kPath, {kContent}}});
 
   auto url = fmt::format("http://127.0.0.1:{}{}", server.port(), kPath);
   auto file = fs_->openFileForRead(url);
@@ -309,7 +331,7 @@ TEST_F(HttpFileSystemTest, VectorRead) {
 }
 
 TEST_F(HttpFileSystemTest, ExistsChecks) {
-  TestHttpServer server({{"/exists", "payload"}});
+  TestHttpServer server({{"/exists", {"payload"}}});
 
   auto base = fmt::format("http://127.0.0.1:{}", server.port());
   EXPECT_TRUE(fs_->exists(base + "/exists"));
