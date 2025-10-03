@@ -708,7 +708,11 @@ void exportValues(
   out.n_buffers = 2;
 
   if (!rows.changed() && isFlatScalarZeroCopy(type)) {
-    holder.setBuffer(1, vec.values());
+    // Arrow does not allow a nullptr for the values buffer. If the input vector
+    // has no values buffer (all-null case), allocate an empty buffer of size 0.
+    auto values =
+        vec.values() ? vec.values() : AlignedBuffer::allocate<uint8_t>(0, pool);
+    holder.setBuffer(1, values);
     return;
   }
 
@@ -1973,6 +1977,17 @@ VectorPtr importFromArrowImpl(
         arrowArray.n_buffers,
         3,
         "Expecting three buffers as input for string types.");
+    if (arrowSchema.format[0] == 'U' || arrowSchema.format[0] == 'Z') {
+      return createStringFlatVector(
+          pool,
+          type,
+          nulls,
+          arrowArray.length,
+          static_cast<const int64_t*>(arrowArray.buffers[1]), // offsets
+          static_cast<const char*>(arrowArray.buffers[2]), // values
+          arrowArray.null_count,
+          wrapInBufferView);
+    }
     return createStringFlatVector(
         pool,
         type,

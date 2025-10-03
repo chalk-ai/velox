@@ -265,23 +265,28 @@ class PlanNode : public ISerializable {
   /// The name of the plan node, used in toString.
   virtual std::string_view name() const = 0;
 
+  template <typename T>
+  bool is() const {
+    return dynamic_cast<const T*>(this) != nullptr;
+  }
+
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
+  }
+
   /// Recursively checks the node tree for a first node that satisfy a given
   /// condition. Returns pointer to the node if found, nullptr if not.
   static const PlanNode* findFirstNode(
-      const PlanNode* node,
-      const std::function<bool(const PlanNode* node)>& predicate) {
-    if (predicate(node)) {
-      return node;
-    }
+      const PlanNode* root,
+      const std::function<bool(const PlanNode* node)>& predicate);
 
-    // Recursively go further through the sources.
-    for (const auto& source : node->sources()) {
-      const auto* ret = PlanNode::findFirstNode(source.get(), predicate);
-      if (ret != nullptr) {
-        return ret;
-      }
-    }
-    return nullptr;
+  /// @return PlanNode with matching ID or nullptr if not found.
+  static const PlanNode* findNodeById(
+      const PlanNode* root,
+      const PlanNodeId& id) {
+    return findFirstNode(
+        root, [&](const auto* node) { return node->id() == id; });
   }
 
  private:
@@ -3472,30 +3477,6 @@ class IndexLookupJoinNode : public AbstractJoinNode {
       TableScanNodePtr right,
       RowTypePtr outputType);
 
-#ifdef VELOX_ENABLE_BACKWARD_COMPATIBILITY
-  IndexLookupJoinNode(
-      const PlanNodeId& id,
-      JoinType joinType,
-      const std::vector<FieldAccessTypedExprPtr>& leftKeys,
-      const std::vector<FieldAccessTypedExprPtr>& rightKeys,
-      const std::vector<IndexLookupConditionPtr>& joinConditions,
-      bool hasMarker,
-      PlanNodePtr left,
-      TableScanNodePtr right,
-      RowTypePtr outputType)
-      : IndexLookupJoinNode(
-            id,
-            joinType,
-            leftKeys,
-            rightKeys,
-            joinConditions,
-            /*filter=*/nullptr,
-            hasMarker,
-            std::move(left),
-            std::move(right),
-            std::move(outputType)) {}
-#endif
-
   class Builder
       : public AbstractJoinNode::Builder<IndexLookupJoinNode, Builder> {
    public:
@@ -3920,6 +3901,17 @@ class SpatialJoinNode : public PlanNode {
       const PlanNodeId& id,
       JoinType joinType,
       TypedExprPtr joinCondition,
+      FieldAccessTypedExprPtr probeGeometry,
+      FieldAccessTypedExprPtr buildGeometry,
+      std::optional<FieldAccessTypedExprPtr> radius,
+      PlanNodePtr left,
+      PlanNodePtr right,
+      RowTypePtr outputType);
+
+  SpatialJoinNode(
+      const PlanNodeId& id,
+      JoinType joinType,
+      TypedExprPtr joinCondition,
       PlanNodePtr left,
       PlanNodePtr right,
       RowTypePtr outputType);
@@ -3932,6 +3924,9 @@ class SpatialJoinNode : public PlanNode {
       id_ = other.id();
       joinType_ = other.joinType();
       joinCondition_ = other.joinCondition();
+      probeGeometry_ = other.probeGeometry();
+      buildGeometry_ = other.buildGeometry();
+      radius_ = other.radius();
       VELOX_CHECK_EQ(other.sources().size(), 2);
       left_ = other.sources()[0];
       right_ = other.sources()[1];
@@ -3950,6 +3945,21 @@ class SpatialJoinNode : public PlanNode {
 
     Builder& joinCondition(TypedExprPtr joinCondition) {
       joinCondition_ = std::move(joinCondition);
+      return *this;
+    }
+
+    Builder& probeGeometry(FieldAccessTypedExprPtr probeGeometry) {
+      probeGeometry_ = std::move(probeGeometry);
+      return *this;
+    }
+
+    Builder& buildGeometry(FieldAccessTypedExprPtr buildGeometry) {
+      buildGeometry_ = std::move(buildGeometry);
+      return *this;
+    }
+
+    Builder& radius(FieldAccessTypedExprPtr radius) {
+      radius_ = std::move(radius);
       return *this;
     }
 
@@ -3977,6 +3987,24 @@ class SpatialJoinNode : public PlanNode {
       VELOX_USER_CHECK(
           outputType_.has_value(), "SpatialJoinNode outputType is not set");
 
+      VELOX_USER_CHECK(
+          (probeGeometry_.has_value() && buildGeometry_.has_value()) ||
+              (!probeGeometry_.has_value() && !buildGeometry_.has_value()),
+          "Either probe and build geometry must both be set, or neither");
+
+      if (probeGeometry_.has_value() && buildGeometry_.has_value()) {
+        return std::make_shared<SpatialJoinNode>(
+            id_.value(),
+            joinType_,
+            joinCondition_,
+            probeGeometry_.value(),
+            buildGeometry_.value(),
+            radius_,
+            left_.value(),
+            right_.value(),
+            outputType_.value());
+      }
+
       return std::make_shared<SpatialJoinNode>(
           id_.value(),
           joinType_,
@@ -3990,6 +4018,9 @@ class SpatialJoinNode : public PlanNode {
     std::optional<PlanNodeId> id_;
     JoinType joinType_ = kDefaultJoinType;
     TypedExprPtr joinCondition_;
+    std::optional<FieldAccessTypedExprPtr> probeGeometry_;
+    std::optional<FieldAccessTypedExprPtr> buildGeometry_;
+    std::optional<FieldAccessTypedExprPtr> radius_;
     std::optional<PlanNodePtr> left_;
     std::optional<PlanNodePtr> right_;
     std::optional<RowTypePtr> outputType_;
@@ -4014,6 +4045,18 @@ class SpatialJoinNode : public PlanNode {
     return joinCondition_;
   }
 
+  const std::optional<FieldAccessTypedExprPtr>& probeGeometry() const {
+    return probeGeometry_;
+  }
+
+  const std::optional<FieldAccessTypedExprPtr>& buildGeometry() const {
+    return buildGeometry_;
+  }
+
+  const std::optional<FieldAccessTypedExprPtr>& radius() const {
+    return radius_;
+  }
+
   JoinType joinType() const {
     return joinType_;
   }
@@ -4032,6 +4075,9 @@ class SpatialJoinNode : public PlanNode {
 
   const JoinType joinType_;
   const TypedExprPtr joinCondition_;
+  const std::optional<FieldAccessTypedExprPtr> probeGeometry_;
+  const std::optional<FieldAccessTypedExprPtr> buildGeometry_;
+  const std::optional<FieldAccessTypedExprPtr> radius_;
   const std::vector<PlanNodePtr> sources_;
   const RowTypePtr outputType_;
 };
