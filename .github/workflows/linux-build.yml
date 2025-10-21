@@ -42,6 +42,7 @@ on:
       - scripts/setup-helper-functions.sh
       - .github/workflows/linux-build.yml
       - .github/workflows/linux-build-base.yml
+  workflow_dispatch:
 
 permissions:
   contents: read
