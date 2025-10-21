@@ -7,6 +7,7 @@
 #include <fmt/format.h>
 #include <glog/logging.h>
 #include <folly/Range.h>
+#include <folly/ScopeGuard.h>
 
 #include <atomic>
 #include <cerrno>
@@ -286,7 +287,11 @@ class HttpReadFile : public ReadFile {
   }
 
   uint64_t memoryUsage() const override {
-    return sizeof(HttpReadFile);
+    uint64_t usage = localPath_.capacity();
+    if (localReadFile_) {
+      usage += localReadFile_->memoryUsage();
+    }
+    return usage;
   }
 
   bool shouldCoalesce() const override {
@@ -349,11 +354,12 @@ class HttpReadFile : public ReadFile {
     }
 
     auto [tempPath, tempFd] = createTemporaryFile();
+    auto cleanup = folly::makeGuard([&]() { ::unlink(tempPath.c_str()); });
+
     FILE* file = fdopen(tempFd, "wb");
     if (file == nullptr) {
       const auto err = errno;
       ::close(tempFd);
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "Failed to open temporary file '{}' for download: {}",
           tempPath,
@@ -374,7 +380,6 @@ class HttpReadFile : public ReadFile {
     const int closeRes = fclose(file);
     if (closeRes != 0) {
       const auto err = errno;
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "Failed to close temporary file '{}' for '{}': {}",
           tempPath,
@@ -383,7 +388,6 @@ class HttpReadFile : public ReadFile {
     }
 
     if (result != CURLE_OK) {
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "HTTP GET request for '{}' failed with code {} ({})",
           url_,
@@ -394,7 +398,6 @@ class HttpReadFile : public ReadFile {
     long responseCode = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
     if (responseCode == 404 || responseCode == 410) {
-      ::unlink(tempPath.c_str());
       VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
     }
     VELOX_CHECK(
@@ -406,7 +409,6 @@ class HttpReadFile : public ReadFile {
     struct stat st;
     if (::stat(tempPath.c_str(), &st) != 0) {
       const auto err = errno;
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "stat failed for temporary file '{}' ({}): {}",
           tempPath,
@@ -417,7 +419,6 @@ class HttpReadFile : public ReadFile {
 
     if (headLength.has_value() &&
         headLength.value() != downloadedSize) {
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "Size mismatch for '{}': expected {} bytes from HEAD but downloaded {} bytes",
           url_,
@@ -427,7 +428,6 @@ class HttpReadFile : public ReadFile {
 
     const auto previousSize = size_.load(std::memory_order_acquire);
     if (previousSize >= 0 && previousSize != downloadedSize) {
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "Size mismatch for '{}': expected {} bytes but downloaded {} bytes",
           url_,
@@ -437,7 +437,6 @@ class HttpReadFile : public ReadFile {
 
     if (expectedSize_.has_value() &&
         expectedSize_.value() != downloadedSize) {
-      ::unlink(tempPath.c_str());
       VELOX_FAIL(
           "Size mismatch for '{}': expected {} bytes but downloaded {} bytes",
           url_,
@@ -447,14 +446,13 @@ class HttpReadFile : public ReadFile {
 
     size_.store(downloadedSize, std::memory_order_release);
     sizeKnown_.store(true, std::memory_order_release);
-    localPath_ = std::move(tempPath);
     try {
-      localReadFile_ = std::make_unique<LocalReadFile>(localPath_);
+      localReadFile_ = std::make_unique<LocalReadFile>(tempPath);
     } catch (...) {
-      ::unlink(localPath_.c_str());
-      localPath_.clear();
       throw;
     }
+    cleanup.dismiss();
+    localPath_ = std::move(tempPath);
   }
 
   std::string url_;
