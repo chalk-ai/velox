@@ -4,7 +4,9 @@ if(VELOX_ENABLE_HTTP)
 
     velox_sources(
             velox_httpfs
-            PRIVATE HttpFileSystem.cpp
+            PRIVATE
+            HttpConfig.cpp
+            HttpFileSystem.cpp
     )
 
     velox_link_libraries(velox_httpfs PRIVATE velox_dwio_common Folly::folly CURL::libcurl)

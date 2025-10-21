@@ -1,5 +1,6 @@
 #pragma once
 
+#include "velox/connectors/hive/storage_adapters/http/HttpConfig.h"
 #include "velox/common/file/FileSystems.h"
 
 namespace facebook::velox::filesystems {
@@ -13,6 +14,8 @@ void finalizeHttp();
 
 /// Lightweight read-only filesystem backed by HTTP GET requests.
 class HttpFileSystem : public FileSystem {
+  const HttpConfig http_config_;
+
  public:
   explicit HttpFileSystem(std::shared_ptr<const config::ConfigBase> config);
 

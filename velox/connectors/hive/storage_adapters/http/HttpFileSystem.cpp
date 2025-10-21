@@ -6,22 +6,22 @@
 #include <curl/curl.h>
 #include <fmt/format.h>
 #include <glog/logging.h>
-#include <folly/Conv.h>
 #include <folly/Range.h>
-#include <folly/String.h>
 
-#include <algorithm>
 #include <atomic>
-#include <cctype>
-#include <limits>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-#include <cstring>
 #include <memory>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace facebook::velox::filesystems {
 
@@ -30,7 +30,6 @@ namespace {
 constexpr std::string_view kHttpScheme{"http://"};
 constexpr std::string_view kHttpsScheme{"https://"};
 constexpr long kDefaultMaxRedirects{5};
-constexpr std::string_view kRangeProbe{"0-0"};
 
 class CurlEasyHandle {
  public:
@@ -78,18 +77,6 @@ void applyCommonCurlOptions(CURL* handle) {
   curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
 }
 
-struct WriteCtx {
-  char* data;
-  size_t capacity;
-  size_t offset{0};
-  bool overflow{false};
-} __attribute__((aligned(32)));
-
-struct RangeMetadata {
-  int64_t contentRangeTotal{-1};
-  int64_t contentLength{-1};
-};
-
 enum class HeadProbeStatus { kSuccess, kNotFound, kInconclusive };
 
 struct HeadProbeResult {
@@ -97,91 +84,49 @@ struct HeadProbeResult {
   std::optional<int64_t> contentLength;
 };
 
-size_t writeToFixedBuffer(char* ptr, size_t size, size_t nmemb, void* userdata) {
-  auto* ctx = static_cast<WriteCtx*>(userdata);
-  const size_t bytes = size * nmemb;
-  if (ctx->offset + bytes > ctx->capacity) {
-    ctx->overflow = true;
+std::string getTempDirectory() {
+  if (const char* tmpDir = std::getenv("TMPDIR")) {
+    return std::string(tmpDir);
+  }
+  return "/tmp";
+}
+
+std::pair<std::string, int> createTemporaryFile() {
+  auto basePath = getTempDirectory();
+  auto pattern = fmt::format("{}/velox_httpfs_XXXXXX", basePath);
+  std::vector<char> storage(pattern.begin(), pattern.end());
+  storage.push_back('\0');
+  int fd = mkstemp(storage.data());
+  if (fd == -1) {
+    VELOX_FAIL(
+        "Failed to create temporary file in '{}': {}",
+        basePath,
+        std::strerror(errno));
+  }
+  return {std::string(storage.data()), fd};
+}
+
+size_t writeToFile(char* ptr, size_t size, size_t nmemb, void* userdata) {
+  const size_t total = size * nmemb;
+  auto* file = static_cast<FILE*>(userdata);
+  const size_t written = fwrite(ptr, size, nmemb, file);
+  if (written != nmemb) {
     return 0;
   }
-  memcpy(ctx->data + ctx->offset, ptr, bytes);
-  ctx->offset += bytes;
-  return bytes;
+  return total;
 }
 
-size_t discardBody(char*, size_t size, size_t nmemb, void*) {
-  return size * nmemb;
-}
+struct AbortAfterFirstChunkContext {
+  bool aborted{false};
+};
 
-bool iequals(folly::StringPiece lhs, folly::StringPiece rhs) {
-  if (lhs.size() != rhs.size()) {
-    return false;
+size_t abortAfterFirstChunk(char*, size_t size, size_t nmemb, void* userdata) {
+  if (size == 0 || nmemb == 0) {
+    return 0;
   }
-  return std::equal(
-      lhs.begin(),
-      lhs.end(),
-      rhs.begin(),
-      [](char a, char b) {
-        return std::tolower(static_cast<unsigned char>(a)) ==
-            std::tolower(static_cast<unsigned char>(b));
-      });
-}
-
-void parseHeader(std::string_view header, RangeMetadata& metadata) {
-  folly::StringPiece piece(header.data(), header.size());
-  piece = folly::trimWhitespace(piece);
-  if (piece.empty()) {
-    return;
-  }
-
-  auto colonPos = piece.find(':');
-  if (colonPos == folly::StringPiece::npos) {
-    return;
-  }
-
-  auto name = folly::trimWhitespace(piece.subpiece(0, colonPos));
-  auto value = folly::trimWhitespace(piece.subpiece(colonPos + 1));
-  if (value.empty()) {
-    return;
-  }
-
-  if (iequals(name, "Content-Range")) {
-    auto slash = value.find('/');
-    if (slash == folly::StringPiece::npos) {
-      return;
-    }
-    auto totalPart = folly::trimWhitespace(value.subpiece(slash + 1));
-    if (totalPart.empty() || totalPart == "*") {
-      return;
-    }
-    try {
-      auto total = folly::to<int64_t>(totalPart);
-      if (total >= 0) {
-        metadata.contentRangeTotal = total;
-      }
-    } catch (const folly::ConversionError&) {
-    }
-  } else if (iequals(name, "Content-Length")) {
-    try {
-      auto len = folly::to<int64_t>(value);
-      if (len >= 0) {
-        metadata.contentLength = len;
-      }
-    } catch (const folly::ConversionError&) {
-    }
-  }
-}
-
-size_t captureRangeHeaders(char* buffer, size_t size, size_t nitems, void* userdata) {
-  const size_t bytes = size * nitems;
-  if (bytes == 0 || userdata == nullptr) {
-    return bytes;
-  }
-
-  auto* metadata = static_cast<RangeMetadata*>(userdata);
-  std::string_view header(buffer, bytes);
-  parseHeader(header, *metadata);
-  return bytes;
+  auto* ctx = static_cast<AbortAfterFirstChunkContext*>(userdata);
+  ctx->aborted = true;
+  return 0;
 }
 
 HeadProbeResult probeWithHead(const std::string& url) {
@@ -201,13 +146,13 @@ HeadProbeResult probeWithHead(const std::string& url) {
         url,
         static_cast<int>(result),
         curl_easy_strerror(result));
-    return {HeadProbeStatus::kInconclusive, std::nullopt};
+    return {.status=HeadProbeStatus::kInconclusive, .contentLength=std::nullopt};
   }
 
   long responseCode = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
   if (responseCode == 404 || responseCode == 410) {
-    return {HeadProbeStatus::kNotFound, std::nullopt};
+    return {.status=HeadProbeStatus::kNotFound, .contentLength=std::nullopt};
   }
 
   if (responseCode >= 200 && responseCode < 300) {
@@ -219,14 +164,14 @@ HeadProbeResult probeWithHead(const std::string& url) {
           HeadProbeStatus::kSuccess,
           static_cast<int64_t>(contentLength)};
     }
-    return {HeadProbeStatus::kSuccess, std::nullopt};
+    return {.status=HeadProbeStatus::kSuccess, .contentLength=std::nullopt};
   }
 
   VLOG(1) << fmt::format(
       "HTTP HEAD for '{}' returned status {}",
       url,
       responseCode);
-  return {HeadProbeStatus::kInconclusive, std::nullopt};
+  return {.status=HeadProbeStatus::kInconclusive, .contentLength=std::nullopt};
 }
 
 struct CurlGlobalState {
@@ -274,16 +219,25 @@ CurlGlobalState& curlState() {
 
 class HttpReadFile : public ReadFile {
  public:
-  HttpReadFile(
-      std::string url)
-      : url_(std::move(url)) {}
+  explicit HttpReadFile(std::string url) : url_(std::move(url)) {}
+
+  ~HttpReadFile() override {
+    if (localReadFile_) {
+      localReadFile_.reset();
+    }
+    if (!localPath_.empty()) {
+      ::unlink(localPath_.c_str());
+      localPath_.clear();
+    }
+  }
 
   void initialize(const FileOptions& options) {
     if (options.fileSize.has_value()) {
       const auto value = options.fileSize.value();
       VELOX_CHECK_GE(value, 0, "File size must not be negative");
+      expectedSize_ = value;
       size_.store(value, std::memory_order_release);
-      folly::set_once(sizeInitialized_);
+      sizeKnown_.store(true, std::memory_order_release);
     }
   }
 
@@ -291,53 +245,44 @@ class HttpReadFile : public ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buffer,
-      File::IoStats* /*stats*/) const override {
+      File::IoStats* stats) const override {
     VELOX_CHECK_GT(length, 0, "HTTP pread requires positive length");
-    performRead(offset, length, static_cast<char*>(buffer));
+    ensureDownloaded();
+    auto data =
+        localReadFile_->pread(offset, length, buffer, stats);
     bytesRead_ += length;
-    return {static_cast<char*>(buffer), length};
+    return data;
   }
 
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      File::IoStats* /*stats*/) const override {
-    std::string data(length, '\0');
-    performRead(offset, length, data.data());
-    bytesRead_ += length;
-    return data;
+      File::IoStats* stats) const override {
+    if (length == 0) {
+      return {};
+    }
+    std::string buffer(length, '\0');
+    auto view = pread(offset, length, buffer.data(), stats);
+    buffer.resize(view.size());
+    return buffer;
   }
 
   uint64_t preadv(
       uint64_t offset,
       const std::vector<folly::Range<char*>>& buffers,
-      File::IoStats* /*stats*/) const override {
-    size_t total = 0;
-    for (const auto& range : buffers) {
-      total += range.size();
-    }
-
-    if (total == 0) {
-      return 0;
-    }
-
-    std::string temp(total, '\0');
-    performRead(offset, total, temp.data());
-
-    size_t cursor = 0;
-    for (const auto& range : buffers) {
-      if (range.data() != nullptr && !range.empty()) {
-        memcpy(range.data(), temp.data() + cursor, range.size());
-      }
-      cursor += range.size();
-    }
-    bytesRead_ += total;
-    return total;
+      File::IoStats* stats) const override {
+    ensureDownloaded();
+    auto bytes = localReadFile_->preadv(offset, buffers, stats);
+    bytesRead_ += bytes;
+    return bytes;
   }
 
   uint64_t size() const override {
     ensureSize();
-    return static_cast<uint64_t>(size_.load(std::memory_order_relaxed));
+    auto value = size_.load(std::memory_order_acquire);
+    VELOX_CHECK_GE(
+        value, 0, "HTTP resource '{}' size is not available", url_);
+    return static_cast<uint64_t>(value);
   }
 
   uint64_t memoryUsage() const override {
@@ -353,98 +298,68 @@ class HttpReadFile : public ReadFile {
   }
 
   uint64_t getNaturalReadSize() const override {
-    return 8 << 20; // 8MB fetches strike a balance for HTTP downloads.
+    return 8ULL << 20U; // Preserve previous 8MB hint for callers.
   }
 
  private:
   void ensureSize() const {
-    folly::call_once(sizeInitialized_, [&]() {
-      size_.store(fetchContentLength(), std::memory_order_release);
-    });
-  }
+    if (sizeKnown_.load(std::memory_order_acquire)) {
+      return;
+    }
 
-  int64_t fetchContentLength() const {
+    std::unique_lock<std::mutex> lock(sizeMutex_);
+    if (sizeKnown_.load(std::memory_order_relaxed)) {
+      return;
+    }
+
     const auto headResult = probeWithHead(url_);
     if (headResult.status == HeadProbeStatus::kNotFound) {
       VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
     }
     if (headResult.status == HeadProbeStatus::kSuccess &&
         headResult.contentLength.has_value()) {
-      return headResult.contentLength.value();
+      size_.store(headResult.contentLength.value(), std::memory_order_release);
+      sizeKnown_.store(true, std::memory_order_release);
+      return;
     }
 
-    VLOG(1) << fmt::format(
-        "Falling back to ranged GET probe for '{}'", url_);
-    return fetchContentLengthViaGet();
+    lock.unlock();
+    ensureDownloaded();
   }
 
-  int64_t fetchContentLengthViaGet() const {
-    CurlEasyHandle handle;
-    auto* curl = handle.get();
-    RangeMetadata metadata;
-
-    const std::string rangeRequest(kRangeProbe);
-
-    applyCommonCurlOptions(curl);
-    curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
-    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-    curl_easy_setopt(curl, CURLOPT_RANGE, rangeRequest.c_str());
-    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, captureRangeHeaders);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &metadata);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
-
-    const auto result = curl_easy_perform(curl);
-    VELOX_CHECK_EQ(
-        static_cast<int>(result),
-        static_cast<int>(CURLE_OK),
-        "HTTP ranged GET request for '{}' failed with code {} ({})",
-        url_,
-        static_cast<int>(result),
-        curl_easy_strerror(result));
-
-    long responseCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
-    if (responseCode == 404 || responseCode == 410) {
-      VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
-    }
-    VELOX_CHECK(
-        responseCode == 200 || responseCode == 206,
-        "Unexpected HTTP status {} for ranged GET {}",
-        responseCode,
+  void ensureDownloaded() const {
+    std::call_once(downloadOnce_, [&]() { downloadToLocalFile(); });
+    VELOX_CHECK_NOT_NULL(
+        localReadFile_.get(),
+        "Failed to materialize HTTP resource '{}' locally",
         url_);
+  }
 
-    if (metadata.contentRangeTotal >= 0) {
-      return metadata.contentRangeTotal;
-    }
-
-    if (responseCode == 200 && metadata.contentLength >= 0) {
-      return metadata.contentLength;
-    }
-
-    if (responseCode == 200) {
-      curl_off_t contentLength = -1;
-      auto infoRes = curl_easy_getinfo(
-          curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
-      if (infoRes == CURLE_OK && contentLength >= 0) {
-        return static_cast<int64_t>(contentLength);
+  void downloadToLocalFile() const {
+    std::optional<int64_t> headLength;
+    if (!sizeKnown_.load(std::memory_order_acquire)) {
+      const auto headResult = probeWithHead(url_);
+      if (headResult.status == HeadProbeStatus::kNotFound) {
+        VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
+      }
+      if (headResult.status == HeadProbeStatus::kSuccess &&
+          headResult.contentLength.has_value()) {
+        headLength = headResult.contentLength.value();
       }
     }
 
-    VELOX_FAIL(
-        "Server did not provide Content-Range total for '{}'",
-        url_);
-  }
+    auto [tempPath, tempFd] = createTemporaryFile();
+    FILE* file = fdopen(tempFd, "wb");
+    if (file == nullptr) {
+      const auto err = errno;
+      ::close(tempFd);
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "Failed to open temporary file '{}' for download: {}",
+          tempPath,
+          std::strerror(err));
+    }
 
-  void performRead(uint64_t offset, uint64_t length, char* output) const {
-    const auto maxSize = static_cast<uint64_t>(std::numeric_limits<size_t>::max());
-    VELOX_CHECK_LE(
-        length,
-        maxSize,
-        "Requested HTTP read size {} exceeds size_t limit {}",
-        length,
-        maxSize);
     CurlEasyHandle handle;
     auto* curl = handle.get();
     applyCommonCurlOptions(curl);
@@ -452,38 +367,104 @@ class HttpReadFile : public ReadFile {
     curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-
-    auto range = fmt::format("{}-{}", offset, offset + length - 1);
-    curl_easy_setopt(curl, CURLOPT_RANGE, range.c_str());
-
-    WriteCtx ctx{.data=output, .capacity=static_cast<size_t>(length)};
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToFixedBuffer);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToFile);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
 
     const auto result = curl_easy_perform(curl);
-    VELOX_CHECK_EQ(
-        static_cast<int>(result),
-        static_cast<int>(CURLE_OK),
-        "HTTP GET request for '{}' failed with code {} ({})",
-        url_,
-        static_cast<int>(result),
-        curl_easy_strerror(result));
-    VELOX_CHECK( 
-        !ctx.overflow,
-        "Received more data than expected while reading '{}'",
+    const int closeRes = fclose(file);
+    if (closeRes != 0) {
+      const auto err = errno;
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "Failed to close temporary file '{}' for '{}': {}",
+          tempPath,
+          url_,
+          std::strerror(err));
+    }
+
+    if (result != CURLE_OK) {
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "HTTP GET request for '{}' failed with code {} ({})",
+          url_,
+          static_cast<int>(result),
+          curl_easy_strerror(result));
+    }
+
+    long responseCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responseCode);
+    if (responseCode == 404 || responseCode == 410) {
+      ::unlink(tempPath.c_str());
+      VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
+    }
+    VELOX_CHECK(
+        responseCode >= 200 && responseCode < 300,
+        "Unexpected HTTP status {} for GET {}",
+        responseCode,
         url_);
-    VELOX_CHECK_EQ(
-        ctx.offset,
-        length,
-        "Short HTTP read for '{}' expected {} got {} bytes",
-        url_,
-        length,
-        ctx.offset);
+
+    struct stat st;
+    if (::stat(tempPath.c_str(), &st) != 0) {
+      const auto err = errno;
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "stat failed for temporary file '{}' ({}): {}",
+          tempPath,
+          url_,
+          std::strerror(err));
+    }
+    const auto downloadedSize = static_cast<int64_t>(st.st_size);
+
+    if (headLength.has_value() &&
+        headLength.value() != downloadedSize) {
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "Size mismatch for '{}': expected {} bytes from HEAD but downloaded {} bytes",
+          url_,
+          headLength.value(),
+          downloadedSize);
+    }
+
+    const auto previousSize = size_.load(std::memory_order_acquire);
+    if (previousSize >= 0 && previousSize != downloadedSize) {
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "Size mismatch for '{}': expected {} bytes but downloaded {} bytes",
+          url_,
+          previousSize,
+          downloadedSize);
+    }
+
+    if (expectedSize_.has_value() &&
+        expectedSize_.value() != downloadedSize) {
+      ::unlink(tempPath.c_str());
+      VELOX_FAIL(
+          "Size mismatch for '{}': expected {} bytes but downloaded {} bytes",
+          url_,
+          expectedSize_.value(),
+          downloadedSize);
+    }
+
+    size_.store(downloadedSize, std::memory_order_release);
+    sizeKnown_.store(true, std::memory_order_release);
+    localPath_ = std::move(tempPath);
+    try {
+      localReadFile_ = std::make_unique<LocalReadFile>(localPath_);
+    } catch (...) {
+      ::unlink(localPath_.c_str());
+      localPath_.clear();
+      throw;
+    }
   }
 
   std::string url_;
   mutable std::atomic<int64_t> size_{-1};
-  mutable folly::once_flag sizeInitialized_;
+  mutable std::atomic<bool> sizeKnown_{false};
+  std::optional<int64_t> expectedSize_;
+  mutable std::once_flag downloadOnce_;
+  mutable std::unique_ptr<LocalReadFile> localReadFile_;
+  mutable std::string localPath_;
+  mutable std::mutex sizeMutex_;
 };
 
 } // namespace
@@ -498,7 +479,7 @@ void finalizeHttp() {
 
 HttpFileSystem::HttpFileSystem(
     std::shared_ptr<const config::ConfigBase> config)
-    : FileSystem(std::move(config)) {
+    : FileSystem(config), http_config_(config) {
   if (!curlState().isInitialized()) {
     LOG(WARNING) << "HttpFileSystem constructed before curl initialized. "
                  << "Calling initializeHttp() automatically.";
@@ -560,18 +541,18 @@ bool HttpFileSystem::exists(std::string_view path) {
 
   CurlEasyHandle handle;
   auto* curl = handle.get();
-  const std::string rangeRequest(kRangeProbe);
 
   applyCommonCurlOptions(curl);
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
   curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-  curl_easy_setopt(curl, CURLOPT_RANGE, rangeRequest.c_str());
   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discardBody);
+  AbortAfterFirstChunkContext ctx;
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, abortAfterFirstChunk);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
 
   const auto result = curl_easy_perform(curl);
-  if (result != CURLE_OK) {
+  if (result != CURLE_OK && result != CURLE_WRITE_ERROR) {
     LOG(WARNING) << fmt::format(
         "HTTP GET exists probe for '{}' failed with {} ({})",
         url,
