@@ -26,9 +26,7 @@ on:
 jobs:
   adapters:
     name: Linux release with adapters
-    # prevent errors when forks ff their main branch
-    if: ${{ github.repository == 'facebookincubator/velox' }}
-    runs-on: 8-core-ubuntu-22.04
+    runs-on: google-c4d-standard-16
     container: ghcr.io/facebookincubator/velox-dev:adapters
     defaults:
       run:
@@ -84,7 +82,7 @@ jobs:
 
       - name: Make Release Build
         env:
-          MAKEFLAGS: NUM_THREADS=8 MAX_HIGH_MEM_JOBS=4 MAX_LINK_JOBS=4
+          MAKEFLAGS: NUM_THREADS=16 MAX_HIGH_MEM_JOBS=8 MAX_LINK_JOBS=8
           CUDA_ARCHITECTURES: 70
           CUDA_COMPILER: /usr/local/cuda-${CUDA_VERSION}/bin/nvcc
           # Set compiler to GCC 12
@@ -96,6 +94,7 @@ jobs:
             "-DVELOX_ENABLE_ARROW=ON"
             "-DVELOX_ENABLE_GEO=ON"
             "-DVELOX_ENABLE_PARQUET=ON"
+            "-DVELOX_ENABLE_HTTP=ON"
             "-DVELOX_ENABLE_HDFS=ON"
             "-DVELOX_ENABLE_S3=ON"
             "-DVELOX_ENABLE_GCS=ON"
@@ -136,12 +135,10 @@ jobs:
           fi
 
           export CLASSPATH=`/usr/local/hadoop/bin/hdfs classpath --glob`
-          ctest -j 8 --label-exclude cuda_driver --output-on-failure --no-tests=error
+          ctest -j 16 --label-exclude cuda_driver --output-on-failure --no-tests=error
 
   ubuntu-debug:
-    runs-on: 8-core-ubuntu-22.04
-    # prevent errors when forks ff their main branch
-    if: ${{ github.repository == 'facebookincubator/velox' }}
+    runs-on: google-c4d-standard-16
     name: Ubuntu debug with resolve_dependency
     env:
       CCACHE_DIR: ${{ github.workspace }}/ccache
@@ -180,7 +177,7 @@ jobs:
         env:
           VELOX_DEPENDENCY_SOURCE: BUNDLED
           ICU_SOURCE: SYSTEM
-          MAKEFLAGS: NUM_THREADS=8 MAX_HIGH_MEM_JOBS=4 MAX_LINK_JOBS=3
+          MAKEFLAGS: NUM_THREADS=16 MAX_HIGH_MEM_JOBS=8 MAX_LINK_JOBS=8
           EXTRA_CMAKE_FLAGS: >-
             -DCMAKE_LINK_LIBRARIES_STRATEGY=REORDER_FREELY
             -DVELOX_ENABLE_PARQUET=ON
@@ -205,4 +202,4 @@ jobs:
 
       - name: Run Tests
         run: |
-          cd _build/debug && ctest -j 8 --output-on-failure --no-tests=error
+          cd _build/debug && ctest -j 16 --output-on-failure --no-tests=error
