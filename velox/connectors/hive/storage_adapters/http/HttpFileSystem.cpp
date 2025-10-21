@@ -162,8 +162,8 @@ HeadProbeResult probeWithHead(const std::string& url) {
         curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
     if (infoRes == CURLE_OK && contentLength >= 0) {
       return {
-          HeadProbeStatus::kSuccess,
-          static_cast<int64_t>(contentLength)};
+          .status=HeadProbeStatus::kSuccess,
+          .contentLength=static_cast<int64_t>(contentLength)};
     }
     return {.status=HeadProbeStatus::kSuccess, .contentLength=std::nullopt};
   }
@@ -311,24 +311,23 @@ class HttpReadFile : public ReadFile {
     if (sizeKnown_.load(std::memory_order_acquire)) {
       return;
     }
+    {
+      std::scoped_lock const lock(sizeMutex_);
+      if (sizeKnown_.load(std::memory_order_relaxed)) {
+        return;
+      }
 
-    std::unique_lock<std::mutex> lock(sizeMutex_);
-    if (sizeKnown_.load(std::memory_order_relaxed)) {
-      return;
+      const auto [status, contentLength] = probeWithHead(url_);
+      if (status == HeadProbeStatus::kNotFound) {
+        VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
+      }
+      if (status == HeadProbeStatus::kSuccess &&
+          contentLength.has_value()) {
+        size_.store(contentLength.value(), std::memory_order_release);
+        sizeKnown_.store(true, std::memory_order_release);
+        return;
+      }
     }
-
-    const auto headResult = probeWithHead(url_);
-    if (headResult.status == HeadProbeStatus::kNotFound) {
-      VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
-    }
-    if (headResult.status == HeadProbeStatus::kSuccess &&
-        headResult.contentLength.has_value()) {
-      size_.store(headResult.contentLength.value(), std::memory_order_release);
-      sizeKnown_.store(true, std::memory_order_release);
-      return;
-    }
-
-    lock.unlock();
     ensureDownloaded();
   }
 
@@ -343,13 +342,13 @@ class HttpReadFile : public ReadFile {
   void downloadToLocalFile() const {
     std::optional<int64_t> headLength;
     if (!sizeKnown_.load(std::memory_order_acquire)) {
-      const auto headResult = probeWithHead(url_);
-      if (headResult.status == HeadProbeStatus::kNotFound) {
+      const auto [status, contentLength] = probeWithHead(url_);
+      if (status == HeadProbeStatus::kNotFound) {
         VELOX_FILE_NOT_FOUND_ERROR("HTTP resource '{}' not found", url_);
       }
-      if (headResult.status == HeadProbeStatus::kSuccess &&
-          headResult.contentLength.has_value()) {
-        headLength = headResult.contentLength.value();
+      if (status == HeadProbeStatus::kSuccess &&
+          contentLength.has_value()) {
+        headLength = contentLength;
       }
     }
 
@@ -377,8 +376,7 @@ class HttpReadFile : public ReadFile {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
 
     const auto result = curl_easy_perform(curl);
-    const int closeRes = fclose(file);
-    if (closeRes != 0) {
+    if (const int closeRes = fclose(file); closeRes != 0) {
       const auto err = errno;
       VELOX_FAIL(
           "Failed to close temporary file '{}' for '{}': {}",
@@ -406,8 +404,8 @@ class HttpReadFile : public ReadFile {
         responseCode,
         url_);
 
-    struct stat st;
-    if (::stat(tempPath.c_str(), &st) != 0) {
+    struct stat file_stats{};
+    if (::stat(tempPath.c_str(), &file_stats) != 0) {
       const auto err = errno;
       VELOX_FAIL(
           "stat failed for temporary file '{}' ({}): {}",
@@ -415,7 +413,7 @@ class HttpReadFile : public ReadFile {
           url_,
           std::strerror(err));
     }
-    const auto downloadedSize = static_cast<int64_t>(st.st_size);
+    const auto downloadedSize = static_cast<int64_t>(file_stats.st_size);
 
     if (headLength.has_value() &&
         headLength.value() != downloadedSize) {
@@ -426,8 +424,7 @@ class HttpReadFile : public ReadFile {
           downloadedSize);
     }
 
-    const auto previousSize = size_.load(std::memory_order_acquire);
-    if (previousSize >= 0 && previousSize != downloadedSize) {
+    if (const auto previousSize = size_.load(std::memory_order_acquire); previousSize >= 0 && previousSize != downloadedSize) {
       VELOX_FAIL(
           "Size mismatch for '{}': expected {} bytes but downloaded {} bytes",
           url_,
@@ -446,11 +443,8 @@ class HttpReadFile : public ReadFile {
 
     size_.store(downloadedSize, std::memory_order_release);
     sizeKnown_.store(true, std::memory_order_release);
-    try {
-      localReadFile_ = std::make_unique<LocalReadFile>(tempPath);
-    } catch (...) {
-      throw;
-    }
+    localReadFile_ = std::make_unique<LocalReadFile>(tempPath);
+
     cleanup.dismiss();
     localPath_ = std::move(tempPath);
   }
