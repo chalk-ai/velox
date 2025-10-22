@@ -55,15 +55,15 @@ jobs:
           VELOX_BUILD_SHARED: "ON"
           VELOX_ARROW_CMAKE_PATCH: ${{ github.workspace }}/CMake/resolve_dependency_modules/arrow/cmake-compatibility.patch
         run: |
-          (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
-            && sudo mkdir -p -m 755 /etc/apt/keyrings \
+          (type -p wget >/dev/null || (apt update && apt install wget -y)) \
+            && mkdir -p -m 755 /etc/apt/keyrings \
             && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-            && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-            && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
-            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-            && sudo apt update \
-            && sudo apt install gh -y
+            && cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+            && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+            && mkdir -p -m 755 /etc/apt/sources.list.d \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+            && apt update \
+            && apt install gh -y
           if git diff --name-only HEAD^1 HEAD | grep -q "scripts/setup-"; then
             # Overwrite old setup scripts with changed versions
             cp scripts/setup-* /
@@ -80,10 +80,10 @@ jobs:
             rm -rf /tmp/build # cleanup to avoid issues with disk space
           fi
 
-      - uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-adapters-${{ inputs.use-clang && 'clang' || 'gcc' }}
+      #- uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
+      #  with:
+      #    path: ${{ env.CCACHE_DIR }}
+      #    key: ccache-linux-adapters-${{ inputs.use-clang && 'clang' || 'gcc' }}
 
       - name: Zero Ccache Statistics
         run: |
@@ -158,22 +158,22 @@ jobs:
         working-directory: velox
     steps:
       - name: Install Dependencies
+        working-directory: .
         run: |
-          (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
-            && sudo mkdir -p -m 755 /etc/apt/keyrings \
+          (type -p wget >/dev/null || (apt update && apt install wget -y)) \
+            && mkdir -p -m 755 /etc/apt/keyrings \
             && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-            && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-            && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
-            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-            && sudo apt update \
-            && sudo apt install gh -y
-
-      - name: Get Ccache Stash
-        uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-ubuntu-debug-default-${{ inputs.use-clang && 'clang' || 'gcc' }}
+            && cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+            && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+            && mkdir -p -m 755 /etc/apt/sources.list.d \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+            && apt update \
+            && apt install gh -y
+      #- name: Get Ccache Stash
+      #  uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
+      #  with:
+      #    path: ${{ env.CCACHE_DIR }}
+      #    key: ccache-ubuntu-debug-default-${{ inputs.use-clang && 'clang' || 'gcc' }}
 
       - name: Ensure Stash Dirs Exists
         working-directory: ${{ github.workspace }}
