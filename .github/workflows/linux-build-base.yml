@@ -80,10 +80,10 @@ jobs:
             rm -rf /tmp/build # cleanup to avoid issues with disk space
           fi
 
-      - uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-adapters-${{ inputs.use-clang && 'clang' || 'gcc' }}
+      #- uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
+      #  with:
+      #    path: ${{ env.CCACHE_DIR }}
+      #    key: ccache-linux-adapters-${{ inputs.use-clang && 'clang' || 'gcc' }}
 
       - name: Zero Ccache Statistics
         run: |
@@ -158,6 +158,7 @@ jobs:
         working-directory: velox
     steps:
       - name: Install Dependencies
+        working-directory: .
         run: |
           (type -p wget >/dev/null || (apt update && apt install wget -y)) \
             && mkdir -p -m 755 /etc/apt/keyrings \
@@ -168,12 +169,11 @@ jobs:
             && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
             && apt update \
             && apt install gh -y
-
-      - name: Get Ccache Stash
-        uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-ubuntu-debug-default-${{ inputs.use-clang && 'clang' || 'gcc' }}
+      #- name: Get Ccache Stash
+      #  uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
+      #  with:
+      #    path: ${{ env.CCACHE_DIR }}
+      #    key: ccache-ubuntu-debug-default-${{ inputs.use-clang && 'clang' || 'gcc' }}
 
       - name: Ensure Stash Dirs Exists
         working-directory: ${{ github.workspace }}
