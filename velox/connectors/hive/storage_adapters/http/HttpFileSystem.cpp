@@ -246,7 +246,8 @@ class HttpReadFile : public ReadFile {
       uint64_t offset,
       uint64_t length,
       void* buffer,
-      File::IoStats* stats) const override {
+      File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {}) const override {
     VELOX_CHECK_GT(length, 0, "HTTP pread requires positive length");
     ensureDownloaded();
     auto data =
@@ -258,7 +259,8 @@ class HttpReadFile : public ReadFile {
   std::string pread(
       uint64_t offset,
       uint64_t length,
-      File::IoStats* stats) const override {
+      File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {}) const override {
     if (length == 0) {
       return {};
     }
@@ -271,7 +273,8 @@ class HttpReadFile : public ReadFile {
   uint64_t preadv(
       uint64_t offset,
       const std::vector<folly::Range<char*>>& buffers,
-      File::IoStats* stats) const override {
+      File::IoStats* stats = nullptr,
+      const folly::F14FastMap<std::string, std::string>& fileReadOps = {}) const override {
     ensureDownloaded();
     auto bytes = localReadFile_->preadv(offset, buffers, stats);
     bytesRead_ += bytes;
