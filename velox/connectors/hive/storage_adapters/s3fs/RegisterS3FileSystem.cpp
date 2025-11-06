@@ -28,6 +28,7 @@
 namespace facebook::velox::filesystems {
 
 #ifdef VELOX_ENABLE_S3
+namespace {
 using FileSystemMap = folly::Synchronized<
     std::unordered_map<std::string, std::shared_ptr<FileSystem>>>;
 
@@ -106,6 +107,7 @@ std::unique_ptr<velox::dwio::common::FileSink> s3WriteFileSinkGenerator(
   }
   return nullptr;
 }
+} // namespace
 #endif
 
 void registerS3FileSystem(CacheKeyFn identityFunction) {

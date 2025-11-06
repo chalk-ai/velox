@@ -14,5 +14,6 @@
 
 add_subdirectory(s3fs)
 add_subdirectory(hdfs)
+add_subdirectory(http)
 add_subdirectory(gcs)
 add_subdirectory(abfs)
