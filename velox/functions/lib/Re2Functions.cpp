@@ -918,7 +918,7 @@ class LikeWithRe2 final : public exec::VectorFunction {
 class LikeGeneric final : public exec::VectorFunction {
  public:
   explicit LikeGeneric(int64_t maxCompiledRegexes)
-      : maxCompiledRegexes_(maxCompiledRegexes) {}
+      : compiledRegularExpressions_(maxCompiledRegexes), maxCompiledRegexes_(maxCompiledRegexes) {}
 
   void apply(
       const SelectivityVector& rows,
@@ -1035,11 +1035,6 @@ class LikeGeneric final : public exec::VectorFunction {
       return reIt->second.get();
     }
 
-    VELOX_USER_CHECK_LT(
-        compiledRegularExpressions_.size(),
-        maxCompiledRegexes_,
-        "Max number of regex reached");
-
     bool validEscapeUsage;
     auto regex = likePatternToRe2(pattern, escapeChar, validEscapeUsage);
     VELOX_USER_CHECK(
@@ -1052,13 +1047,13 @@ class LikeGeneric final : public exec::VectorFunction {
     checkForBadPattern(*re);
 
     auto [it, inserted] =
-        compiledRegularExpressions_.emplace(key, std::move(re));
+        compiledRegularExpressions_.insert(key, std::move(re));
     VELOX_CHECK(inserted);
 
     return it->second.get();
   }
 
-  mutable folly::F14FastMap<
+  mutable folly::EvictingCacheMap<
       std::pair<std::string, std::optional<char>>,
       std::unique_ptr<RE2>>
       compiledRegularExpressions_;
