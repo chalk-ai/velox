@@ -18,7 +18,7 @@
 
 // Symbolizer requires folly to be compiled with libelf and libdwarf support
 // (also currently only works in Linux).
-#if __linux__ && FOLLY_HAVE_ELF && FOLLY_HAVE_DWARF
+#if __linux__
 #define VELOX_HAS_SYMBOLIZER 1
 #else
 #define VELOX_HAS_SYMBOLIZER 0
