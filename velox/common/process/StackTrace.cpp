@@ -14,37 +14,37 @@
  * limitations under the License.
  */
 
-#include "velox/common/process/StackTrace.h"
+// #include "velox/common/process/StackTrace.h"
 
-#include <stacktrace>
+// #include <stacktrace>
 
-#include <fmt/format.h>
-#include <folly/Indestructible.h>
-#include <folly/String.h>
-#include <folly/experimental/symbolizer/StackTrace.h>
-#include <string>
+// #include <fmt/format.h>
+// #include <folly/Indestructible.h>
+// #include <folly/String.h>
+// #include <folly/experimental/symbolizer/StackTrace.h>
+// #include <string>
 
-#include "velox/common/process/ProcessBase.h"
+// #include "velox/common/process/ProcessBase.h"
 
-namespace facebook::velox::process {
+// namespace facebook::velox::process {
 
-StackTrace::StackTrace(int32_t skipFrames) {
-  (void)skipFrames;
-  auto stack = std::stacktrace::current();
-  // TODO: respect skipFrames
-  size_t index = 0;
-  for (const auto& func_row : stack) {
-    std::string func_row_name = func_row.to_string();
-    this->_stack_frame_formatted += "@stack ";
-    index += 1;
-    this->_stack_frame_formatted += std::to_string(index);
-    this->_stack_frame_formatted += func_row_name;
-    this->_stack_frame_formatted += "\n";
-    stack_frame_list.push_back(std::move(func_row_name));
-  }
-}
+// StackTrace::StackTrace(int32_t skipFrames) {
+//   (void)skipFrames;
+//   auto stack = std::stacktrace::current();
+//   // TODO: respect skipFrames
+//   size_t index = 0;
+//   for (const auto& func_row : stack) {
+//     std::string func_row_name = func_row.to_string();
+//     this->_stack_frame_formatted += "@stack ";
+//     index += 1;
+//     this->_stack_frame_formatted += std::to_string(index);
+//     this->_stack_frame_formatted += func_row_name;
+//     this->_stack_frame_formatted += "\n";
+//     stack_frame_list.push_back(std::move(func_row_name));
+//   }
+// }
 
-///////////////////////////////////////////////////////////////////////////////
-// reporting functions
+// ///////////////////////////////////////////////////////////////////////////////
+// // reporting functions
 
-} // namespace facebook::velox::process
+// } // namespace facebook::velox::process
