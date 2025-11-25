@@ -703,16 +703,6 @@ find_package(BISON 3.0.4 REQUIRED)
 find_package(FLEX 2.5.13 REQUIRED)
 find_package(double-conversion 3.1.5 REQUIRED)
 
-# BEGIN CHALK MODIFICATION
-FetchContent_Declare(
-  backward
-  GIT_REPOSITORY https://github.com/bombela/backward-cpp
-  GIT_TAG 0bfd0a07a61551413ccd2ab9a9099af3bad40681
-  EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(backward)
-target_include_directories(velox PUBLIC ${backward_SOURCE_DIR})
-# END CHALK MODIFICATION
-
 include_directories(SYSTEM velox)
 include_directories(SYSTEM velox/external)
 
