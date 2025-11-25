@@ -710,6 +710,7 @@ FetchContent_Declare(
   GIT_TAG 0bfd0a07a61551413ccd2ab9a9099af3bad40681
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(backward)
+target_include_directories(velox PUBLIC ${backward_SOURCE_DIR})
 # END CHALK MODIFICATION
 
 include_directories(SYSTEM velox)
