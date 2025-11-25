@@ -16,8 +16,6 @@
 
 #pragma once
 
-#include <folly/synchronization/CallOnce.h>
-
 #include <string>
 #include <vector>
 
@@ -25,48 +23,29 @@ namespace facebook::velox::process {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-/// TODO: Deprecate in favor of folly::symbolizer.
+/// NOTE: This file is rewritten in the Chalk fork to use 'backward'
+/// for getting stack traces, instead of Folly.
+
+/// Build a stack-trace.
 class StackTrace {
+  std::vector<std::string> _stack_frame_list;
+  std::string _stack_frame_formatted;
+
  public:
-  /// Translate a frame pointer to file name and line number pair.
-  static std::string translateFrame(void* framePtr, bool lineNumbers = true);
-
-  /// Demangle a function name.
-  static std::string demangle(const char* mangled);
-
-  /// Constructor -- saves the current stack trace. By default, we skip the
-  /// frames for StackTrace::StackTrace.  If you want those, you can pass '-2'
-  /// to skipFrames.
   explicit StackTrace(int32_t skipFrames = 0);
 
-  StackTrace(const StackTrace& other);
-  StackTrace& operator=(const StackTrace& other);
+  StackTrace(const StackTrace& other) = default;
+  StackTrace& operator=(const StackTrace& other) = default;
 
   /// Generate an output of the written stack trace.
-  const std::string& toString() const;
-
-  /// Generate a vector that for each position has the title of the frame.
-  const std::vector<std::string>& toStrVector() const;
-
-  /// Return the raw stack pointers.
-  const std::vector<void*>& getStack() const {
-    return btPtrs_;
+  const std::string& toString() const {
+    return this->_stack_frame_formatted;
   }
 
-  /// Log stacktrace into a file under /tmp. If "out" is not null, also store
-  /// translated stack trace into the variable. Returns the name of the
-  /// generated file.
-  std::string log(const char* errorType, std::string* out = nullptr) const;
-
- private:
-  // Record bt pointers.
-  void create(int32_t skipFrames);
-
-  std::vector<void*> btPtrs_;
-  mutable folly::once_flag btVectorFlag_;
-  mutable std::vector<std::string> btVector_;
-  mutable folly::once_flag btFlag_;
-  mutable std::string bt_;
+  /// Generate a vector that for each position has the title of the frame.
+  const std::vector<std::string>& toStrVector() const {
+    return this->_stack_frame_list;
+  }
 };
 
 ///////////////////////////////////////////////////////////////////////////////

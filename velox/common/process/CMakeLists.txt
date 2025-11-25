@@ -27,6 +27,19 @@ velox_link_libraries(
   PRIVATE fmt::fmt gflags::gflags
 )
 
+# BEGIN CHALK MODIFICATION
+FetchContent_Declare(
+  backward
+  GIT_REPOSITORY https://github.com/bombela/backward-cpp
+  GIT_TAG 0bfd0a07a61551413ccd2ab9a9099af3bad40681
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(backward)
+velox_include_directories(
+  velox_process
+  PUBLIC ${backward_SOURCE_DIR}
+)
+# END CHALK MODIFICATION
+
 # Profiler need not be part of the core Velox library
 add_library(velox_profiler OBJECT Profiler.cpp)
 target_link_libraries(
