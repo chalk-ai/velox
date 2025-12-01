@@ -16,6 +16,7 @@
 
 #include "velox/common/memory/MemoryPool.h"
 
+#include <cstdlib>
 #include <signal.h>
 
 #include "velox/common/Casts.h"
@@ -1346,6 +1347,16 @@ void MemoryPoolImpl::leakCheckDbg() {
   if (debugAllocRecords_.empty()) {
     return;
   }
+
+  // Check if we should ignore memory leak checks via environment variable
+  if (std::getenv("VELOX_IGNORE_MEMORY_LEAK_CHECK") != nullptr) {
+    VELOX_MEM_LOG(ERROR) << fmt::format(
+        "[MemoryPool] Leak check failed for '{}' pool (ignored due to VELOX_IGNORE_MEMORY_LEAK_CHECK) - {}",
+        name_,
+        dumpRecordsDbg());
+    return;
+  }
+
   VELOX_FAIL(fmt::format(
       "[MemoryPool] Leak check failed for '{}' pool - {}",
       name_,
