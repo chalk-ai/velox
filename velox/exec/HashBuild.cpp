@@ -951,6 +951,8 @@ void HashBuild::addRuntimeStats() {
     lockedStats->runtimeStats[BaseHashTable::kNumTombstones] =
         RuntimeMetric(hashTableStats.numTombstones);
   }
+  lockedStats->runtimeStats["hashtable.allocatedBytes"] =
+      RuntimeMetric(table_->allocatedBytes());
 
   // Add max spilling level stats if spilling has been triggered.
   if (spiller_ != nullptr && spiller_->spillTriggered()) {

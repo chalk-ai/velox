@@ -8152,5 +8152,31 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashTableCleanupAfterProbeFinish) {
   ASSERT_TRUE(tableEmpty);
 }
 
+TEST_P(MultiThreadedHashJoinTest, allocatedBytesCheck) {
+  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+      .numDrivers(numDrivers_)
+      .keyTypes({BIGINT()})
+      .probeVectors(1600, 5)
+      .buildVectors(1500, 5)
+      .referenceQuery(
+          "SELECT t_k0, t_data, u_k0, u_data FROM t, u WHERE t.t_k0 = u.u_k0")
+      .injectSpill(false)
+      .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
+        auto stats = task->taskStats();
+        bool found = false;
+        for (auto& pipeline : stats.pipelineStats) {
+          for (auto& op : pipeline.operatorStats) {
+             if (op.operatorType == "HashBuild") {
+                 ASSERT_EQ(op.runtimeStats.count("hashtable.allocatedBytes"), 1);
+                 ASSERT_GT(op.runtimeStats["hashtable.allocatedBytes"].sum, 0);
+                 found = true;
+             }
+          }
+        }
+        ASSERT_TRUE(found);
+      })
+      .run();
+}
+
 } // namespace
 } // namespace facebook::velox::exec
