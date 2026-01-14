@@ -428,6 +428,39 @@ TEST_F(ParquetTableScanTest, aggregatePushdown) {
   assertEqualVectors(rows->childAt(1), valuesVector);
 }
 
+TEST_F(ParquetTableScanTest, aggregatePushdownToSmallPages) {
+  const std::vector<std::string> columnNames = {"a", "b", "c"};
+  const auto expectedRowVector = makeRowVector(
+      {makeFlatVector<int16_t>({1, 2, 4}),
+       makeFlatVector<int64_t>({7, 9, 13})});
+  const auto outputType = ROW(columnNames, {SMALLINT(), SMALLINT(), VARCHAR()});
+  std::vector<RowVectorPtr> data;
+  for (auto row = 0; row < 10; ++row) {
+    data.emplace_back(makeRowVector(
+        columnNames,
+        {
+            makeFlatVector<int16_t>({static_cast<int16_t>(row % 5)}),
+            makeFlatVector<int16_t>({static_cast<int16_t>(row)}),
+            makeFlatVector<std::string>({std::to_string(row)}),
+        }));
+  }
+  const auto filePath = TempFilePath::create();
+  WriterOptions options;
+  options.dataPageSize = 1;
+  writeToParquetFile(filePath->getPath(), data, options);
+  const auto plan =
+      PlanBuilder(pool())
+          .tableScan(
+              outputType,
+              {},
+              "c <> '' AND a in (1::smallint, 2::smallint, 4::smallint)")
+          .singleAggregation({"a"}, {"sum(b) as s"})
+          .planNode();
+  AssertQueryBuilder(plan)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(expectedRowVector);
+}
+
 TEST_F(ParquetTableScanTest, countStar) {
   // sample.parquet holds two columns (a: BIGINT, b: DOUBLE) and
   // 20 rows.
@@ -1411,6 +1444,43 @@ TEST_F(ParquetTableScanTest, shortAndLongDecimalReadWithLargerPrecision) {
 
   assertEqualVectors(expectedDecimalVectors->childAt(0), rows->childAt(0));
   assertEqualVectors(expectedDecimalVectors->childAt(1), rows->childAt(1));
+}
+
+TEST_F(ParquetTableScanTest, inFilter) {
+  auto vectors = {makeRowVector(
+      {"name"},
+      {
+          makeNullableFlatVector<std::string>(
+              {"mary", "martin", "lucy", "alex", std::nullopt, "mary", "dan"}),
+      })};
+  auto filePath = TempFilePath::create();
+  WriterOptions options;
+  writeToParquetFile(filePath->getPath(), vectors, options);
+  createDuckDbTable(vectors);
+
+  // Test in.
+  auto plan = PlanBuilder(pool_.get())
+                  .tableScan(
+                      ROW({"name"}, {VARCHAR()}),
+                      {"name in ('alex', 'leo', 'mary', null, 'victor')"},
+                      "")
+                  .planNode();
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(
+          "SELECT name FROM tmp where name in ('alex', 'leo', 'mary', null, 'victor')");
+
+  // Test not in.
+  plan = PlanBuilder(pool_.get())
+             .tableScan(
+                 ROW({"name"}, {VARCHAR()}),
+                 {"name not in ('alex', 'leo', 'mary', null, 'victor')"},
+                 "")
+             .planNode();
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(
+          "SELECT name FROM tmp where name not in ('alex', 'leo', 'mary', null, 'victor')");
 }
 
 int main(int argc, char** argv) {

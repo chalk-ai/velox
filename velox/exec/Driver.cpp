@@ -96,7 +96,7 @@ const core::QueryConfig& DriverCtx::queryConfig() const {
   return task->queryCtx()->queryConfig();
 }
 
-const std::optional<TraceConfig>& DriverCtx::traceConfig() const {
+const std::optional<trace::TraceConfig>& DriverCtx::traceConfig() const {
   return task->traceConfig();
 }
 
@@ -142,10 +142,12 @@ std::optional<common::SpillConfig> DriverCtx::makeSpillConfig(
       queryConfig.maxSpillRunRows(),
       queryConfig.writerFlushThresholdBytes(),
       queryConfig.spillCompressionKind(),
+      queryConfig.spillNumMaxMergeFiles(),
       queryConfig.spillPrefixSortEnabled()
           ? std::optional<common::PrefixSortConfig>(prefixSortConfig())
           : std::nullopt,
-      queryConfig.spillFileCreateConfig());
+      queryConfig.spillFileCreateConfig(),
+      queryConfig.windowSpillMinReadBatchRows());
 }
 
 std::atomic_uint64_t BlockingState::numBlockedDrivers_{0};
@@ -159,9 +161,10 @@ BlockingState::BlockingState(
       future_(std::move(future)),
       operator_(op),
       reason_(reason),
-      sinceUs_(std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::high_resolution_clock::now().time_since_epoch())
-                   .count()) {
+      sinceUs_(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::high_resolution_clock::now().time_since_epoch())
+              .count()) {
   // Set before leaving the thread.
   driver_->state().hasBlockingFuture = true;
   numBlockedDrivers_++;
@@ -289,6 +292,7 @@ RowVectorPtr Driver::next(
   ScopedDriverThreadContext scopedDriverThreadContext(self->driverCtx());
   std::shared_ptr<BlockingState> blockingState;
   RowVectorPtr result;
+
   const auto stop = runInternal(self, blockingState, result);
 
   if (blockingState != nullptr) {
@@ -421,11 +425,12 @@ CpuWallTiming Driver::processLazyIoStats(
   cpuDelta = std::min<int64_t>(cpuDelta, timing.cpuNanos);
   wallDelta = std::min<int64_t>(wallDelta, timing.wallNanos);
   lockStats = operators_[0]->stats().wlock();
-  lockStats->getOutputTiming.add(CpuWallTiming{
-      1,
-      static_cast<uint64_t>(wallDelta),
-      static_cast<uint64_t>(cpuDelta),
-  });
+  lockStats->getOutputTiming.add(
+      CpuWallTiming{
+          1,
+          static_cast<uint64_t>(wallDelta),
+          static_cast<uint64_t>(cpuDelta),
+      });
   lockStats->inputBytes += inputBytesDelta;
   lockStats->outputBytes += inputBytesDelta;
   return CpuWallTiming{
@@ -467,6 +472,7 @@ StopReason Driver::runInternal(
     RowVectorPtr& result) {
   const auto now = getCurrentTimeMicro();
   const auto queuedTimeUs = now - queueTimeStartUs_;
+
   // Update the next operator's queueTime.
   StopReason stop =
       closed_ ? StopReason::kTerminate : task()->enter(state_, now);
@@ -576,9 +582,11 @@ StopReason Driver::runInternal(
               nextOp,
               curOperatorId_ + 1,
               kOpMethodNeedsInput);
+
           if (needsInput) {
             uint64_t resultBytes = 0;
             RowVectorPtr intermediateResult;
+
             withDeltaCpuWallTimer(op, &OperatorStats::getOutputTiming, [&]() {
               TestValue::adjust(
                   "facebook::velox::exec::Driver::runInternal::getOutput", op);
@@ -605,6 +613,7 @@ StopReason Driver::runInternal(
                       lockedStats->addInputVector(
                           resultBytes, intermediateResult->size());
                     }
+
                     nextOp->traceInput(intermediateResult);
                     TestValue::adjust(
                         "facebook::velox::exec::Driver::runInternal::addInput",
@@ -713,7 +722,7 @@ StopReason Driver::runInternal(
     }
   } catch (velox::VeloxException&) {
     task()->setError(std::current_exception());
-    // The CancelPoolGuard will close 'self' and remove from Task.
+    // The CancelGuard will close 'self' and remove from Task.
     return StopReason::kAlreadyTerminated;
   } catch (std::exception&) {
     task()->setError(std::current_exception());
@@ -809,6 +818,19 @@ void Driver::closeOperators() {
   for (auto& op : operators_) {
     auto stats = op->stats(true);
     stats.numDrivers = 1;
+
+    // Calculate this driver's CPU time for this specific operator and add it as
+    // a runtime stat. This will be aggregated across all drivers, with the max
+    // field containing the CPU time from the longest running driver.
+    uint64_t operatorCpuNanos = stats.addInputTiming.cpuNanos +
+        stats.getOutputTiming.cpuNanos + stats.finishTiming.cpuNanos +
+        stats.isBlockedTiming.cpuNanos;
+
+    if (operatorCpuNanos > 0) {
+      stats.runtimeStats[OperatorStats::kDriverCpuTime] =
+          RuntimeMetric(operatorCpuNanos, RuntimeCounter::Unit::kNanos);
+    }
+
     task()->addOperatorStats(stats);
   }
 }
@@ -1113,9 +1135,13 @@ std::string Driver::toString() const {
   }
 
   out << "{Operators: ";
-  for (auto& op : operators_) {
-    out << op->toString() << ", ";
-  }
+  std::vector<std::string> opStrs;
+  opStrs.reserve(operators_.size());
+  std::ranges::transform(
+      operators_, std::back_inserter(opStrs), [](const auto& op) {
+        return op->toString();
+      });
+  out << folly::join(", ", opStrs);
   out << "}";
   const auto ocs = opCallStatus();
   if (!ocs.empty()) {

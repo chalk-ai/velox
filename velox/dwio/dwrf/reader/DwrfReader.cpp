@@ -39,24 +39,26 @@ using dwio::common::UnitLoaderFactory;
 class DwrfUnit : public LoadUnit {
  public:
   DwrfUnit(
-      const StripeReaderBase& stripeReaderBase,
+      std::shared_ptr<ReaderBase> readerBase,
       const StrideIndexProvider& strideIndexProvider,
-      dwio::common::ColumnReaderStatistics& columnReaderStatistics,
+      std::shared_ptr<dwio::common::ColumnReaderStatistics>
+          columnReaderStatistics,
       uint32_t stripeIndex,
       std::shared_ptr<dwio::common::ColumnSelector> columnSelector,
-      const std::shared_ptr<BitSet>& projectedNodes,
+      std::shared_ptr<BitSet> projectedNodes,
       RowReaderOptions options,
-      const dwio::common::ColumnReaderOptions& columnReaderOptions)
-      : stripeReaderBase_{stripeReaderBase},
+      dwio::common::ColumnReaderOptions columnReaderOptions)
+      : stripeReaderBase_{readerBase},
+        memoryPool_(readerBase->memoryPool().shared_from_this()),
         strideIndexProvider_{strideIndexProvider},
-        columnReaderStatistics_{&columnReaderStatistics},
+        columnReaderStatistics_{std::move(columnReaderStatistics)},
         stripeIndex_{stripeIndex},
         columnSelector_{std::move(columnSelector)},
-        projectedNodes_{projectedNodes},
+        projectedNodes_{std::move(projectedNodes)},
         options_{std::move(options)},
-        columnReaderOptions_{columnReaderOptions},
+        columnReaderOptions_{std::move(columnReaderOptions)},
         stripeInfo_{
-            stripeReaderBase.getReader().footer().stripes(stripeIndex_)} {}
+            stripeReaderBase_.getReader().footer().stripes(stripeIndex_)} {}
 
   ~DwrfUnit() override = default;
 
@@ -86,14 +88,25 @@ class DwrfUnit : public LoadUnit {
   void loadDecoders();
 
   // Immutables
-  const StripeReaderBase& stripeReaderBase_;
+  const StripeReaderBase stripeReaderBase_;
+  // Not used in DwrfUnit directly, it is to keep memory pool alive for
+  // readerBase
+  const std::shared_ptr<memory::MemoryPool> memoryPool_;
+
+  // SAFETY: This reference is safe despite DwrfUnit potentially outliving
+  // DwrfRowReader during async operations. The reference is only STORED (not
+  // dereferenced) during load() path. Actual dereferencing via
+  // getStrideIndex() only happens during synchronous data reading in
+  // ColumnReader::next(), where DwrfRowReader is guaranteed to be alive.
   const StrideIndexProvider& strideIndexProvider_;
-  dwio::common::ColumnReaderStatistics* const columnReaderStatistics_;
+
+  const std::shared_ptr<dwio::common::ColumnReaderStatistics>
+      columnReaderStatistics_;
   const uint32_t stripeIndex_;
   const std::shared_ptr<dwio::common::ColumnSelector> columnSelector_;
   const std::shared_ptr<BitSet> projectedNodes_;
   const RowReaderOptions options_;
-  const dwio::common::ColumnReaderOptions& columnReaderOptions_;
+  const dwio::common::ColumnReaderOptions columnReaderOptions_;
   const StripeInformationWrapper stripeInfo_;
 
   // Mutables
@@ -243,6 +256,8 @@ DwrfRowReader::DwrfRowReader(
                     reader->schema()))},
       decodingTimeCallback_{options_.decodingTimeCallback()},
       strideIndex_{0},
+      columnReaderStatistics_{
+          std::make_shared<dwio::common::ColumnReaderStatistics>()},
       currentUnit_{nullptr} {
   const auto& fileFooter = getReader().footer();
   const uint32_t numberOfStripes = fileFooter.stripesSize();
@@ -329,15 +344,16 @@ std::unique_ptr<dwio::common::UnitLoader> DwrfRowReader::getUnitLoader() {
   std::vector<std::unique_ptr<LoadUnit>> loadUnits;
   loadUnits.reserve(stripeCeiling_ - firstStripe_);
   for (auto stripe = firstStripe_; stripe < stripeCeiling_; ++stripe) {
-    loadUnits.emplace_back(std::make_unique<DwrfUnit>(
-        /*stripeReaderBase=*/*this,
-        /*strideIndexProvider=*/*this,
-        columnReaderStatistics_,
-        stripe,
-        columnSelector_,
-        projectedNodes_,
-        options_,
-        columnReaderOptions_));
+    loadUnits.emplace_back(
+        std::make_unique<DwrfUnit>(
+            /*readerBase=*/readerBaseShared(),
+            /*strideIndexProvider=*/*this,
+            columnReaderStatistics_,
+            stripe,
+            columnSelector_,
+            projectedNodes_,
+            options_,
+            columnReaderOptions_));
   }
   std::shared_ptr<UnitLoaderFactory> unitLoaderFactory =
       options_.unitLoaderFactory();
@@ -838,8 +854,9 @@ DwrfReader::DwrfReader(
 void DwrfReader::updateColumnNamesFromTableSchema() {
   const auto& tableSchema = readerBase_->readerOptions().fileSchema();
   const auto& fileSchema = readerBase_->schema();
-  readerBase_->setSchema(std::dynamic_pointer_cast<const RowType>(
-      updateColumnNames(fileSchema, tableSchema)));
+  readerBase_->setSchema(
+      std::dynamic_pointer_cast<const RowType>(
+          updateColumnNames(fileSchema, tableSchema)));
 }
 
 std::unique_ptr<StripeInformation> DwrfReader::getStripe(

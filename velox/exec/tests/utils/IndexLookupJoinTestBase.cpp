@@ -18,7 +18,7 @@
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
-namespace fecebook::velox::exec::test {
+namespace facebook::velox::exec::test {
 using namespace facebook::velox::test;
 
 namespace {
@@ -116,10 +116,11 @@ std::vector<RowVectorPtr> IndexLookupJoinTestBase::generateProbeInput(
     for (int i = 0; i < numBatches; ++i) {
       std::vector<FlatVectorPtr<int64_t>> probeKeyVectors;
       for (int j = 0; j < probeJoinKeys.size(); ++j) {
-        probeKeyVectors.push_back(BaseVector::create<FlatVector<int64_t>>(
-            probeType_->findChild(probeJoinKeys[j]),
-            probeInputs[i]->size(),
-            pool.get()));
+        probeKeyVectors.push_back(
+            BaseVector::create<FlatVector<int64_t>>(
+                probeType_->findChild(probeJoinKeys[j]),
+                probeInputs[i]->size(),
+                pool.get()));
       }
       for (int row = 0; row < probeInputs[i]->size();
            row += numDuplicateProbeRows) {
@@ -515,4 +516,4 @@ IndexLookupJoinTestBase::createProbeFiles(
   writeToFiles(toFilePaths(probeFiles), probeVectors);
   return probeFiles;
 }
-} // namespace fecebook::velox::exec::test
+} // namespace facebook::velox::exec::test

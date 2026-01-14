@@ -23,7 +23,6 @@
 #include "velox/vector/FlatMapVector.h"
 
 namespace facebook::velox::dwrf {
-
 namespace {
 
 template <typename T>
@@ -41,7 +40,7 @@ inline dwio::common::flatmap::KeyValue<StringView> extractKey<StringView>(
 template <typename T>
 std::string toString(const T& x) {
   if constexpr (std::is_same_v<T, StringView>) {
-    return x;
+    return std::string(x);
   } else {
     return std::to_string(x);
   }
@@ -207,13 +206,14 @@ class SelectiveFlatMapAsStructReader : public SelectiveStructColumnReaderBase {
             fileType,
             params,
             scanSpec),
-        keyNodes_(getKeyNodes<T>(
-            columnReaderOptions,
-            requestedType,
-            fileType,
-            params,
-            scanSpec,
-            dwio::common::flatmap::FlatMapOutput::kStruct)) {
+        keyNodes_(
+            getKeyNodes<T>(
+                columnReaderOptions,
+                requestedType,
+                fileType,
+                params,
+                scanSpec,
+                dwio::common::flatmap::FlatMapOutput::kStruct)) {
     VELOX_CHECK(
         !keyNodes_.empty(),
         "For struct encoding, keys to project must be configured");
@@ -289,13 +289,14 @@ class SelectiveFlatMapReader
             fileType,
             params,
             scanSpec),
-        keyNodes_(getKeyNodes<T>(
-            columnReaderOptions,
-            requestedType,
-            fileType,
-            params,
-            scanSpec,
-            dwio::common::flatmap::FlatMapOutput::kFlatMap)),
+        keyNodes_(
+            getKeyNodes<T>(
+                columnReaderOptions,
+                requestedType,
+                fileType,
+                params,
+                scanSpec,
+                dwio::common::flatmap::FlatMapOutput::kFlatMap)),
         rowsPerRowGroup_(formatData_->rowsPerRowGroup().value()) {
     // Instantiate and populate distinct keys vector.
     keysVector_ = BaseVector::create(

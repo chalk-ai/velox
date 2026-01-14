@@ -44,8 +44,9 @@ class DecimalArithmeticTest : public SparkFunctionBaseTest {
         "At least one input vector is needed for arithmetic function test.");
     std::vector<core::TypedExprPtr> inputExprs;
     for (int i = 0; i < inputs.size(); ++i) {
-      inputExprs.emplace_back(std::make_shared<core::FieldAccessTypedExpr>(
-          inputs[i]->type(), fmt::format("c{}", i)));
+      inputExprs.emplace_back(
+          std::make_shared<core::FieldAccessTypedExpr>(
+              inputs[i]->type(), fmt::format("c{}", i)));
     }
     auto expr = std::make_shared<const core::CallTypedExpr>(
         expected->type(), std::move(inputExprs), functionName);
@@ -68,6 +69,24 @@ class DecimalArithmeticTest : public SparkFunctionBaseTest {
       }
     }
     return makeNullableFlatVector<int128_t>(numbers, type);
+  }
+
+  template <typename T, typename U>
+  std::optional<int64_t> div(
+      const TypePtr& tType,
+      const TypePtr& uType,
+      std::optional<T> t,
+      std::optional<U> u) {
+    return evaluateOnce<int64_t>("div(c0, c1)", {tType, uType}, t, u);
+  }
+
+  template <typename T, typename U>
+  std::optional<int64_t> checked_div(
+      const TypePtr& tType,
+      const TypePtr& uType,
+      std::optional<T> t,
+      std::optional<U> u) {
+    return evaluateOnce<int64_t>("checked_div(c0, c1)", {tType, uType}, t, u);
   }
 };
 
@@ -713,6 +732,106 @@ TEST_F(DecimalArithmeticTest, ceil) {
            -1000000000000000000,
            0},
           DECIMAL(19, 19))});
+}
+
+TEST_F(DecimalArithmeticTest, div) {
+  EXPECT_EQ((div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 10, 200)), 0L);
+  EXPECT_EQ((div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 24, 110)), 2L);
+  EXPECT_EQ((div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 12, 110)), 1L);
+  EXPECT_EQ(
+      (div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 20, 0)),
+      std::nullopt);
+  EXPECT_EQ((div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 91, 200)), 4L);
+  EXPECT_EQ(
+      (div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 100, 200)), 5L);
+  EXPECT_EQ(
+      (div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), -92, 200)), -4L);
+  EXPECT_EQ(
+      (div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 100, -190)), -5L);
+  EXPECT_EQ(
+      (div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), -100, -190)), 5L);
+
+  EXPECT_EQ(
+      (div<int64_t, int128_t>(DECIMAL(7, 1), DECIMAL(38, 2), 10, 200)), 0L);
+  EXPECT_EQ(
+      (div<int64_t, int128_t>(DECIMAL(7, 1), DECIMAL(38, 2), 24, 110)), 2L);
+  EXPECT_EQ(
+      (div<int64_t, int128_t>(DECIMAL(7, 1), DECIMAL(38, 2), 12, 110)), 1L);
+  EXPECT_EQ(
+      (div<int64_t, int128_t>(DECIMAL(7, 1), DECIMAL(38, 2), 20, 0L)),
+      std::nullopt);
+  EXPECT_EQ(
+      (div<int64_t, int128_t>(
+          DECIMAL(7, 1),
+          DECIMAL(38, 2),
+          0,
+          HugeInt::parse("99999999999999999999999999999999999999"))),
+      0L);
+
+  EXPECT_EQ(
+      (div<int128_t, int64_t>(DECIMAL(38, 1), DECIMAL(7, 4), 10, 20000)), 0L);
+  EXPECT_EQ(
+      (div<int128_t, int64_t>(DECIMAL(38, 1), DECIMAL(7, 4), 25, 11000)), 2L);
+  EXPECT_EQ(
+      (div<int128_t, int64_t>(DECIMAL(38, 1), DECIMAL(7, 4), 26, 11000)), 2L);
+  EXPECT_EQ(
+      (div<int128_t, int64_t>(DECIMAL(38, 1), DECIMAL(7, 4), 20, 0L)),
+      std::nullopt);
+  EXPECT_EQ(
+      (div<int128_t, int64_t>(
+          DECIMAL(38, 1),
+          DECIMAL(7, 4),
+          HugeInt::parse("99999999999999999999999999999999999"),
+          1L)),
+      687399551400672280L);
+
+  EXPECT_EQ(
+      (div<int128_t, int128_t>(DECIMAL(38, 0), DECIMAL(38, 6), 10, 2100000)),
+      4L);
+  EXPECT_EQ(
+      (div<int128_t, int128_t>(DECIMAL(38, 0), DECIMAL(38, 6), 10, 2900000)),
+      3L);
+  EXPECT_EQ(
+      (div<int128_t, int128_t>(DECIMAL(38, 0), DECIMAL(38, 6), 20, 0)),
+      std::nullopt);
+  EXPECT_EQ(
+      (div<int128_t, int128_t>(
+          DECIMAL(38, 0),
+          DECIMAL(38, 6),
+          HugeInt::parse("99999999999999999999999999999999999999"),
+          1)),
+      std::nullopt);
+}
+
+TEST_F(DecimalArithmeticTest, checkedDiv) {
+  EXPECT_EQ(
+      (checked_div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 10, 200)),
+      0L);
+  EXPECT_EQ(
+      (checked_div<int64_t, int128_t>(DECIMAL(7, 1), DECIMAL(38, 2), 12, 110)),
+      1L);
+  EXPECT_EQ(
+      (checked_div<int128_t, int64_t>(
+          DECIMAL(38, 1), DECIMAL(7, 4), 25, 11000)),
+      2L);
+  EXPECT_EQ(
+      (checked_div<int128_t, int128_t>(
+          DECIMAL(38, 0), DECIMAL(38, 6), 10, 2900000)),
+      3L);
+
+  VELOX_ASSERT_USER_THROW(
+      (checked_div<int64_t, int64_t>(DECIMAL(7, 1), DECIMAL(8, 2), 91, 0)),
+      "Division by zero");
+  VELOX_ASSERT_USER_THROW(
+      (checked_div<int128_t, int128_t>(DECIMAL(37, 1), DECIMAL(38, 2), 91, 0)),
+      "Division by zero");
+  VELOX_ASSERT_USER_THROW(
+      (checked_div<int128_t, int128_t>(
+          DECIMAL(38, 0),
+          DECIMAL(38, 6),
+          HugeInt::parse("99999999999999999999999999999999999999"),
+          1)),
+      "Overflow in integral divide");
 }
 } // namespace
 } // namespace facebook::velox::functions::sparksql::test

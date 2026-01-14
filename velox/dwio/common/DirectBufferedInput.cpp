@@ -235,7 +235,7 @@ std::shared_ptr<DirectCoalescedLoad> DirectBufferedInput::coalescedLoad(
   return streamToCoalescedLoad_.withWLock(
       [&](auto& loads) -> std::shared_ptr<DirectCoalescedLoad> {
         auto it = loads.find(stream);
-        if (it == loads.end()) {
+        if (it == loads.cend()) {
           return nullptr;
         }
         auto load = std::move(it->second);
@@ -286,10 +286,11 @@ std::vector<cache::CachePin> DirectCoalescedLoad::loadData(bool prefetch) {
   for (auto& request : requests_) {
     const auto& region = request.region;
     if (region.offset > lastEnd) {
-      buffers.push_back(folly::Range<char*>(
-          nullptr,
-          reinterpret_cast<char*>(
-              static_cast<uint64_t>(region.offset - lastEnd))));
+      buffers.push_back(
+          folly::Range<char*>(
+              nullptr,
+              reinterpret_cast<char*>(
+                  static_cast<uint64_t>(region.offset - lastEnd))));
       overread += buffers.back().size();
     }
 
@@ -342,7 +343,7 @@ int32_t DirectCoalescedLoad::getData(
       requests_.begin(), requests_.end(), offset, [](auto& x, auto offset) {
         return x.region.offset < offset;
       });
-  if (it == requests_.end() || it->region.offset != offset) {
+  if (it == requests_.cend() || it->region.offset != offset) {
     return 0;
   }
   data = std::move(it->data);

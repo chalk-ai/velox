@@ -16,6 +16,7 @@
 #include "velox/exec/GroupingSet.h"
 #include <vector>
 #include "velox/common/testutil/TestValue.h"
+#include "velox/exec/OperatorUtils.h"
 #include "velox/exec/Task.h"
 
 using facebook::velox::common::testutil::TestValue;
@@ -1102,6 +1103,7 @@ bool GroupingSet::getOutputWithSpill(
           false,
           false,
           false,
+          false,
           pool_);
 
       initializeAggregates(aggregates_, *mergeRows_, false);
@@ -1137,8 +1139,7 @@ bool GroupingSet::prepareNextSpillPartitionOutput() {
   auto it = spillPartitionSet_.begin();
   VELOX_CHECK_NE(outputSpillPartition_, it->first.partitionNumber());
   outputSpillPartition_ = it->first.partitionNumber();
-  merge_ = it->second->createOrderedReader(
-      spillConfig_->readBufferSize, pool_, spillStats_);
+  merge_ = it->second->createOrderedReader(*spillConfig_, pool_, spillStats_);
   spillPartitionSet_.erase(it);
   return true;
 }
@@ -1247,6 +1248,9 @@ void GroupingSet::prepareSpillResultWithoutAggregates(
     spillResultWithoutAggregates_->childAt(groupingKeyOutputProjections_[i]) =
         std::move(result->childAt(i));
   }
+
+  spillSources_.resize(maxOutputRows);
+  spillSourceRows_.resize(maxOutputRows);
 }
 
 void GroupingSet::projectResult(const RowVectorPtr& result) {
@@ -1267,6 +1271,7 @@ bool GroupingSet::mergeNextWithoutAggregates(
   VELOX_CHECK_EQ(
       numDistinctSpillFilesPerPartition_.size(),
       1 << spillConfig_->numPartitionBits);
+  VELOX_CHECK(pool_ == result->pool());
 
   // We are looping over sorted rows produced by tree-of-losers. We logically
   // split the stream into runs of duplicate rows. As we process each run we
@@ -1281,12 +1286,15 @@ bool GroupingSet::mergeNextWithoutAggregates(
   // less than 'numDistinctSpillFilesPerPartition_'.
   bool newDistinct{true};
   int32_t numOutputRows{0};
+  int32_t outputSize{0};
+  bool endOfBatch = false;
   prepareSpillResultWithoutAggregates(maxOutputRows, result);
 
-  while (numOutputRows < maxOutputRows) {
+  while (numOutputRows + outputSize < maxOutputRows) {
     const auto next = merge_->nextWithEquals();
     auto* stream = next.first;
     if (stream == nullptr) {
+      VELOX_CHECK_EQ(outputSize, 0);
       if (numOutputRows > 0) {
         break;
       }
@@ -1301,17 +1309,40 @@ bool GroupingSet::mergeNextWithoutAggregates(
         numDistinctSpillFilesPerPartition_[outputSpillPartition_]) {
       newDistinct = false;
     }
-    if (next.second) {
-      stream->pop();
-      continue;
-    }
-    if (newDistinct) {
+    auto index = stream->currentIndex(&endOfBatch);
+    if (!next.second && newDistinct) {
       // Yield result for new distinct.
-      spillResultWithoutAggregates_->copy(
-          &stream->current(), numOutputRows++, stream->currentIndex(), 1);
+      spillSources_[outputSize] = &stream->current();
+      spillSourceRows_[outputSize] = index;
+      ++outputSize;
+    }
+
+    if (FOLLY_UNLIKELY(endOfBatch)) {
+      // The stream is at end of input batch. Need to copy out the rows before
+      // fetching next batch in 'pop'.
+      gatherCopy(
+          spillResultWithoutAggregates_.get(),
+          numOutputRows,
+          outputSize,
+          spillSources_,
+          spillSourceRows_);
+      numOutputRows += outputSize;
+      outputSize = 0;
     }
     stream->pop();
-    newDistinct = true;
+    // Reset newDistinct flag for new row.
+    if (!next.second) {
+      newDistinct = true;
+    }
+  }
+  if (FOLLY_LIKELY(outputSize != 0)) {
+    gatherCopy(
+        spillResultWithoutAggregates_.get(),
+        numOutputRows,
+        outputSize,
+        spillSources_,
+        spillSourceRows_);
+    numOutputRows += outputSize;
   }
   spillResultWithoutAggregates_->resize(numOutputRows);
   projectResult(result);
@@ -1404,6 +1435,7 @@ void GroupingSet::abandonPartialAggregation() {
       !ignoreNullKeys_,
       accumulators(true),
       std::vector<TypePtr>(),
+      false,
       false,
       false,
       false,
@@ -1503,8 +1535,9 @@ void GroupingSet::toIntermediate(
         &aggregateVector);
   }
   if (intermediateRows_) {
-    intermediateRows_->eraseRows(folly::Range<char**>(
-        intermediateGroups_.data(), intermediateGroups_.size()));
+    intermediateRows_->eraseRows(
+        folly::Range<char**>(
+            intermediateGroups_.data(), intermediateGroups_.size()));
   }
 
   // It's unnecessary to call function->clear() to reset the internal states of

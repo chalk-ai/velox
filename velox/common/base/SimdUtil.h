@@ -420,6 +420,7 @@ xsimd::batch<To, A> getHalf(xsimd::batch<From, A> data, const A& arch = {}) {
 template <typename T, typename A = xsimd::default_arch>
 xsimd::batch<T, A> iota(const A& = {});
 
+#ifdef VELOX_ENABLE_LOAD_SIMD_VALUE_BUFFER
 // Returns a batch with all elements set to value.  For batch<bool> we
 // use one bit to represent one element.
 template <typename T, typename A = xsimd::default_arch>
@@ -435,6 +436,7 @@ xsimd::batch<T, A> setAll(T value, const A& = {}) {
     return xsimd::broadcast<T, A>(value);
   }
 }
+#endif
 
 // Stores 'data' into 'destination' for the lanes in 'mask'. 'mask' is expected
 // to specify contiguous lower lanes of 'batch'. For non-SIMD cases, 'mask' is

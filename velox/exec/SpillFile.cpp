@@ -36,7 +36,7 @@ SpillWriter::SpillWriter(
     uint64_t targetFileSize,
     uint64_t writeBufferSize,
     const std::string& fileCreateConfig,
-    common::UpdateAndCheckSpillLimitCB& updateAndCheckSpillLimitCb,
+    const common::UpdateAndCheckSpillLimitCB& updateAndCheckSpillLimitCb,
     memory::MemoryPool* pool,
     folly::Synchronized<common::SpillStats>* stats)
     : serializer::SerializedPageFileWriter(
@@ -94,13 +94,14 @@ SpillFiles SpillWriter::finish() {
   SpillFiles spillFiles;
   spillFiles.reserve(serializedPageFiles.size());
   for (const auto& fileInfo : serializedPageFiles) {
-    spillFiles.push_back(SpillFileInfo{
-        .id = fileInfo.id,
-        .type = type_,
-        .path = fileInfo.path,
-        .size = fileInfo.size,
-        .sortingKeys = sortingKeys_,
-        .compressionKind = serdeOptions_->compressionKind});
+    spillFiles.push_back(
+        SpillFileInfo{
+            .id = fileInfo.id,
+            .type = type_,
+            .path = fileInfo.path,
+            .size = fileInfo.size,
+            .sortingKeys = sortingKeys_,
+            .compressionKind = serdeOptions_->compressionKind});
   }
   return spillFiles;
 }

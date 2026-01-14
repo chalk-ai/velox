@@ -198,15 +198,16 @@ class MergeExchangeSource : public MergeSource {
       memory::MemoryPool* pool,
       folly::Executor* executor)
       : mergeExchange_(mergeExchange),
-        client_(std::make_shared<ExchangeClient>(
-            mergeExchange->taskId(),
-            destination,
-            maxQueuedBytes,
-            1,
-            // Deliver right away to avoid blocking other sources
-            0,
-            pool,
-            executor)) {
+        client_(
+            std::make_shared<ExchangeClient>(
+                mergeExchange->taskId(),
+                destination,
+                maxQueuedBytes,
+                1,
+                // Deliver right away to avoid blocking other sources
+                0,
+                pool,
+                executor)) {
     client_->addRemoteTaskId(taskId);
     client_->noMoreRemoteTasks();
   }
@@ -286,7 +287,7 @@ class MergeExchangeSource : public MergeSource {
 
   std::shared_ptr<ExchangeClient> client_;
   std::unique_ptr<ByteInputStream> inputStream_;
-  std::unique_ptr<SerializedPage> currentPage_;
+  std::unique_ptr<SerializedPageBase> currentPage_;
   bool atEnd_ = false;
 };
 } // namespace

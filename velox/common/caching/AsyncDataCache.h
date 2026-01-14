@@ -263,22 +263,21 @@ class AsyncDataCacheEntry {
   /// Sets access stats so that this is immediately evictable.
   void makeEvictable();
 
-  /// Moves the promise out of 'this'. Used in order to handle the
-  /// promise within the lock of the cache shard, so not within private
-  /// methods of 'this'.
-  std::unique_ptr<folly::SharedPromise<bool>> movePromise() {
-    return std::move(promise_);
-  }
-
   std::string toString() const;
 
  private:
   void release();
   void addReference();
 
+  // Moves the promise out of 'this'. Must be called inside the mutex of
+  // 'shard_'.
+  std::unique_ptr<folly::SharedPromise<bool>> movePromiseLocked() {
+    return std::move(promise_);
+  }
+
   // Returns a future that will be realized when a caller can retry getting
   // 'this'. Must be called inside the mutex of 'shard_'.
-  folly::SemiFuture<bool> getFuture() {
+  folly::SemiFuture<bool> getFutureLocked() {
     if (promise_ == nullptr) {
       promise_ = std::make_unique<folly::SharedPromise<bool>>();
     }
@@ -308,7 +307,7 @@ class AsyncDataCacheEntry {
   // True if 'this' is speculatively loaded. This is reset on first hit. Allows
   // catching a situation where prefetched entries get evicted before they are
   // hit.
-  bool isPrefetch_{false};
+  tsan_atomic<bool> isPrefetch_{false};
 
   // Sets after first use of a prefetched entry. Cleared by
   // getAndClearFirstUseFlag(). Does not require synchronization since used for
@@ -560,6 +559,8 @@ struct CacheStats {
 /// and other housekeeping.
 class CacheShard {
  public:
+  static constexpr uint64_t kMinBytesToEvict = 8UL << 20; // 8MB
+
   CacheShard(AsyncDataCache* cache, double maxWriteRatio)
       : cache_(cache), maxWriteRatio_(maxWriteRatio) {}
 
@@ -633,8 +634,10 @@ class CacheShard {
  private:
   static constexpr uint32_t kMaxFreeEntries = 1 << 10;
   static constexpr int32_t kNoThreshold = std::numeric_limits<int32_t>::max();
+  static constexpr int32_t kMaxEvictionSamples = 10;
+  static constexpr int32_t kEvictionPercentile = 80;
 
-  void calibrateThreshold();
+  void calibrateThresholdLocked();
 
   void removeEntryLocked(AsyncDataCacheEntry* entry);
 
@@ -642,7 +645,7 @@ class CacheShard {
   //
   // TODO: consider to pass a size hint so as to select the a free entry which
   // already has the right amount of memory associated with it.
-  std::unique_ptr<AsyncDataCacheEntry> getFreeEntry();
+  std::unique_ptr<AsyncDataCacheEntry> getFreeEntryLocked();
 
   CachePin initEntry(RawFileCacheKey key, AsyncDataCacheEntry* entry);
 
@@ -802,8 +805,7 @@ class AsyncDataCache : public memory::Cache {
 #endif
   /// Returns snapshot of the aggregated stats from all shards and the stats of
   /// SSD cache if used.
-  virtual CacheStats
-  refreshStats() const;
+  virtual CacheStats refreshStats() const;
 
   /// If 'details' is true, returns the stats of the backing memory allocator
   /// and ssd cache. Otherwise, only returns the cache stats.
@@ -884,8 +886,11 @@ class AsyncDataCache : public memory::Cache {
   void clear();
 
  private:
-  static constexpr int32_t kNumShards = 4; // Must be power of 2.
+  // Must be power of 2.
+  static constexpr int32_t kNumShards = 4;
   static constexpr int32_t kShardMask = kNumShards - 1;
+
+  static_assert((kNumShards & kShardMask) == 0);
 
   // True if 'acquired' has more pages than 'numPages' or allocator has space
   // for numPages - acquired pages of more allocation.

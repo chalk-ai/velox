@@ -329,8 +329,9 @@ ExpressionFuzzer::ExpressionFuzzer(
         }
         atLeastOneSupported = true;
         ++supportedFunctionSignatures;
-        signatureTemplates_.emplace_back(SignatureTemplate{
-            function.first, signature, std::move(typeVariables)});
+        signatureTemplates_.emplace_back(
+            SignatureTemplate{
+                function.first, signature, std::move(typeVariables)});
       } else {
         // Determine a list of concrete argument types that can bind to the
         // signature. For non-parameterized signatures, these argument types
@@ -638,8 +639,9 @@ core::TypedExprPtr ExpressionFuzzer::generateArgFunction(const TypePtr& arg) {
   for (auto i = 0; i < arg->size() - 1; ++i) {
     args.push_back(arg->childAt(i));
     names.push_back(fmt::format("__a{}", i));
-    inputs.push_back(std::make_shared<core::FieldAccessTypedExpr>(
-        args.back(), names.back()));
+    inputs.push_back(
+        std::make_shared<core::FieldAccessTypedExpr>(
+            args.back(), names.back()));
   }
 
   const auto& returnType = functionType.children().back();
@@ -652,9 +654,8 @@ core::TypedExprPtr ExpressionFuzzer::generateArgFunction(const TypePtr& arg) {
   for (const auto& functionName : baseList) {
     if (findConcreteSignature(args, returnType, functionName)) {
       eligible.push_back(functionName);
-    } else if (
-        auto* signatureTemplate =
-            findSignatureTemplate(args, returnType, baseType, functionName)) {
+    } else if (findSignatureTemplate(
+                   args, returnType, baseType, functionName)) {
       eligible.push_back(functionName);
     }
   }

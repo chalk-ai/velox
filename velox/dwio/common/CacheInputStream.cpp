@@ -142,8 +142,8 @@ bool CacheInputStream::SkipInt64(int64_t count) {
   return false;
 }
 
-google::protobuf::int64 CacheInputStream::ByteCount() const {
-  return static_cast<google::protobuf::int64>(position_);
+int64_t CacheInputStream::ByteCount() const {
+  return static_cast<int64_t>(position_);
 }
 
 void CacheInputStream::seekToPosition(PositionProvider& seekPosition) {
@@ -394,7 +394,7 @@ velox::common::Region CacheInputStream::nextQuantizedLoadRegion(
   nextRegion.offset += (prevLoadedPosition / loadQuantum_) * loadQuantum_;
   // Set length to be the lesser of 'loadQuantum_' and distance to end of
   // 'region_'
-  nextRegion.length = std::min<int32_t>(
+  nextRegion.length = std::min<uint64_t>(
       loadQuantum_, region_.length - (nextRegion.offset - region_.offset));
   return nextRegion;
 }

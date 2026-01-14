@@ -96,7 +96,8 @@ std::shared_ptr<TestIndexTable> TestIndexTable::create(
   }
 
   // Build the table index.
-  table->prepareJoinTable({}, BaseHashTable::kNoSpillInputStartPartitionBit);
+  table->prepareJoinTable(
+      {}, BaseHashTable::kNoSpillInputStartPartitionBit, 1'000'000);
   return std::make_shared<TestIndexTable>(
       std::move(keyType), std::move(valueType), std::move(table));
 }
@@ -120,29 +121,35 @@ core::TypedExprPtr toJoinConditionExpr(
     if (auto inCondition =
             std::dynamic_pointer_cast<core::InIndexLookupCondition>(
                 condition)) {
-      conditionExprs.push_back(std::make_shared<const core::CallTypedExpr>(
-          BOOLEAN(),
-          "contains",
-          inCondition->list,
-          std::move(indexColumnExpr)));
+      conditionExprs.push_back(
+          std::make_shared<const core::CallTypedExpr>(
+              BOOLEAN(),
+              "contains",
+              inCondition->list,
+              std::move(indexColumnExpr)));
       continue;
     }
     if (auto betweenCondition =
             std::dynamic_pointer_cast<core::BetweenIndexLookupCondition>(
                 condition)) {
-      conditionExprs.push_back(std::make_shared<const core::CallTypedExpr>(
-          BOOLEAN(),
-          "between",
-          std::move(indexColumnExpr),
-          betweenCondition->lower,
-          betweenCondition->upper));
+      conditionExprs.push_back(
+          std::make_shared<const core::CallTypedExpr>(
+              BOOLEAN(),
+              "between",
+              std::move(indexColumnExpr),
+              betweenCondition->lower,
+              betweenCondition->upper));
       continue;
     }
     if (auto equalCondition =
             std::dynamic_pointer_cast<core::EqualIndexLookupCondition>(
                 condition)) {
-      conditionExprs.push_back(std::make_shared<const core::CallTypedExpr>(
-          BOOLEAN(), "eq", std::move(indexColumnExpr), equalCondition->value));
+      conditionExprs.push_back(
+          std::make_shared<const core::CallTypedExpr>(
+              BOOLEAN(),
+              "eq",
+              std::move(indexColumnExpr),
+              equalCondition->value));
       continue;
     }
     VELOX_FAIL("Invalid index join condition: {}", condition->toString());
@@ -336,6 +343,16 @@ TestIndexSource::ResultIterator::ResultIterator(
   lookupResultIter_ = std::make_unique<BaseHashTable::JoinResultIterator>(
       std::vector<vector_size_t>{}, 0, /*estimatedRowSize=*/1);
   lookupResultIter_->reset(*lookupResult_);
+}
+
+bool TestIndexSource::ResultIterator::hasNext() {
+  // If we have an async result ready, we have more to return.
+  if (asyncResult_.has_value()) {
+    return true;
+  }
+
+  // If the iterator is not at end, there are more results to fetch.
+  return !lookupResultIter_->atEnd();
 }
 
 std::optional<std::unique_ptr<connector::IndexSource::LookupResult>>

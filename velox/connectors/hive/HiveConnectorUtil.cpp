@@ -74,14 +74,15 @@ std::unique_ptr<common::Filter> makeFloatingPointMapKeyFilter(
     if (lowerUnbounded && upperUnbounded) {
       continue;
     }
-    filters.push_back(std::make_unique<common::FloatingPointRange<T>>(
-        lower,
-        lowerUnbounded,
-        lowerExclusive,
-        upper,
-        upperUnbounded,
-        upperExclusive,
-        false));
+    filters.push_back(
+        std::make_unique<common::FloatingPointRange<T>>(
+            lower,
+            lowerUnbounded,
+            lowerExclusive,
+            upper,
+            upperUnbounded,
+            upperExclusive,
+            false));
   }
   if (filters.size() == 1) {
     return std::move(filters[0]);
@@ -626,17 +627,13 @@ void configureRowReaderOptions(
   rowReaderOptions.setRequestedType(rowType);
   rowReaderOptions.range(hiveSplit->start, hiveSplit->length);
   if (hiveConfig && sessionProperties) {
-    rowReaderOptions.setTimestampPrecision(static_cast<TimestampPrecision>(
-        hiveConfig->readTimestampUnit(sessionProperties)));
+    rowReaderOptions.setTimestampPrecision(
+        static_cast<TimestampPrecision>(
+            hiveConfig->readTimestampUnit(sessionProperties)));
     rowReaderOptions.setPreserveFlatMapsInMemory(
         hiveConfig->preserveFlatMapsInMemory(sessionProperties));
     rowReaderOptions.setParallelUnitLoadCount(
         hiveConfig->parallelUnitLoadCount(sessionProperties));
-    // When parallel unit loader is enabled, all units would be loaded by
-    // ParallelUnitLoader, thus disable eagerFirstStripeLoad.
-    if (hiveConfig->parallelUnitLoadCount(sessionProperties) > 0) {
-      rowReaderOptions.setEagerFirstStripeLoad(false);
-    }
   }
   rowReaderOptions.setSerdeParameters(hiveSplit->serdeParameters);
 }
@@ -656,7 +653,7 @@ bool applyPartitionFilter(
     if (isPartitionDateDaysSinceEpoch) {
       result = folly::to<int32_t>(partitionValue);
     } else {
-      result = DATE()->toDays(static_cast<folly::StringPiece>(partitionValue));
+      result = DATE()->toDays(partitionValue);
     }
     return applyFilter(*filter, result);
   }
@@ -876,8 +873,6 @@ double getPrestoSampleRate(
   return std::max(0.0, std::min(1.0, rate->value().value<double>()));
 }
 
-} // namespace
-
 core::TypedExprPtr extractFiltersFromRemainingFilter(
     const core::TypedExprPtr& expr,
     core::ExpressionEvaluator* evaluator,
@@ -890,10 +885,10 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
   }
   common::Filter* oldFilter = nullptr;
   try {
-    common::Subfield subfield;
-    if (auto filter = exec::ExprToSubfieldFilterParser::getInstance()
-                          ->leafCallToSubfieldFilter(
-                              *call, subfield, evaluator, negated)) {
+    if (auto subfieldAndFilter =
+            exec::ExprToSubfieldFilterParser::getInstance()
+                ->leafCallToSubfieldFilter(*call, evaluator, negated)) {
+      auto& [subfield, filter] = subfieldAndFilter.value();
       if (auto it = filters.find(subfield); it != filters.end()) {
         oldFilter = it->second.get();
         filter = filter->mergeWith(oldFilter);
@@ -935,6 +930,53 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
     }
     return replaceInputs(call, std::move(args));
   }
+
+  if ((call->name() == expression::kAnd && negated) ||
+      (call->name() == expression::kOr && !negated)) {
+    std::vector<std::unique_ptr<common::Filter>> disjuncts;
+    common::Subfield subfield;
+
+    for (const auto& input : call->inputs()) {
+      common::SubfieldFilters tmpFilters;
+      double tmpSampleRate = 1;
+      auto tmpRemaining = extractFiltersFromRemainingFilter(
+          input, evaluator, negated, tmpFilters, tmpSampleRate);
+
+      if (tmpRemaining != nullptr || tmpSampleRate != 1 ||
+          tmpFilters.size() != 1) {
+        disjuncts.clear();
+        break;
+      }
+
+      if (disjuncts.empty()) {
+        subfield = tmpFilters.begin()->first.clone();
+      } else if (!(subfield == tmpFilters.begin()->first)) {
+        disjuncts.clear();
+        break;
+      }
+
+      disjuncts.push_back(tmpFilters.begin()->second->clone());
+    }
+
+    if (!disjuncts.empty()) {
+      auto filter =
+          exec::ExprToSubfieldFilterParser::makeOrFilter(std::move(disjuncts));
+
+      if (filter == nullptr) {
+        return expr;
+      }
+
+      auto it = filters.find(subfield);
+      if (it != filters.end()) {
+        filter = filter->mergeWith(it->second.get());
+      }
+
+      filters.insert_or_assign(std::move(subfield), std::move(filter));
+
+      return nullptr;
+    }
+  }
+
   if (!negated) {
     double rate = getPrestoSampleRate(expr, call, evaluator);
     if (rate != -1) {
@@ -942,6 +984,18 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
       return nullptr;
     }
   }
+
   return expr;
 }
+} // namespace
+
+core::TypedExprPtr extractFiltersFromRemainingFilter(
+    const core::TypedExprPtr& expr,
+    core::ExpressionEvaluator* evaluator,
+    common::SubfieldFilters& filters,
+    double& sampleRate) {
+  return extractFiltersFromRemainingFilter(
+      expr, evaluator, /*negated=*/false, filters, sampleRate);
+}
+
 } // namespace facebook::velox::connector::hive

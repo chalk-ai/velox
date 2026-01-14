@@ -17,12 +17,12 @@
 #include "velox/functions/prestosql/aggregates/MinMaxAggregates.h"
 #include <limits>
 #include "velox/exec/Aggregate.h"
-#include "velox/exec/AggregationHook.h"
 #include "velox/functions/lib/aggregates/MinMaxAggregateBase.h"
 #include "velox/functions/lib/aggregates/SimpleNumericAggregate.h"
 #include "velox/functions/lib/aggregates/ValueSet.h"
 #include "velox/functions/prestosql/aggregates/AggregateNames.h"
 #include "velox/type/FloatingPointUtil.h"
+#include "velox/vector/AggregationHook.h"
 
 using namespace facebook::velox::functions::aggregate;
 
@@ -497,12 +497,13 @@ exec::AggregateRegistrationResult registerMinMax(
     bool overwrite,
     bool registerMin) {
   std::vector<std::shared_ptr<exec::AggregateFunctionSignature>> signatures;
-  signatures.push_back(exec::AggregateFunctionSignatureBuilder()
-                           .orderableTypeVariable("T")
-                           .returnType("T")
-                           .intermediateType("T")
-                           .argumentType("T")
-                           .build());
+  signatures.push_back(
+      exec::AggregateFunctionSignatureBuilder()
+          .orderableTypeVariable("T")
+          .returnType("T")
+          .intermediateType("T")
+          .argumentType("T")
+          .build());
   for (const auto& type :
        {"tinyint",
         "integer",

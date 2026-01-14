@@ -101,8 +101,9 @@ bool SpillerBase::fillSpillRuns(RowContainerIterator* iterator) {
 
     uint64_t totalRows{0};
     for (;;) {
-      const auto numRows = container_->listRows(
-          iterator, rows.size(), RowContainer::kUnlimited, rows.data());
+      // TODO: Reuse 'RowContainer::rowPointers_'.
+      const auto numRows =
+          container_->listRows(iterator, rows.size(), rows.data());
       if (numRows == 0) {
         lastRun = true;
         break;
@@ -154,8 +155,9 @@ void SpillerBase::runSpill(bool lastRun) {
     if (spillRun.rows.empty()) {
       continue;
     }
-    writes.push_back(memory::createAsyncMemoryReclaimTask<SpillStatus>(
-        [partitionId = id, this]() { return writeSpill(partitionId); }));
+    writes.push_back(
+        memory::createAsyncMemoryReclaimTask<SpillStatus>(
+            [partitionId = id, this]() { return writeSpill(partitionId); }));
     if ((writes.size() > 1) && executor_ != nullptr) {
       executor_->add([source = writes.back()]() { source->prepare(); });
     }

@@ -27,6 +27,14 @@ add_library(
   PrestoSql.cpp
 )
 
+# TODO Add VeloxQueryRunner to velox_fuzzer_util to support in
+# ExpressionFuzzerTest. More information can be found here:
+# https://github.com/facebookincubator/velox/issues/15414
+if(VELOX_ENABLE_REMOTE_FUNCTIONS)
+  target_sources(velox_fuzzer_util PRIVATE VeloxQueryRunner.cpp)
+  target_link_libraries(velox_fuzzer_util FBThrift::thriftcpp2)
+endif()
+
 target_link_libraries(
   velox_fuzzer_util
   velox_common_fuzzer_util
@@ -35,8 +43,7 @@ target_link_libraries(
   velox_exec_test_lib
   velox_expression_functions
   velox_presto_types
-  cpr::cpr
-  Boost::regex
+  CURL::libcurl
   velox_presto_type_parser
   Folly::folly
   velox_hive_connector
@@ -139,6 +146,19 @@ target_link_libraries(
   velox_expression_test_utility
 )
 
+# Spatial Join Fuzzer.
+add_executable(velox_spatial_join_fuzzer SpatialJoinFuzzerRunner.cpp SpatialJoinFuzzer.cpp)
+
+target_link_libraries(
+  velox_spatial_join_fuzzer
+  velox_type
+  velox_vector_fuzzer
+  velox_fuzzer_util
+  velox_exec_test_lib
+  velox_expression_test_utility
+  velox_vector_test_lib
+)
+
 add_library(velox_writer_fuzzer WriterFuzzer.cpp)
 
 target_link_libraries(
@@ -197,6 +217,53 @@ target_link_libraries(
   velox_vector_test_lib
   velox_vector_fuzzer
 )
+
+# LocalRunnerService (requires FBThrift support)
+if(VELOX_ENABLE_REMOTE_FUNCTIONS)
+  # Generate Thrift library for LocalRunnerService
+  include(FBThriftCppLibrary)
+  add_fbthrift_cpp_library(
+    local_runner_service_thrift
+    if/LocalRunnerService.thrift
+    SERVICES
+    LocalRunnerService
+  )
+
+  target_compile_options(local_runner_service_thrift PRIVATE -Wno-error=deprecated-declarations)
+
+  # LocalRunnerService Library
+  add_library(velox_local_runner_service_lib LocalRunnerService.cpp)
+
+  target_link_libraries(
+    velox_local_runner_service_lib
+    local_runner_service_thrift
+    velox_core
+    velox_exec
+    velox_exec_test_lib
+    velox_expression
+    velox_functions_prestosql
+    velox_common_base
+    velox_memory
+    Folly::folly
+    FBThrift::thriftcpp2
+    gflags
+    glog::glog
+  )
+
+  target_include_directories(velox_local_runner_service_lib PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+
+  # LocalRunnerService Executable
+  add_executable(velox_local_runner_service_runner LocalRunnerServiceRunner.cpp)
+
+  target_link_libraries(
+    velox_local_runner_service_runner
+    velox_local_runner_service_lib
+    velox_functions_prestosql
+    gtest
+    gflags
+    Folly::folly
+  )
+endif()
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)

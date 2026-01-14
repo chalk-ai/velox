@@ -259,12 +259,14 @@ void NimbleReaderVerifier::verify(
 
       if (childSpec && childSpec->projectOut()) {
         // This column should be projected out - wrap with dictionary
-        filteredChildren.push_back(BaseVector::wrapInDictionary(
-            nullptr, indices, selectedCount, input->childAt(i)));
+        filteredChildren.push_back(
+            BaseVector::wrapInDictionary(
+                nullptr, indices, selectedCount, input->childAt(i)));
       } else {
         // This column is not projected out - create null constant
-        filteredChildren.push_back(BaseVector::createNullConstant(
-            input->childAt(i)->type(), selectedCount, input->pool()));
+        filteredChildren.push_back(
+            BaseVector::createNullConstant(
+                input->childAt(i)->type(), selectedCount, input->pool()));
       }
     }
 
@@ -346,7 +348,8 @@ std::vector<std::unique_ptr<StreamLoader>> writeToNimbleAndGetStreamLoaders(
   writerOptions.minStreamChunkRawSize = 0;
   writerOptions.flushPolicyFactory = [] {
     return std::make_unique<LambdaFlushPolicy>(
-        [](const StripeProgress&) { return FlushDecision::Chunk; });
+        /*flushLambda=*/[](const StripeProgress&) { return false; },
+        /*chunkLambda=*/[](const StripeProgress&) { return true; });
   };
 
   std::vector<std::unique_ptr<StreamLoader>> allStreamLoaders;
@@ -362,15 +365,15 @@ std::vector<std::unique_ptr<StreamLoader>> writeToNimbleAndGetStreamLoaders(
     auto numChildren = chunkVectors[0]->as<RowVector>()->childrenSize();
 
     auto readFile = std::make_unique<InMemoryReadFile>(file);
-    TabletReader tablet(*pool, std::move(readFile));
-    auto stripeIdentifier = tablet.getStripeIdentifier(0);
+    auto tablet = TabletReader::create(std::move(readFile), *pool);
+    auto stripeIdentifier = tablet->stripeIdentifier(0);
     // VELOX_CHECK_EQ(numChildren + 1, tablet.streamCount(stripeIdentifier));
 
     std::vector<uint32_t> streamIds;
     streamIds.resize(numChildren);
     std::iota(streamIds.begin(), streamIds.end(), 1);
     auto streamLoaders =
-        tablet.load(stripeIdentifier, std::span<const uint32_t>(streamIds));
+        tablet->load(stripeIdentifier, std::span<const uint32_t>(streamIds));
 
     for (auto& loader : streamLoaders) {
       allStreamLoaders.push_back(std::move(loader));

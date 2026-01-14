@@ -21,7 +21,6 @@
 #include "velox/vector/VectorSaver.h"
 
 namespace facebook::velox::core {
-
 namespace {
 
 void appendComma(int32_t i, std::stringstream& sql) {
@@ -167,6 +166,7 @@ AggregationNode::AggregationNode(
     const std::vector<vector_size_t>& globalGroupingSets,
     const std::optional<FieldAccessTypedExprPtr>& groupId,
     bool ignoreNullKeys,
+    bool noGroupsSpanBatches,
     PlanNodePtr source)
     : PlanNode(id),
       step_(step),
@@ -177,6 +177,7 @@ AggregationNode::AggregationNode(
       ignoreNullKeys_(ignoreNullKeys),
       groupId_(groupId),
       globalGroupingSets_(globalGroupingSets),
+      noGroupsSpanBatches_(noGroupsSpanBatches),
       sources_{source},
       outputType_(getAggregationOutputType(
           groupingKeys_,
@@ -221,6 +222,10 @@ AggregationNode::AggregationNode(
     VELOX_USER_CHECK(
         groupId_.has_value(), "Global grouping sets require GroupId key");
   }
+
+  VELOX_USER_CHECK(
+      !noGroupsSpanBatches_ || isPreGrouped(),
+      "noGroupsSpanBatches can only be set for streaming aggregation (pre-grouped)");
 }
 
 AggregationNode::AggregationNode(
@@ -231,6 +236,7 @@ AggregationNode::AggregationNode(
     const std::vector<std::string>& aggregateNames,
     const std::vector<Aggregate>& aggregates,
     bool ignoreNullKeys,
+    bool noGroupsSpanBatches,
     PlanNodePtr source)
     : AggregationNode(
           id,
@@ -242,6 +248,7 @@ AggregationNode::AggregationNode(
           kDefaultGlobalGroupingSets,
           kDefaultGroupId,
           ignoreNullKeys,
+          noGroupsSpanBatches,
           source) {}
 
 namespace {
@@ -336,6 +343,10 @@ void AggregationNode::addDetails(std::stringstream& stream) const {
   if (groupId_.has_value()) {
     stream << " Group Id key: " << groupId_.value()->name();
   }
+
+  if (noGroupsSpanBatches_) {
+    stream << " noGroupsSpanBatches";
+  }
 }
 
 namespace {
@@ -374,6 +385,7 @@ folly::dynamic AggregationNode::serialize() const {
     obj["groupId"] = ISerializable::serialize(groupId_.value());
   }
   obj["ignoreNullKeys"] = ignoreNullKeys_;
+  obj["noGroupsSpanBatches"] = noGroupsSpanBatches_;
   return obj;
 }
 
@@ -494,6 +506,8 @@ PlanNodePtr AggregationNode::create(const folly::dynamic& obj, void* context) {
       globalGroupingSets,
       groupId,
       obj["ignoreNullKeys"].asBool(),
+      obj.count("noGroupsSpanBatches") ? obj["noGroupsSpanBatches"].asBool()
+                                       : false,
       deserializeSingleSource(obj, context));
 }
 
@@ -1138,7 +1152,7 @@ std::vector<std::string> allNames(
     const std::vector<std::string>& names,
     const std::vector<std::string>& moreNames) {
   auto result = names;
-  result.insert(result.end(), moreNames.begin(), moreNames.end());
+  result.insert(result.cend(), moreNames.cbegin(), moreNames.cend());
   return result;
 }
 
@@ -1150,13 +1164,14 @@ std::vector<TypedExprPtr> flattenExprs(
     const PlanNodePtr& input) {
   std::vector<TypedExprPtr> result;
   for (auto& group : exprs) {
-    result.insert(result.end(), group.begin(), group.end());
+    result.insert(result.cend(), group.cbegin(), group.cend());
   }
 
   const auto& sourceType = input->outputType();
   for (auto& name : moreNames) {
-    result.push_back(std::make_shared<FieldAccessTypedExpr>(
-        sourceType->findChild(name), name));
+    result.push_back(
+        std::make_shared<FieldAccessTypedExpr>(
+            sourceType->findChild(name), name));
   }
   return result;
 }
@@ -1618,6 +1633,7 @@ void HashJoinNode::addDetails(std::stringstream& stream) const {
 folly::dynamic HashJoinNode::serialize() const {
   auto obj = serializeBase();
   obj["nullAware"] = nullAware_;
+  obj["useHashTableCache"] = useHashTableCache_;
   return obj;
 }
 
@@ -1633,6 +1649,7 @@ PlanNodePtr HashJoinNode::create(const folly::dynamic& obj, void* context) {
   VELOX_CHECK_EQ(2, sources.size());
 
   auto nullAware = obj["nullAware"].asBool();
+  auto useHashTableCache = obj.getDefault("useHashTableCache", false).asBool();
   auto leftKeys = deserializeFields(obj["leftKeys"], context);
   auto rightKeys = deserializeFields(obj["rightKeys"], context);
 
@@ -1652,7 +1669,8 @@ PlanNodePtr HashJoinNode::create(const folly::dynamic& obj, void* context) {
       filter,
       sources[0],
       sources[1],
-      outputType);
+      outputType,
+      useHashTableCache);
 }
 
 MergeJoinNode::MergeJoinNode(
@@ -1828,7 +1846,7 @@ PlanNodePtr IndexLookupJoinNode::create(
   auto sources = deserializeSources(obj, context);
   VELOX_CHECK_EQ(2, sources.size());
   TableScanNodePtr lookupSource =
-      checked_pointer_cast<const TableScanNode>(sources[1]);
+      checkedPointerCast<const TableScanNode>(sources[1]);
 
   auto leftKeys = deserializeFields(obj["leftKeys"], context);
   auto rightKeys = deserializeFields(obj["rightKeys"], context);
@@ -1909,7 +1927,7 @@ bool IndexLookupJoinNode::isSupported(JoinType joinType) {
 }
 
 bool isIndexLookupJoin(const PlanNode* planNode) {
-  return is_instance_of<IndexLookupJoinNode>(planNode);
+  return isInstanceOf<IndexLookupJoinNode>(planNode);
 }
 
 // static
@@ -2501,7 +2519,7 @@ const char* TopNRowNumberNode::rankFunctionName(
   static const auto kFunctionNames = rankFunctionNames();
   auto it = kFunctionNames.find(function);
   VELOX_CHECK(
-      it != kFunctionNames.end(),
+      it != kFunctionNames.cend(),
       "Invalid rank function {}",
       static_cast<int>(function));
   return it->second.c_str();
@@ -2512,7 +2530,7 @@ TopNRowNumberNode::RankFunction TopNRowNumberNode::rankFunctionFromName(
     std::string_view name) {
   static const auto kFunctionNames = invertMap(rankFunctionNames());
   auto it = kFunctionNames.find(name.data());
-  VELOX_CHECK(it != kFunctionNames.end(), "Invalid rank function {}", name);
+  VELOX_CHECK(it != kFunctionNames.cend(), "Invalid rank function {}", name);
   return it->second;
 }
 
@@ -2657,6 +2675,29 @@ PlanNodePtr LocalMergeNode::create(const folly::dynamic& obj, void* context) {
 
 void TableWriteNode::addDetails(std::stringstream& stream) const {
   stream << insertTableHandle_->connectorInsertTableHandle()->toString();
+}
+
+RowTypePtr ColumnStatsSpec::outputType() const {
+  // Create output type based on the column stats collection specs.
+  std::vector<std::string> names;
+  std::vector<TypePtr> types;
+
+  const auto numAggregates = aggregates.size();
+  const auto outputTypeSize = groupingKeys.size() + numAggregates;
+
+  names.reserve(outputTypeSize);
+  types.reserve(outputTypeSize);
+
+  for (const auto& key : groupingKeys) {
+    names.push_back(key->name());
+    types.push_back(key->type());
+  }
+
+  for (auto i = 0; i < numAggregates; ++i) {
+    names.push_back(aggregateNames[i]);
+    types.push_back(aggregates[i].call->type());
+  }
+  return ROW(std::move(names), std::move(types));
 }
 
 folly::dynamic ColumnStatsSpec::serialize() const {
@@ -3097,46 +3138,12 @@ SpatialJoinNode::SpatialJoinNode(
       isSupported(joinType_),
       "The join type is not supported by spatial join: {}",
       JoinTypeName::toName(joinType_));
-  VELOX_USER_CHECK(
-      joinCondition_ != nullptr,
-      "The join condition must not be null for spatial join");
-  VELOX_USER_CHECK_EQ(
-      sources_.size(), 2, "Must have 2 sources for spatial joins");
-  VELOX_USER_CHECK(
-      sources_[0] != nullptr, "Left source must not be null for spatial joins");
-  VELOX_USER_CHECK(
-      sources_[1] != nullptr,
-      "Right source must not be null for spatial joins");
-
-  checkJoinColumnNames(
-      sources_[0]->outputType(),
-      sources_[1]->outputType(),
-      outputType_,
-      outputType_->size());
-}
-
-SpatialJoinNode::SpatialJoinNode(
-    const PlanNodeId& id,
-    JoinType joinType,
-    TypedExprPtr joinCondition,
-    PlanNodePtr left,
-    PlanNodePtr right,
-    RowTypePtr outputType)
-    : PlanNode(id),
-      joinType_(joinType),
-      joinCondition_(std::move(joinCondition)),
-      probeGeometry_{},
-      buildGeometry_{},
-      radius_{},
-      sources_({std::move(left), std::move(right)}),
-      outputType_(std::move(outputType)) {
-  VELOX_USER_CHECK(
-      isSupported(joinType_),
-      "The join type is not supported by spatial join: {}",
-      JoinTypeName::toName(joinType_));
-  VELOX_USER_CHECK(
-      joinCondition_ != nullptr,
-      "The join condition must not be null for spatial join");
+  VELOX_USER_CHECK_NOT_NULL(
+      joinCondition_, "The join condition must not be null for spatial join");
+  VELOX_USER_CHECK_NOT_NULL(
+      probeGeometry_, "Probe geometery must not be null for spatial joins");
+  VELOX_USER_CHECK_NOT_NULL(
+      buildGeometry_, "Build geometery must not be null for spatial joins");
   VELOX_USER_CHECK_EQ(
       sources_.size(), 2, "Must have 2 sources for spatial joins");
   VELOX_USER_CHECK(
@@ -3168,12 +3175,8 @@ void SpatialJoinNode::addDetails(std::stringstream& stream) const {
   if (joinCondition_) {
     stream << ", joinCondition: " << joinCondition_->toString();
   }
-  if (probeGeometry_) {
-    stream << ", probeGeometry: " << probeGeometry_.value()->name();
-  }
-  if (buildGeometry_) {
-    stream << ", buildGeometry: " << buildGeometry_.value()->name();
-  }
+  stream << ", probeGeometry: " << probeGeometry_->name();
+  stream << ", buildGeometry: " << buildGeometry_->name();
   if (radius_) {
     stream << ", radius: " << radius_.value()->name();
   }
@@ -3186,12 +3189,8 @@ folly::dynamic SpatialJoinNode::serialize() const {
     obj["joinCondition"] = joinCondition_->serialize();
   }
   obj["outputType"] = outputType_->serialize();
-  if (probeGeometry_) {
-    obj["probeGeometry"] = probeGeometry_.value()->serialize();
-  }
-  if (buildGeometry_) {
-    obj["buildGeometry"] = buildGeometry_.value()->serialize();
-  }
+  obj["probeGeometry"] = probeGeometry_->serialize();
+  obj["buildGeometry"] = buildGeometry_->serialize();
   if (radius_) {
     obj["radius"] = radius_.value()->serialize();
   }
@@ -3215,41 +3214,20 @@ PlanNodePtr SpatialJoinNode::create(const folly::dynamic& obj, void* context) {
   }
 
   auto outputType = deserializeRowType(obj["outputType"]);
-  std::optional<FieldAccessTypedExprPtr> probeGeometry;
-  if (obj.count("probeGeometry")) {
-    probeGeometry = deserializeField(obj["probeGeometry"]);
-  }
-  std::optional<FieldAccessTypedExprPtr> buildGeometry;
-  if (obj.count("buildGeometry")) {
-    buildGeometry = deserializeField(obj["buildGeometry"]);
-  }
+  auto probeGeometry = deserializeField(obj["probeGeometry"]);
+  auto buildGeometry = deserializeField(obj["buildGeometry"]);
   std::optional<FieldAccessTypedExprPtr> radius;
   if (obj.count("radius")) {
     radius = deserializeField(obj["radius"]);
-  }
-
-  VELOX_USER_CHECK(
-      (probeGeometry.has_value() && buildGeometry.has_value()) ||
-          (!probeGeometry.has_value() && !buildGeometry.has_value()),
-      "Either probe and build geometry must both be set, or neither");
-
-  if (probeGeometry.has_value() && buildGeometry.has_value()) {
-    return std::make_shared<SpatialJoinNode>(
-        deserializePlanNodeId(obj),
-        JoinTypeName::toJoinType(obj["joinType"].asString()),
-        joinCondition,
-        probeGeometry.value(),
-        buildGeometry.value(),
-        radius,
-        sources[0],
-        sources[1],
-        outputType);
   }
 
   return std::make_shared<SpatialJoinNode>(
       deserializePlanNodeId(obj),
       JoinTypeName::toJoinType(obj["joinType"].asString()),
       joinCondition,
+      probeGeometry,
+      buildGeometry,
+      radius,
       sources[0],
       sources[1],
       outputType);
@@ -3832,7 +3810,7 @@ void EqualIndexLookupCondition::validate() const {
   VELOX_CHECK_NOT_NULL(key);
   VELOX_CHECK_NOT_NULL(value);
   VELOX_CHECK_NOT_NULL(
-      checked_pointer_cast<const ConstantTypedExpr>(value),
+      checkedPointerCast<const ConstantTypedExpr>(value),
       "Equal condition value must be a constant expression: {}",
       value->toString());
 

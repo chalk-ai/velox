@@ -16,6 +16,7 @@
 
 #include "velox/connectors/hive/iceberg/PositionalDeleteFileReader.h"
 
+#include "velox/connectors/hive/BufferedInputBuilder.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/iceberg/IcebergDeleteFile.h"
@@ -63,8 +64,9 @@ PositionalDeleteFileReader::PositionalDeleteFileReader(
   auto scanSpec = std::make_shared<common::ScanSpec>("<root>");
   scanSpec->addField(posColumn_->name, 0);
   auto* pathSpec = scanSpec->getOrCreateChild(filePathColumn_->name);
-  pathSpec->setFilter(std::make_unique<common::BytesValues>(
-      std::vector<std::string>({baseFilePath_}), false));
+  pathSpec->setFilter(
+      std::make_unique<common::BytesValues>(
+          std::vector<std::string>({baseFilePath_}), false));
 
   // Create the file schema (in RowType) and split that will be used by readers
   std::vector<std::string> deleteColumnNames(
@@ -96,7 +98,7 @@ PositionalDeleteFileReader::PositionalDeleteFileReader(
       .filename = deleteFile_.filePath,
       .tokenProvider = connectorQueryCtx_->fsTokenProvider()};
   auto deleteFileHandleCachePtr = fileHandleFactory_->generate(fileHandleKey);
-  auto deleteFileInput = createBufferedInput(
+  auto deleteFileInput = BufferedInputBuilder::getInstance()->create(
       *deleteFileHandleCachePtr,
       deleteReaderOpts,
       connectorQueryCtx,
@@ -252,15 +254,17 @@ void PositionalDeleteFileReader::updateDeleteBitmap(
     deletePositionsOffset_++;
   }
 
-  deleteBitmapBuffer->setSize(std::max(
-      static_cast<uint64_t>(deleteBitmapBuffer->size()),
-      deletePositionsOffset_ == 0 ||
-              (deletePositionsOffset_ < deletePositionsVector->size() &&
-               deletePositions[deletePositionsOffset_] >= rowNumberUpperBound)
-          ? 0
-          : bits::nbytes(
-                deletePositions[deletePositionsOffset_ - 1] + 1 -
-                rowNumberLowerBound)));
+  deleteBitmapBuffer->setSize(
+      std::max(
+          static_cast<uint64_t>(deleteBitmapBuffer->size()),
+          deletePositionsOffset_ == 0 ||
+                  (deletePositionsOffset_ < deletePositionsVector->size() &&
+                   deletePositions[deletePositionsOffset_] >=
+                       rowNumberUpperBound)
+              ? 0
+              : bits::nbytes(
+                    deletePositions[deletePositionsOffset_ - 1] + 1 -
+                    rowNumberLowerBound)));
 }
 
 bool PositionalDeleteFileReader::readFinishedForBatch(

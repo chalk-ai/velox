@@ -18,9 +18,9 @@
 
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/exec/OperatorTraceReader.h"
-#include "velox/exec/TraceUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/exec/trace/TraceUtil.h"
 #include "velox/tool/trace/TraceReplayTaskRunner.h"
 
 using namespace facebook::velox;
@@ -54,8 +54,9 @@ core::PlanNodePtr TableScanReplayer::createPlanNode(
 std::vector<exec::Split> TableScanReplayer::getSplits() const {
   std::vector<std::string> splitInfoDirs;
   for (const auto driverId : driverIds_) {
-    splitInfoDirs.push_back(exec::trace::getOpTraceDirectory(
-        nodeTraceDir_, pipelineIds_.front(), driverId));
+    splitInfoDirs.push_back(
+        exec::trace::getOpTraceDirectory(
+            nodeTraceDir_, pipelineIds_.front(), driverId));
   }
   const auto splitStrs =
       exec::trace::OperatorTraceSplitReader(

@@ -18,9 +18,9 @@
 
 #include "velox/common/memory/Memory.h"
 #include "velox/exec/PartitionedOutput.h"
-#include "velox/exec/TraceUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/exec/trace/TraceUtil.h"
 #include "velox/tool/trace/PartitionedOutputReplayer.h"
 
 using namespace facebook::velox;
@@ -121,11 +121,13 @@ PartitionedOutputReplayer::PartitionedOutputReplayer(
           taskId,
           nodeId,
           operatorType,
+          "",
           driverIds,
           queryCapacity,
           executor),
-      originalNode_(dynamic_cast<const core::PartitionedOutputNode*>(
-          core::PlanNode::findNodeById(planFragment_.get(), nodeId_))),
+      originalNode_(
+          dynamic_cast<const core::PartitionedOutputNode*>(
+              core::PlanNode::findNodeById(planFragment_.get(), nodeId_))),
       serdeKind_(serdeKind),
       consumerCb_(consumerCb) {
   VELOX_CHECK_NOT_NULL(originalNode_);
@@ -140,7 +142,8 @@ RowVectorPtr PartitionedOutputReplayer::run(bool /*unused*/) {
       core::PlanFragment{createPlan()},
       0,
       createQueryContext(queryConfigs_, executor_.get()),
-      Task::ExecutionMode::kParallel);
+      Task::ExecutionMode::kParallel,
+      exec::Consumer{});
   task->start(driverIds_.size());
 
   consumeAllData(

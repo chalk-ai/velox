@@ -19,6 +19,7 @@
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
 #include <folly/init/Init.h>
+#include <folly/system/HardwareConcurrency.h>
 #include <re2/re2.h>
 #include "velox/common/base/Fs.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -73,7 +74,7 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
     setupMemoryPools();
 
     spillExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(
-        std::thread::hardware_concurrency());
+        folly::hardware_concurrency());
   }
 
   void TearDown() override {
@@ -113,7 +114,8 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
         0,
         0,
         writerFlushThreshold,
-        "none");
+        "none",
+        0);
   }
 
   void setupMemoryPools() {
@@ -596,67 +598,6 @@ TEST_F(HiveDataSinkTest, basicBucket) {
 
   createDuckDbTable(vectors);
   verifyWrittenData(outputDirectory->getPath(), numBuckets);
-}
-
-TEST_F(HiveDataSinkTest, decimalPartition) {
-  const auto outputDirectory = TempDirectoryPath::create();
-
-  connectorSessionProperties_->set(
-      HiveConfig::kSortWriterFinishTimeSliceLimitMsSession, "1");
-  const auto rowType =
-      ROW({"c0", "c1", "c2"}, {BIGINT(), DECIMAL(14, 3), DECIMAL(20, 4)});
-  auto dataSink = createDataSink(
-      rowType,
-      outputDirectory->getPath(),
-      dwio::common::FileFormat::DWRF,
-      {"c2"});
-  auto stats = dataSink->stats();
-  ASSERT_TRUE(stats.empty()) << stats.toString();
-
-  const auto vector = makeRowVector(
-      {makeNullableFlatVector<int64_t>({1, 2, std::nullopt, 345}),
-       makeNullableFlatVector<int64_t>(
-           {1, 2, std::nullopt, 345}, DECIMAL(14, 3)),
-       makeFlatVector<int128_t>({1, 340, 234567, -345}, DECIMAL(20, 4))});
-
-  dataSink->appendData(vector);
-  while (!dataSink->finish()) {
-  }
-  const auto partitions = dataSink->close();
-  stats = dataSink->stats();
-  ASSERT_FALSE(stats.empty());
-  ASSERT_EQ(partitions.size(), vector->size());
-
-  createDuckDbTable({vector});
-
-  const auto rootPath = outputDirectory->getPath();
-  std::vector<std::shared_ptr<ConnectorSplit>> splits;
-  std::unordered_map<std::string, std::optional<std::string>> partitionKeys;
-  auto partitionPath = [&](std::string value) {
-    partitionKeys["c2"] = value;
-    auto path = listFiles(rootPath + "/c2=" + value)[0];
-    splits.push_back(makeHiveConnectorSplits(
-                         path, 1, dwio::common::FileFormat::DWRF, partitionKeys)
-                         .back());
-  };
-  partitionPath("0.0001");
-  partitionPath("0.0340");
-  partitionPath("23.4567");
-  partitionPath("-0.0345");
-
-  ColumnHandleMap assignments = {
-      {"c0", regularColumn("c0", BIGINT())},
-      {"c1", regularColumn("c1", DECIMAL(14, 3))},
-      {"c2", partitionKey("c2", DECIMAL(20, 4))}};
-
-  auto op = PlanBuilder()
-                .startTableScan()
-                .outputType(rowType)
-                .assignments(assignments)
-                .endTableScan()
-                .planNode();
-
-  assertQuery(op, splits, fmt::format("SELECT * FROM tmp"));
 }
 
 TEST_F(HiveDataSinkTest, close) {
@@ -1435,6 +1376,49 @@ TEST_F(HiveDataSinkTest, lazyVectorForParquet) {
   dataSink->close();
 }
 #endif
+
+// Test to verify that each writer has its own nonReclaimableSection
+// pointer when writerOptions is shared.
+TEST_F(HiveDataSinkTest, sharedWriterOptionsWithMultipleWriters) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  const int32_t numBuckets = 3;
+  auto bucketProperty = std::make_shared<HiveBucketProperty>(
+      HiveBucketProperty::Kind::kHiveCompatible,
+      numBuckets,
+      std::vector<std::string>{"c0"},
+      std::vector<TypePtr>{BIGINT()},
+      std::vector<std::shared_ptr<const HiveSortingColumn>>{});
+
+  // Create shared writer options (this simulates the scenario where
+  // insertTableHandle_->writerOptions() returns a shared object)
+  auto sharedWriterOptions = std::make_shared<dwrf::WriterOptions>();
+
+  // Create a data sink with multiple writers (one for each bucket)
+  auto dataSink = createDataSink(
+      rowType_,
+      outputDirectory->getPath(),
+      dwio::common::FileFormat::DWRF,
+      {},
+      bucketProperty,
+      sharedWriterOptions);
+
+  const auto vectors = createVectors(200, 3);
+
+  // Write data - this should work without throwing exceptions
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  while (!dataSink->finish()) {
+  }
+  const auto partitions = dataSink->close();
+
+  ASSERT_GT(partitions.size(), 1);
+  createDuckDbTable(vectors);
+  verifyWrittenData(
+      outputDirectory->getPath(), static_cast<int32_t>(partitions.size()));
+}
 
 } // namespace
 } // namespace facebook::velox::connector::hive

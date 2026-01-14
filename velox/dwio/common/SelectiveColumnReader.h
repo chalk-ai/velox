@@ -27,6 +27,8 @@
 
 namespace facebook::velox::dwio::common {
 
+using ScanSpec = velox::common::ScanSpec;
+
 /// Generalized representation of a set of distinct values for dictionary
 /// encodings.
 struct DictionaryValues {
@@ -482,7 +484,7 @@ class SelectiveColumnReader {
     return false;
   }
 
-  StringView copyStringValueIfNeed(folly::StringPiece value) {
+  StringView copyStringValueIfNeed(std::string_view value) {
     if (value.size() <= StringView::kInlineSize) {
       return StringView(value);
     }
@@ -581,11 +583,11 @@ class SelectiveColumnReader {
   // Checks consistency of nulls-related state.
   const uint64_t* shouldMoveNulls(const RowSet& rows);
 
-  void addStringValue(folly::StringPiece value);
+  void addStringValue(std::string_view value);
 
   // Copies 'value' to buffers owned by 'this' and returns the start of the
   // copy.
-  char* copyStringValue(folly::StringPiece value);
+  char* copyStringValue(std::string_view value);
 
   virtual bool hasDeletion() const {
     return false;
@@ -732,7 +734,7 @@ class SelectiveColumnReader {
 };
 
 template <>
-inline void SelectiveColumnReader::addValue(const folly::StringPiece value) {
+inline void SelectiveColumnReader::addValue(const std::string_view value) {
   const uint64_t size = value.size();
   if (size <= StringView::kInlineSize) {
     reinterpret_cast<StringView*>(rawValues_)[numValues_++] =
@@ -766,7 +768,7 @@ struct NoHook final : public ValueHook {
 
   void addValue(vector_size_t /*row*/, double /*value*/) final {}
 
-  void addValue(vector_size_t /*row*/, folly::StringPiece /*value*/) final {}
+  void addValue(vector_size_t /*row*/, std::string_view /*value*/) final {}
 };
 
 } // namespace facebook::velox::dwio::common

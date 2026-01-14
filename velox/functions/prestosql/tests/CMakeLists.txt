@@ -44,6 +44,7 @@ add_executable(
   ArrayRemoveTest.cpp
   ArrayShuffleTest.cpp
   ArraySortTest.cpp
+  ArraySubsetTest.cpp
   ArrayTopNTest.cpp
   ArraysOverlapTest.cpp
   ArraySumTest.cpp
@@ -52,6 +53,7 @@ add_executable(
   ArgTypesGeneratorTest.cpp
   BinaryFunctionsTest.cpp
   BingTileCastTest.cpp
+  BingTileFunctionsTest.cpp
   BitwiseTest.cpp
   CardinalityTest.cpp
   CeilFloorTest.cpp
@@ -68,7 +70,10 @@ add_executable(
   GreatestLeastTest.cpp
   HyperLogLogCastTest.cpp
   HyperLogLogFunctionsTest.cpp
+  KHyperLogLogCastTest.cpp
+  KHyperLogLogFunctionsTest.cpp
   P4HyperLogLogCastTest.cpp
+  SetDigestCastTest.cpp
   InPredicateTest.cpp
   IntegerFunctionsTest.cpp
   IPAddressCastTest.cpp
@@ -79,15 +84,20 @@ add_executable(
   MapEntriesTest.cpp
   MapFilterTest.cpp
   MapFromEntriesTest.cpp
+  MapIntersectTest.cpp
+  MapKeysOverlapTest.cpp
   MapNormalizeTest.cpp
+  RemapKeysTest.cpp
   MapTopNTest.cpp
   MapTopNKeysTest.cpp
   MapTopNValuesTest.cpp
   MapKeysAndValuesTest.cpp
   MapKeysByTopNValuesTest.cpp
   MapMatchTest.cpp
+  MapAppendTest.cpp
   MapTest.cpp
   MapZipWithTest.cpp
+  MapExceptTest.cpp
   MultimapFromEntriesTest.cpp
   NotTest.cpp
   ParsePrestoDataSizeTest.cpp
@@ -108,6 +118,7 @@ add_executable(
   SplitToMultiMapTest.cpp
   StringFunctionsTest.cpp
   TimestampWithTimeZoneCastTest.cpp
+  TimeWithTimezoneCastTest.cpp
   TransformKeysTest.cpp
   TransformTest.cpp
   TransformValuesTest.cpp

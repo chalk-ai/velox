@@ -331,13 +331,14 @@ class SpillerTest : public exec::test::RowContainerTestBase {
       bool ascending = true,
       bool makeError = false,
       uint64_t readBufferSize = 1 << 20) {
-    SCOPED_TRACE(fmt::format(
-        "spillType: {} numDuplicates: {} outputBatchSize: {} ascending: {} makeError: {}",
-        typeName(type_),
-        numDuplicates,
-        outputBatchSize,
-        ascending,
-        makeError));
+    SCOPED_TRACE(
+        fmt::format(
+            "spillType: {} numDuplicates: {} outputBatchSize: {} ascending: {} makeError: {}",
+            typeName(type_),
+            numDuplicates,
+            outputBatchSize,
+            ascending,
+            makeError));
     constexpr int32_t kNumRows = 5'000;
     const auto prevGStats = common::globalSpillStats();
 
@@ -714,11 +715,11 @@ class SpillerTest : public exec::test::RowContainerTestBase {
       // We make a merge reader that merges the spill files and the rows that
       // are still in the RowContainer.
       auto merge = spillPartition->createOrderedReader(
-          spillConfig_.readBufferSize, pool(), &spillStats_);
+          spillConfig_, pool(), &spillStats_);
       ASSERT_TRUE(merge != nullptr);
       ASSERT_TRUE(
           spillPartition->createOrderedReader(
-              spillConfig_.readBufferSize, pool(), &spillStats_) == nullptr);
+              spillConfig_, pool(), &spillStats_) == nullptr);
 
       // We read the spilled data back and check that it matches the sorted
       // order of the partition.
@@ -865,14 +866,15 @@ class SpillerTest : public exec::test::RowContainerTestBase {
       ss << partitionId.toString() << " ";
     }
     ss << "]";
-    SCOPED_TRACE(fmt::format(
-        "Param: {}, numSpillers: {}, numBatchRows: {}, numAppendBatches: {}, targetFileSize: {}, spillPartitionIdSet: {}",
-        param_.toString(),
-        numSpillers,
-        numBatchRows,
-        numAppendBatches,
-        targetFileSize,
-        ss.str()));
+    SCOPED_TRACE(
+        fmt::format(
+            "Param: {}, numSpillers: {}, numBatchRows: {}, numAppendBatches: {}, targetFileSize: {}, spillPartitionIdSet: {}",
+            param_.toString(),
+            numSpillers,
+            numBatchRows,
+            numAppendBatches,
+            targetFileSize,
+            ss.str()));
 
     std::vector<std::vector<RowVectorPtr>> inputsByPartition(numPartitions_);
 
@@ -1573,7 +1575,7 @@ TEST_P(AggregationOutputOnly, basic) {
       ASSERT_EQ(spillPartitionSet.size(), 1);
       auto spillPartition = std::move(spillPartitionSet.begin()->second);
       auto merge = spillPartition->createOrderedReader(
-          spillConfig_.readBufferSize, pool(), &spillStats_);
+          spillConfig_, pool(), &spillStats_);
 
       for (auto i = 0; i < expectedNumSpilledRows; ++i) {
         auto* stream = merge->next();
@@ -1686,8 +1688,8 @@ TEST_P(SortOutputOnly, basic) {
     auto spillPartition = std::move(spillPartitionSet.begin()->second);
 
     const int expectedNumSpilledRows = numListedRows;
-    auto merge = spillPartition->createOrderedReader(
-        spillConfig_.readBufferSize, pool(), &spillStats_);
+    auto merge =
+        spillPartition->createOrderedReader(spillConfig_, pool(), &spillStats_);
     if (expectedNumSpilledRows == 0) {
       ASSERT_TRUE(merge == nullptr);
     } else {

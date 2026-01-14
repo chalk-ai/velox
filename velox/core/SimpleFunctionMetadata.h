@@ -243,13 +243,14 @@ struct TypeAnalysis<Generic<T, comparable, orderable>> {
     } else {
       auto typeVariableName = fmt::format("__user_T{}", T::getId());
       results.out << typeVariableName;
-      results.addVariable(exec::SignatureVariable(
-          typeVariableName,
-          std::nullopt,
-          exec::ParameterType::kTypeParameter,
-          false,
-          orderable,
-          comparable));
+      results.addVariable(
+          exec::SignatureVariable(
+              typeVariableName,
+              std::nullopt,
+              exec::ParameterType::kTypeParameter,
+              false,
+              orderable,
+              comparable));
     }
     results.stats.hasGeneric = true;
     results.physicalType = UNKNOWN();
@@ -264,10 +265,12 @@ struct TypeAnalysis<ShortDecimal<P, S>> {
     const auto p = P::name();
     const auto s = S::name();
     results.out << fmt::format("decimal({},{})", p, s);
-    results.addVariable(exec::SignatureVariable(
-        p, std::nullopt, exec::ParameterType::kIntegerParameter));
-    results.addVariable(exec::SignatureVariable(
-        s, std::nullopt, exec::ParameterType::kIntegerParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            p, std::nullopt, exec::ParameterType::kIntegerParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            s, std::nullopt, exec::ParameterType::kIntegerParameter));
     results.physicalType = BIGINT();
   }
 };
@@ -280,10 +283,12 @@ struct TypeAnalysis<LongDecimal<P, S>> {
     const auto p = P::name();
     const auto s = S::name();
     results.out << fmt::format("decimal({},{})", p, s);
-    results.addVariable(exec::SignatureVariable(
-        p, std::nullopt, exec::ParameterType::kIntegerParameter));
-    results.addVariable(exec::SignatureVariable(
-        s, std::nullopt, exec::ParameterType::kIntegerParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            p, std::nullopt, exec::ParameterType::kIntegerParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            s, std::nullopt, exec::ParameterType::kIntegerParameter));
     results.physicalType = HUGEINT();
   }
 };
@@ -295,8 +300,9 @@ struct TypeAnalysis<facebook::velox::BigintEnumT<E>> {
 
     const auto e = E::name();
     results.out << fmt::format("bigint_enum({})", e);
-    results.addVariable(exec::SignatureVariable(
-        e, std::nullopt, exec::ParameterType::kEnumParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            e, std::nullopt, exec::ParameterType::kEnumParameter));
     results.physicalType = BIGINT();
   }
 };
@@ -308,8 +314,9 @@ struct TypeAnalysis<facebook::velox::VarcharEnumT<E>> {
 
     const auto e = E::name();
     results.out << fmt::format("varchar_enum({})", e);
-    results.addVariable(exec::SignatureVariable(
-        e, std::nullopt, exec::ParameterType::kEnumParameter));
+    results.addVariable(
+        exec::SignatureVariable(
+            e, std::nullopt, exec::ParameterType::kEnumParameter));
     results.physicalType = VARCHAR();
   }
 };
@@ -874,14 +881,53 @@ class UDFHolder {
         (udf_has_callAscii_return_void && udf_has_call_return_bool)),
       "The return type for callAscii() must match the return type for call().");
 
-  // initialize():
-  static constexpr bool udf_has_initialize = util::has_method<
+  // Detects if initialize() is a template method using SFINAE.
+  // Template methods can match any signature via template parameter deduction,
+  // causing false positives in trait detection. We probe with a dummy type
+  // that's not in our expected signature to identify templates.
+  struct DummyProbeType {};
+
+  template <typename U, typename = void>
+  struct has_template_initialize : std::false_type {};
+
+  template <typename U>
+  struct has_template_initialize<
+      U,
+      util::detail::void_t<decltype(std::declval<U>().initialize(
+          std::declval<const std::vector<TypePtr>&>(),
+          std::declval<const core::QueryConfig&>(),
+          std::declval<const DummyProbeType*>()))>> : std::true_type {};
+
+  static constexpr bool is_initialize_template =
+      has_template_initialize<Fun>::value;
+
+  // Check for initialize() without MemoryPool parameter.
+  static constexpr bool udf_has_initialize_without_pool = util::has_method<
       Fun,
       initialize_method_resolver,
       void,
       const std::vector<TypePtr>&,
       const core::QueryConfig&,
       const exec_arg_type<TArgs>*...>::value;
+
+  // Check for initialize() with MemoryPool parameter.
+  // Excludes template methods to prevent them from incorrectly matching
+  // via template parameter substitution (e.g., T=MemoryPool).
+  static constexpr bool udf_has_initialize_with_pool =
+      !is_initialize_template &&
+      util::has_method<
+          Fun,
+          initialize_method_resolver,
+          void,
+          const std::vector<TypePtr>&,
+          const core::QueryConfig&,
+          memory::MemoryPool*,
+          const exec_arg_type<TArgs>*...>::value;
+
+  // Combined trait for backward compatibility: true if ANY initialize exists
+  // This preserves the original meaning of udf_has_initialize
+  static constexpr bool udf_has_initialize =
+      udf_has_initialize_with_pool || udf_has_initialize_without_pool;
 
   // TODO Remove
   static constexpr bool udf_has_legacy_initialize = util::has_method<
@@ -969,8 +1015,26 @@ class UDFHolder {
   FOLLY_ALWAYS_INLINE void initialize(
       const std::vector<TypePtr>& inputTypes,
       const core::QueryConfig& config,
+      memory::MemoryPool* memoryPool,
       const typename exec_resolver<TArgs>::in_type*... constantArgs) {
-    if constexpr (udf_has_initialize) {
+    // Prefer non-MemoryPool signature first to handle template methods
+    // correctly. Template initialize() methods can match any signature via
+    // template parameter deduction, so we avoid passing MemoryPool to them.
+    if constexpr (udf_has_initialize_without_pool) {
+      return instance_.initialize(inputTypes, config, constantArgs...);
+    } else if constexpr (udf_has_initialize_with_pool) {
+      return instance_.initialize(
+          inputTypes, config, memoryPool, constantArgs...);
+    }
+  }
+
+  // Overload for backward compatibility with callers that don't pass
+  // MemoryPool (e.g., Koski batch functions).
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& inputTypes,
+      const core::QueryConfig& config,
+      const typename exec_resolver<TArgs>::in_type*... constantArgs) {
+    if constexpr (udf_has_initialize_without_pool) {
       return instance_.initialize(inputTypes, config, constantArgs...);
     }
   }

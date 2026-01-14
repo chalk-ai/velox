@@ -42,13 +42,18 @@ RowTypePtr hashJoinTableType(
     types.emplace_back(inputType->childAt(channel));
   }
 
+  if (joinNode->canDropDuplicates()) {
+    // For left semi and anti join with no extra filter, hash table does not
+    // store dependent columns.
+    return ROW(std::move(names), std::move(types));
+  }
+
   for (auto i = 0; i < inputType->size(); ++i) {
     if (keyChannelSet.find(i) == keyChannelSet.end()) {
       names.emplace_back(inputType->nameOf(i));
       types.emplace_back(inputType->childAt(i));
     }
   }
-
   return ROW(std::move(names), std::move(types));
 }
 
@@ -211,7 +216,7 @@ SpillPartitionSet spillHashJoinTable(
 }
 
 void HashJoinBridge::setHashTable(
-    std::unique_ptr<BaseHashTable> table,
+    std::shared_ptr<BaseHashTable> table,
     SpillPartitionSet spillPartitionSet,
     bool hasNullKeys,
     HashJoinTableSpillFunc&& tableSpillFunc) {
@@ -452,11 +457,11 @@ uint64_t HashJoinMemoryReclaimer::reclaim(
 }
 
 bool isHashBuildMemoryPool(const memory::MemoryPool& pool) {
-  return folly::StringPiece(pool.name()).endsWith("HashBuild");
+  return pool.name().ends_with("HashBuild");
 }
 
 bool isHashProbeMemoryPool(const memory::MemoryPool& pool) {
-  return folly::StringPiece(pool.name()).endsWith("HashProbe");
+  return pool.name().ends_with("HashProbe");
 }
 
 bool needRightSideJoin(core::JoinType joinType) {
