@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -522,6 +523,10 @@ class Driver : public std::enable_shared_from_this<Driver> {
 
   static std::shared_ptr<Driver> testingCreate(std::unique_ptr<DriverCtx> ctx = nullptr);
 
+  size_t chalkGetBlockedOperatorId() {
+    return blockedOperatorId_;
+  };
+
  private:
   // Ensures that the thread is removed from its Task's thread count on exit.
   class CancelGuard {
@@ -650,7 +655,7 @@ class Driver : public std::enable_shared_from_this<Driver> {
   std::vector<std::unique_ptr<Operator>> operators_;
 
   BlockingReason blockingReason_{BlockingReason::kNotBlocked};
-  size_t blockedOperatorId_{0};
+  std::atomic<size_t> blockedOperatorId_{0};
 
   bool trackOperatorCpuUsage_;
 
