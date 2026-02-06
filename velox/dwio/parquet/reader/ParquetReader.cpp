@@ -326,7 +326,14 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
   if ((!options_.useColumnNamesForColumnMapping()) &&
       (options_.fileSchema() != nullptr)) {
     if (isParquetReservedKeyword(name, parentSchemaIdx, curSchemaIdx)) {
-      columnNames.push_back(name);
+      // Parent ROW nodes already assign child names using requested schema
+      // position mapping. Avoid pushing reserved keywords twice for children
+      // named "key" or "value", e.g. in list<struct<key, ...>>.
+      const bool isRowChildMappedByPosition =
+          parentRequestedType != nullptr && parentRequestedType->isRow();
+      if (!isRowChildMappedByPosition) {
+        columnNames.push_back(name);
+      }
     }
   } else {
     columnNames.push_back(name);
