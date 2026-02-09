@@ -22,6 +22,9 @@ on:
         default: false
         required: false
         type: boolean
+    secrets:
+      CHALK_PRIVATE_GITHUB_ACTIONS_HMAC_KEY:
+        required: false
 
 jobs:
   adapters:
