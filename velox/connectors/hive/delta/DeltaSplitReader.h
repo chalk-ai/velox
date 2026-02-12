@@ -2,11 +2,7 @@
 
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/SplitReader.h"
-
-namespace facebook::velox::connector::hive {
-class HiveTableHandlePtr;
-class HiveColumnHandlePtr;
-}
+#include "velox/connectors/hive/TableHandle.h"
 
 namespace facebook::velox::connector::hive::delta {
 
