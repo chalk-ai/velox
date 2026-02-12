@@ -1,7 +1,12 @@
 #include "velox/connectors/hive/delta/DeltaSplitReader.h"
-#include "velox/dwio/common/BufferUtil.h"
+
+#include <algorithm>
+#include <cstring>
+
+#include "folly/json.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
+#include "velox/dwio/common/BufferUtil.h"
 
 namespace facebook::velox::connector::hive::delta {
 namespace {

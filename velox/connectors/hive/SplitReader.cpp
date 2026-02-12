@@ -16,10 +16,6 @@
 
 #include "velox/connectors/hive/SplitReader.h"
 
-#include <algorithm>
-#include <cstring>
-
-#include "folly/json.h"
 #include "velox/common/caching/CacheTTLController.h"
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
@@ -27,7 +23,6 @@
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/delta/DeltaSplitReader.h"
 #include "velox/connectors/hive/iceberg/IcebergSplitReader.h"
-#include "velox/dwio/common/BufferUtil.h"
 #include "velox/dwio/common/ReaderFactory.h"
 
 namespace facebook::velox::connector::hive {
