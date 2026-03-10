@@ -190,7 +190,7 @@ DefaultAzureCredentialProvider::getReadFileClient(
     const config::ConfigBase& config) {
   auto credential =
       std::make_shared<Azure::Identity::DefaultAzureCredential>();
-  const auto url = abfsPath->getUrl(true);
+  const auto url = abfsPath->getUrl(true); // true = use blob endpoint
   auto client = std::make_unique<BlobClient>(url, credential);
   return std::make_unique<BlobClientWrapper>(std::move(client));
 }
@@ -201,7 +201,7 @@ DefaultAzureCredentialProvider::getWriteFileClient(
     const config::ConfigBase& config) {
   auto credential =
       std::make_shared<Azure::Identity::DefaultAzureCredential>();
-  const auto url = abfsPath->getUrl(false);
+  const auto url = abfsPath->getUrl(false); // false = use datalake endpoint
   auto client = std::make_unique<DataLakeFileClient>(url, credential);
   return std::make_unique<DataLakeFileClientWrapper>(std::move(client));
 }

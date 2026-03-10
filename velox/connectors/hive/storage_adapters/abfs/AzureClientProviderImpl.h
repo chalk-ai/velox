@@ -22,9 +22,8 @@
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProvider.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AzureDataLakeFileClient.h"
 
-// AbfsPath.h provides:
-//   using namespace Azure::Storage::Blobs;
-//   using namespace Azure::Storage::Files::DataLake;
+using namespace Azure::Storage::Blobs;
+using namespace Azure::Storage::Files::DataLake;
 
 namespace facebook::velox::filesystems {
 
