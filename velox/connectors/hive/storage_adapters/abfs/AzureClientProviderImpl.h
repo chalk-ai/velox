@@ -22,7 +22,44 @@
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProvider.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AzureDataLakeFileClient.h"
 
+// AbfsPath.h provides:
+//   using namespace Azure::Storage::Blobs;
+//   using namespace Azure::Storage::Files::DataLake;
+
 namespace facebook::velox::filesystems {
+
+class DataLakeFileClientWrapper final : public AzureDataLakeFileClient {
+ public:
+  explicit DataLakeFileClientWrapper(
+      std::unique_ptr<DataLakeFileClient> client)
+      : client_(std::move(client)) {}
+
+  void create() override;
+  Azure::Storage::Files::DataLake::Models::PathProperties getProperties()
+      override;
+  void append(const uint8_t* buffer, size_t size, uint64_t offset) override;
+  void flush(uint64_t position) override;
+  void close() override;
+  std::string getUrl() override;
+
+ private:
+  const std::unique_ptr<DataLakeFileClient> client_;
+};
+
+class BlobClientWrapper final : public AzureBlobClient {
+ public:
+  explicit BlobClientWrapper(std::unique_ptr<BlobClient> client)
+      : blobClient_(std::move(client)) {}
+
+  Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
+      override;
+  Azure::Response<Azure::Storage::Blobs::Models::DownloadBlobResult> download(
+      const Azure::Storage::Blobs::DownloadBlobOptions& options) override;
+  std::string getUrl() override;
+
+ private:
+  std::unique_ptr<BlobClient> blobClient_;
+};
 
 // AzureClientProvider for Shared Key authentication.
 class SharedKeyAzureClientProvider final : public AzureClientProvider {
@@ -72,6 +109,21 @@ class OAuthAzureClientProvider final : public AzureClientProvider {
   std::string tenentId_;
   std::string authorityHost_;
   std::shared_ptr<Azure::Core::Credentials::TokenCredential> tokenCredential_;
+};
+
+// AzureClientProvider for DefaultAzureCredential authentication.
+// Uses the Azure SDK's DefaultAzureCredential which automatically tries
+// multiple credential sources (environment variables, managed identity,
+// Azure CLI, etc.) in sequence.
+class DefaultAzureCredentialProvider final : public AzureClientProvider {
+ public:
+  std::unique_ptr<AzureBlobClient> getReadFileClient(
+      const std::shared_ptr<AbfsPath>& abfsPath,
+      const config::ConfigBase& config) override;
+
+  std::unique_ptr<AzureDataLakeFileClient> getWriteFileClient(
+      const std::shared_ptr<AbfsPath>& abfsPath,
+      const config::ConfigBase& config) override;
 };
 
 // AzureClientProvider for SAS authentication with a fixed SAS token.

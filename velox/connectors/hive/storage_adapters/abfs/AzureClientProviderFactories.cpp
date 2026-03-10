@@ -51,6 +51,10 @@ AzureClientProviderFactory AzureClientProviderFactories::getClientFactory(
         if (auto it = factories.find(account); it != factories.end()) {
           return it->second;
         }
+        // Fall back to the default factory registered with an empty account.
+        if (auto it = factories.find(""); it != factories.end()) {
+          return it->second;
+        }
         VELOX_USER_FAIL(
             "No AzureClientProviderFactory registered for account '{}'."
             "Please use `registerAzureClientProvider` or "

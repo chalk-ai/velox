@@ -97,13 +97,27 @@ void registerAzureClientProvider(const config::ConfigBase& config) {
             accountName, [](const std::string&) {
               return std::make_unique<FixedSasAzureClientProvider>();
             });
+      } else if (value == kAzureDefaultCredentialAuthType) {
+        AzureClientProviderFactories::registerFactory(
+            accountName, [](const std::string&) {
+              return std::make_unique<DefaultAzureCredentialProvider>();
+            });
       } else {
         VELOX_USER_FAIL(
-            "Unsupported auth type {}, supported auth types are SharedKey, OAuth and SAS.",
+            "Unsupported auth type {}, supported auth types are SharedKey, OAuth, SAS and DefaultCredential.",
             value);
       }
     }
   }
+#endif
+}
+
+void registerAzureDefaultCredentialProvider(const std::string& account) {
+#ifdef VELOX_ENABLE_ABFS
+  AzureClientProviderFactories::registerFactory(
+      account, [](const std::string&) {
+        return std::make_unique<DefaultAzureCredentialProvider>();
+      });
 #endif
 }
 

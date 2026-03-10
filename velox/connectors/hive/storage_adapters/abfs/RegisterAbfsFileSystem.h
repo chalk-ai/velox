@@ -42,6 +42,13 @@ void registerAbfsFileSystem();
 /// based on the configuration.
 void registerAzureClientProvider(const config::ConfigBase& config);
 
+/// Registers DefaultAzureCredentialProvider for the given account.
+/// Pass an empty string to register as the fallback for any account not
+/// explicitly registered. DefaultAzureCredential automatically tries multiple
+/// credential sources (environment variables, managed identity, Azure CLI,
+/// etc.) in sequence.
+void registerAzureDefaultCredentialProvider(const std::string& account);
+
 /// Registers a factory for creating AzureClientProvider instances.
 /// Any existing factory registered for the specified account will be
 /// overwritten by recalling this method with the same account name.
