@@ -84,7 +84,7 @@ bool mustStartNewPipeline(
     return true;
   }
 
-  if (std::dynamic_pointer_cast<const core::LocalPartitionNode>(planNode)) {
+  if (planNode->isLocalExchange()) {
     return true;
   }
 
