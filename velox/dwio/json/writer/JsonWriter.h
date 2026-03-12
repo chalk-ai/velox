@@ -66,7 +66,7 @@ class JsonWriter : public dwio::common::Writer {
 
   const RowTypePtr schema_;
   const std::unique_ptr<dwio::common::FileSink> sink_;
-  memory::MemoryPool* pool_;
+  std::shared_ptr<memory::MemoryPool> pool_;
   const uint64_t flushThresholdBytes_;
   std::string buffer_;
 };

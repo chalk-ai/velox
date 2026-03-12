@@ -16,6 +16,8 @@
 
 #include "velox/dwio/json/writer/JsonWriter.h"
 
+#include <folly/Conv.h>
+#include <folly/Random.h>
 #include <folly/json.h>
 
 #include "velox/common/encode/Base64.h"
@@ -41,7 +43,10 @@ JsonWriter::JsonWriter(
     const std::shared_ptr<WriterOptions>& options)
     : schema_(std::move(schema)),
       sink_(std::move(sink)),
-      pool_(options->memoryPool),
+      pool_(options->memoryPool->addLeafChild(fmt::format(
+          "{}.json_writer_node.{}",
+          options->memoryPool->name(),
+          folly::to<std::string>(folly::Random::rand64())))),
       flushThresholdBytes_(options->flushThresholdBytes) {
   setState(State::kRunning);
 }
@@ -185,7 +190,7 @@ void JsonWriter::flushBuffer() {
   if (buffer_.empty()) {
     return;
   }
-  dwio::common::DataBuffer<char> buf(*pool_, buffer_.size());
+  dwio::common::DataBuffer<char> buf(*pool_.get(), buffer_.size());
   memcpy(buf.data(), buffer_.data(), buffer_.size());
   sink_->write(std::move(buf));
   buffer_.clear();
