@@ -320,7 +320,7 @@ void JsonRowReader::setFieldValue(
       VELOX_USER_CHECK(
           val.isObject(),
           "Expected JSON object for MAP column, got: {}",
-          val);
+          folly::toJson(val));
       auto* mapVec = vec->as<MapVector>();
       auto& keys = mapVec->mapKeys();
       auto& values = mapVec->mapValues();
@@ -345,7 +345,7 @@ void JsonRowReader::setFieldValue(
       VELOX_USER_CHECK(
           val.isObject(),
           "Expected JSON object for ROW column, got: {}",
-          val);
+          folly::toJson(val));
       auto* rowVec = vec->as<RowVector>();
       const auto& rowType = type->asRow();
       for (size_t i = 0; i < rowType.size(); ++i) {

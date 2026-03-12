@@ -41,7 +41,7 @@ JsonWriter::JsonWriter(
     const std::shared_ptr<WriterOptions>& options)
     : schema_(std::move(schema)),
       sink_(std::move(sink)),
-      pool_(options->memoryPool.get()),
+      pool_(options->memoryPool),
       flushThresholdBytes_(options->flushThresholdBytes) {
   setState(State::kRunning);
 }
@@ -187,7 +187,6 @@ void JsonWriter::flushBuffer() {
   }
   dwio::common::DataBuffer<char> buf(*pool_, buffer_.size());
   memcpy(buf.data(), buffer_.data(), buffer_.size());
-  buf.setSize(buffer_.size());
   sink_->write(std::move(buf));
   buffer_.clear();
 }
