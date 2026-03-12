@@ -220,6 +220,12 @@ class PlanNode : public ISerializable {
     return false;
   }
 
+  /// Returns true if this node represents a local exchange that requires
+  /// a pipeline break between producer and consumer pipelines.
+  virtual bool isLocalExchange() const {
+    return false;
+  }
+
   /// Returns a set of leaf plan node IDs.
   std::unordered_set<core::PlanNodeId> leafPlanNodeIds() const;
 
@@ -2546,6 +2552,10 @@ class LocalPartitionNode : public PlanNode {
 
   bool supportsBarrier() const override {
     return !scaleWriter_;
+  }
+
+  bool isLocalExchange() const override {
+    return true;
   }
 
   Type type() const {
