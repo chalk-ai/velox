@@ -292,15 +292,17 @@ void JsonRowReader::setFieldValue(
     }
     case TypeKind::TIMESTAMP: {
       auto str = val.asString();
-      vec->asFlatVector<Timestamp>()->set(
-          row,
-          util::fromTimestampString(
-              StringView(str), util::TimestampParseMode::kPrestoCast));
+      auto tsResult =
+          util::fromTimestampString(StringView(str), util::TimestampParseMode::kPrestoCast);
+      VELOX_USER_CHECK(tsResult.hasValue(), "Invalid timestamp string: {}", str);
+      vec->asFlatVector<Timestamp>()->set(row, tsResult.value());
       break;
     }
     case TypeKind::ARRAY: {
       VELOX_USER_CHECK(
-          val.isArray(), "Expected JSON array for ARRAY column, got: {}", val);
+          val.isArray(),
+          "Expected JSON array for ARRAY column, got: {}",
+          folly::toJson(val));
       auto* arrVec = vec->as<ArrayVector>();
       auto& elements = arrVec->elements();
       const auto offset = static_cast<vector_size_t>(elements->size());
