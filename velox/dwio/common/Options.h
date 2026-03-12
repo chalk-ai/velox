@@ -154,10 +154,13 @@ inline uint8_t parseDelimiter(const std::string& delim) {
 }
 
 /// Parses serde and table parameters into a SerDeOptions, or returns nullptr
-/// if no relevant parameters are present.
+/// if no relevant parameters are present. Accepts any map-like type.
+template <
+    typename SerdeMap = std::unordered_map<std::string, std::string>,
+    typename TableMap = std::unordered_map<std::string, std::string>>
 inline std::unique_ptr<SerDeOptions> parseSerdeParameters(
-    const std::unordered_map<std::string, std::string>& serdeParameters,
-    const std::unordered_map<std::string, std::string>& tableParameters = {}) {
+    const SerdeMap& serdeParameters,
+    const TableMap& tableParameters = {}) {
   auto fieldIt = serdeParameters.find(SerDeOptions::kFieldDelim);
   if (fieldIt == serdeParameters.end()) {
     fieldIt = serdeParameters.find("serialization.format");

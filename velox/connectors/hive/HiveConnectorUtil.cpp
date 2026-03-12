@@ -515,7 +515,7 @@ void configureReaderOptions(
         dwio::common::toString(hiveSplit->fileFormat));
   } else {
     auto serDeOptions =
-        parseSerdeParameters(hiveSplit->serdeParameters, tableParameters);
+        dwio::common::parseSerdeParameters(hiveSplit->serdeParameters, tableParameters);
     if (serDeOptions) {
       readerOptions.setSerDeOptions(*serDeOptions);
     }
