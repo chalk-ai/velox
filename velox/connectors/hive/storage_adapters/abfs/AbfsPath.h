@@ -54,6 +54,9 @@ static constexpr const char* kAzureOAuthAuthType = "OAuth";
 
 static constexpr const char* kAzureSASAuthType = "SAS";
 
+static constexpr const char* kAzureDefaultCredentialAuthType =
+    "DefaultCredential";
+
 // For performance, re - use SAS tokens until the expiry is within this number
 // of seconds.
 static constexpr const char* kAzureSasTokenRenewPeriod =
