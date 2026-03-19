@@ -17,9 +17,9 @@
 #pragma once
 
 #include <geos/geom/Coordinate.h>
-#include <geos/geom/CoordinateArraySequence.h>
-#include <geos/geom/CoordinateSequenceFactory.h>
+#include <geos/geom/CoordinateSequence.h>
 #include <geos/geom/Envelope.h>
+#include <geos/geom/GeometryFactory.h>
 #include <geos/io/GeoJSON.h>
 #include <geos/io/GeoJSONReader.h>
 #include <geos/io/GeoJSONWriter.h>
@@ -2088,7 +2088,7 @@ struct StLineStringFunction {
   FOLLY_ALWAYS_INLINE void call(
       out_type<Geometry>& result,
       const arg_type<Array<Geometry>>& input) {
-    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
+    std::unique_ptr<geos::geom::CoordinateSequence> coords =
         common::geospatial::GeometryDeserializer::deserializePointsToCoordinate<
             Geometry>(input, "ST_LineString", true);
 
@@ -2115,7 +2115,7 @@ struct StMultiPointFunction {
   FOLLY_ALWAYS_INLINE bool call(
       out_type<Geometry>& result,
       const arg_type<Array<Geometry>>& input) {
-    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
+    std::unique_ptr<geos::geom::CoordinateSequence> coords =
         common::geospatial::GeometryDeserializer::deserializePointsToCoordinate<
             Geometry>(input, "ST_MultiPoint", false);
 
