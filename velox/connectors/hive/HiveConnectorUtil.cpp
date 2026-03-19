@@ -229,15 +229,6 @@ void addSubfields(
   }
 }
 
-inline uint8_t parseDelimiter(const std::string& delim) {
-  for (char const& ch : delim) {
-    if (!std::isdigit(ch)) {
-      return delim[0];
-    }
-  }
-  return stoi(delim);
-}
-
 inline bool isSynthesizedColumn(
     const std::string& name,
     const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns) {
@@ -451,78 +442,6 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
   return spec;
 }
 
-std::unique_ptr<dwio::common::SerDeOptions> parseSerdeParameters(
-    const std::unordered_map<std::string, std::string>& serdeParameters,
-    const std::unordered_map<std::string, std::string>& tableParameters) {
-  auto fieldIt = serdeParameters.find(dwio::common::SerDeOptions::kFieldDelim);
-  if (fieldIt == serdeParameters.end()) {
-    fieldIt = serdeParameters.find("serialization.format");
-  }
-  auto collectionIt =
-      serdeParameters.find(dwio::common::SerDeOptions::kCollectionDelim);
-  if (collectionIt == serdeParameters.end()) {
-    // For collection delimiter, Hive 1.x, 2.x uses "colelction.delim", but
-    // Hive 3.x uses "collection.delim".
-    // See: https://issues.apache.org/jira/browse/HIVE-16922)
-    collectionIt = serdeParameters.find("colelction.delim");
-  }
-  auto mapKeyIt =
-      serdeParameters.find(dwio::common::SerDeOptions::kMapKeyDelim);
-
-  auto escapeCharIt =
-      serdeParameters.find(dwio::common::SerDeOptions::kEscapeChar);
-
-  auto nullStringIt = tableParameters.find(
-      dwio::common::TableParameter::kSerializationNullFormat);
-
-  if (fieldIt == serdeParameters.end() &&
-      collectionIt == serdeParameters.end() &&
-      mapKeyIt == serdeParameters.end() &&
-      escapeCharIt == serdeParameters.end() &&
-      nullStringIt == tableParameters.end()) {
-    return nullptr;
-  }
-
-  uint8_t fieldDelim = '\1';
-  uint8_t collectionDelim = '\2';
-  uint8_t mapKeyDelim = '\3';
-  if (fieldIt != serdeParameters.end()) {
-    fieldDelim = parseDelimiter(fieldIt->second);
-  }
-  if (collectionIt != serdeParameters.end()) {
-    collectionDelim = parseDelimiter(collectionIt->second);
-  }
-  if (mapKeyIt != serdeParameters.end()) {
-    mapKeyDelim = parseDelimiter(mapKeyIt->second);
-  }
-
-  // If escape character is specified then we use it, unless it is empty - in
-  // which case we default to '\\'.
-  // If escape character is not specified (not in the map) we turn escaping off.
-  // Logic is based on apache hive java code:
-  // https://github.com/apache/hive/blob/3f6f940af3f60cc28834268e5d7f5612e3b13c30/serde/src/java/org/apache/hadoop/hive/serde2/lazy/LazySerDeParameters.java#L105-L108
-  uint8_t escapeChar = '\\';
-  const bool hasEscapeChar = (escapeCharIt != serdeParameters.end());
-  if (hasEscapeChar) {
-    if (!escapeCharIt->second.empty()) {
-      // If delim is convertible to uint8_t then we use it as character code,
-      // otherwise we use the 1st character of the string.
-      escapeChar = folly::tryTo<uint8_t>(escapeCharIt->second)
-                       .value_or(escapeCharIt->second[0]);
-    }
-  }
-
-  auto serDeOptions = hasEscapeChar
-      ? std::make_unique<dwio::common::SerDeOptions>(
-            fieldDelim, collectionDelim, mapKeyDelim, escapeChar, true)
-      : std::make_unique<dwio::common::SerDeOptions>(
-            fieldDelim, collectionDelim, mapKeyDelim);
-  if (nullStringIt != tableParameters.end()) {
-    serDeOptions->nullString = nullStringIt->second;
-  }
-  return serDeOptions;
-}
-
 void configureReaderOptions(
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const ConnectorQueryCtx* connectorQueryCtx,
@@ -596,7 +515,7 @@ void configureReaderOptions(
         dwio::common::toString(hiveSplit->fileFormat));
   } else {
     auto serDeOptions =
-        parseSerdeParameters(hiveSplit->serdeParameters, tableParameters);
+        dwio::common::parseSerdeParameters(hiveSplit->serdeParameters, tableParameters);
     if (serDeOptions) {
       readerOptions.setSerDeOptions(*serDeOptions);
     }

@@ -371,8 +371,18 @@ std::unique_ptr<dwio::common::Writer> TextWriterFactory::createWriter(
   auto textOptions = std::dynamic_pointer_cast<text::WriterOptions>(options);
   VELOX_CHECK_NOT_NULL(
       textOptions, "Text writer factory expected a Text WriterOptions object.");
+
+  // Parse serde parameters (e.g. "field.delim") into SerDeOptions so the
+  // writer uses the same delimiter configuration as the reader.
+  SerDeOptions serDeOptions;
+  auto parsedSerDeOptions =
+      dwio::common::parseSerdeParameters(options->serdeParameters);
+  if (parsedSerDeOptions) {
+    serDeOptions = *parsedSerDeOptions;
+  }
+
   return std::make_unique<TextWriter>(
-      asRowType(options->schema), std::move(sink), textOptions);
+      asRowType(options->schema), std::move(sink), textOptions, serDeOptions);
 }
 
 std::unique_ptr<dwio::common::WriterOptions>

@@ -17,8 +17,11 @@
 #pragma once
 
 #include <limits>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 
+#include <folly/Conv.h>
 #include <folly/Executor.h>
 #include "velox/common/base/RandomUtil.h"
 #include "velox/common/base/SpillConfig.h"
@@ -138,6 +141,84 @@ struct TableParameter {
   static constexpr const char* kSerializationNullFormat =
       "serialization.null.format";
 };
+
+/// Parses a serde delimiter string: if all digits, interprets as a character
+/// code; otherwise uses the first character directly.
+inline uint8_t parseDelimiter(const std::string& delim) {
+  for (char c : delim) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      return static_cast<uint8_t>(delim[0]);
+    }
+  }
+  return static_cast<uint8_t>(std::stoi(delim));
+}
+
+/// Parses serde and table parameters into a SerDeOptions, or returns nullptr
+/// if no relevant parameters are present. Accepts any map-like type.
+template <
+    typename SerdeMap = std::unordered_map<std::string, std::string>,
+    typename TableMap = std::unordered_map<std::string, std::string>>
+inline std::unique_ptr<SerDeOptions> parseSerdeParameters(
+    const SerdeMap& serdeParameters,
+    const TableMap& tableParameters = {}) {
+  auto fieldIt = serdeParameters.find(SerDeOptions::kFieldDelim);
+  if (fieldIt == serdeParameters.end()) {
+    fieldIt = serdeParameters.find("serialization.format");
+  }
+  auto collectionIt = serdeParameters.find(SerDeOptions::kCollectionDelim);
+  if (collectionIt == serdeParameters.end()) {
+    collectionIt = serdeParameters.find("colelction.delim");
+  }
+  auto mapKeyIt = serdeParameters.find(SerDeOptions::kMapKeyDelim);
+  auto escapeCharIt = serdeParameters.find(SerDeOptions::kEscapeChar);
+  auto nullStringIt =
+      tableParameters.find(TableParameter::kSerializationNullFormat);
+
+  if (fieldIt == serdeParameters.end() &&
+      collectionIt == serdeParameters.end() &&
+      mapKeyIt == serdeParameters.end() &&
+      escapeCharIt == serdeParameters.end() &&
+      nullStringIt == tableParameters.end()) {
+    return nullptr;
+  }
+
+  uint8_t fieldDelim = '\1';
+  uint8_t collectionDelim = '\2';
+  uint8_t mapKeyDelim = '\3';
+  if (fieldIt != serdeParameters.end()) {
+    fieldDelim = parseDelimiter(fieldIt->second);
+  }
+  if (collectionIt != serdeParameters.end()) {
+    collectionDelim = parseDelimiter(collectionIt->second);
+  }
+  if (mapKeyIt != serdeParameters.end()) {
+    mapKeyDelim = parseDelimiter(mapKeyIt->second);
+  }
+
+  // If escape character is specified then we use it, unless it is empty - in
+  // which case we default to '\\'.
+  // If escape character is not specified (not in the map) we turn escaping off.
+  // Logic is based on apache hive java code:
+  // https://github.com/apache/hive/blob/3f6f940af3f60cc28834268e5d7f5612e3b13c30/serde/src/java/org/apache/hadoop/hive/serde2/lazy/LazySerDeParameters.java#L105-L108
+  uint8_t escapeChar = '\\';
+  const bool hasEscapeChar = (escapeCharIt != serdeParameters.end());
+  if (hasEscapeChar && !escapeCharIt->second.empty()) {
+    // If delim is convertible to uint8_t then we use it as character code,
+    // otherwise we use the 1st character of the string.
+    escapeChar = folly::tryTo<uint8_t>(escapeCharIt->second)
+                     .value_or(escapeCharIt->second[0]);
+  }
+
+  auto serDeOptions = hasEscapeChar
+      ? std::make_unique<SerDeOptions>(
+            fieldDelim, collectionDelim, mapKeyDelim, escapeChar, true)
+      : std::make_unique<SerDeOptions>(
+            fieldDelim, collectionDelim, mapKeyDelim);
+  if (nullStringIt != tableParameters.end()) {
+    serDeOptions->nullString = nullStringIt->second;
+  }
+  return serDeOptions;
+}
 
 /// Implicit row number column to be added.  This column will be removed in the
 /// output of split reader.  Should use the ScanSpec::ColumnType::kRowIndex if
