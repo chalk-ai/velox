@@ -16,7 +16,8 @@
 
 #pragma once
 
-#include <folly/SocketAddress.h>
+#include <folly/coro/Task.h>
+
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/remote/if/gen-cpp2/RemoteFunction_types.h"
 #include "velox/vector/VectorStream.h"
@@ -28,13 +29,9 @@ struct RemoteVectorFunctionMetadata : public exec::VectorFunctionMetadata {
   /// process.
   remote::PageFormat serdeFormat{remote::PageFormat::PRESTO_PAGE};
 
-  /// Network address of the server to communicate with using a thrift client.
-  /// Note that this can hold a network location (ip/port pair) or a unix domain
-  /// socket path (see SocketAddress::makeFromPath()).
-  ///
-  /// TODO: Move this to `RemoteThriftVectorFunctionMetadata` once call sites
-  /// are updated.
-  folly::SocketAddress location;
+  /// Whether to preserve the input vector encoding in the request sent to
+  /// remote service.
+  bool preserveEncoding{false};
 };
 
 /// Main vector function logic. Needs to be extended with the transport-specific
@@ -54,9 +51,11 @@ class RemoteVectorFunction : public exec::VectorFunction {
       VectorPtr& result) const override;
 
  protected:
-  // The actual function to communicates with the remote host.
-  virtual std::unique_ptr<remote::RemoteFunctionResponse> invokeRemoteFunction(
-      const remote::RemoteFunctionRequest& request) const = 0;
+  // The actual function that communicates with the remote host.
+  // Returns a coroutine to allow the worker thread to yield while
+  // waiting for the remote response
+  virtual folly::coro::Task<std::unique_ptr<remote::RemoteFunctionResponse>>
+  invokeRemoteFunction(const remote::RemoteFunctionRequest& request) const = 0;
 
   // A string representation of the remote host being connected to. Useful for
   // exception messages.
@@ -74,6 +73,8 @@ class RemoteVectorFunction : public exec::VectorFunction {
 
   remote::PageFormat serdeFormat_;
   std::unique_ptr<VectorSerde> serde_;
+  std::unique_ptr<VectorSerde::Options> serdeOptions_;
+  bool preserveEncoding_;
 
   // Structures we construct once to cache:
   RowTypePtr remoteInputType_;

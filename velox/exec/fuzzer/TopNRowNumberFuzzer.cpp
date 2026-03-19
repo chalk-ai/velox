@@ -18,13 +18,14 @@
 
 #include <utility>
 
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/fuzzer/FuzzerUtil.h"
 #include "velox/exec/fuzzer/RowNumberFuzzerBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
-#include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
 namespace facebook::velox::exec {
+using namespace facebook::velox::common::testutil;
 namespace {
 
 class TopNRowNumberFuzzer : public RowNumberFuzzerBase {
@@ -40,6 +41,8 @@ class TopNRowNumberFuzzer : public RowNumberFuzzerBase {
 
   std::pair<std::vector<std::string>, std::vector<TypePtr>> generateKeys(
       const std::string& prefix);
+
+  std::string generateRankFunction();
 
   std::vector<RowVectorPtr> generateInput(
       const std::vector<std::string>& keyNames,
@@ -91,6 +94,19 @@ TopNRowNumberFuzzer::generateKeys(const std::string& prefix) {
   }
 
   return std::make_pair(keys, types);
+}
+
+std::string TopNRowNumberFuzzer::generateRankFunction() {
+  int32_t rankFunction = randInt(0, 2);
+  switch (rankFunction) {
+    case 0:
+      return "row_number";
+    case 1:
+      return "rank";
+    case 2:
+      return "dense_rank";
+  }
+  return "row_number";
 }
 
 std::vector<RowVectorPtr> TopNRowNumberFuzzer::generateInput(
@@ -153,12 +169,14 @@ std::vector<RowVectorPtr> TopNRowNumberFuzzer::generateInput(
         // values. This is done to introduce some repetition of key values for
         // windowing.
         auto baseVector = vectorFuzzer_.fuzz(keyTypes[i], numPartitions);
-        children.push_back(BaseVector::wrapInDictionary(
-            partitionNulls, partitionIndices, size, baseVector));
+        children.push_back(
+            BaseVector::wrapInDictionary(
+                partitionNulls, partitionIndices, size, baseVector));
       } else if (sortingKeySet.find(keyNames[i]) != sortingKeySet.end()) {
         auto baseVector = vectorFuzzer_.fuzz(keyTypes[i], numPeerGroups);
-        children.push_back(BaseVector::wrapInDictionary(
-            sortingNulls, sortingIndices, size, baseVector));
+        children.push_back(
+            BaseVector::wrapInDictionary(
+                sortingNulls, sortingIndices, size, baseVector));
       } else {
         children.push_back(vectorFuzzer_.fuzz(keyTypes[i], size));
       }
@@ -182,11 +200,13 @@ TopNRowNumberFuzzer::makeDefaultPlan(
   projectFields.emplace_back("row_number");
 
   int32_t limit = randInt(1, FLAGS_batch_size);
-  auto plan = test::PlanBuilder()
-                  .values(input)
-                  .topNRowNumber(partitionKeys, sortKeys, limit, true)
-                  .project(projectFields)
-                  .planNode();
+  auto plan =
+      test::PlanBuilder()
+          .values(input)
+          .topNRank(
+              generateRankFunction(), partitionKeys, sortKeys, limit, true)
+          .project(projectFields)
+          .planNode();
   return std::make_pair(PlanWithSplits{std::move(plan)}, limit);
 }
 
@@ -203,11 +223,13 @@ RowNumberFuzzerBase::PlanWithSplits TopNRowNumberFuzzer::makePlanWithTableScan(
   projectFields.emplace_back("row_number");
 
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-  auto plan = test::PlanBuilder(planNodeIdGenerator)
-                  .tableScan(asRowType(input[0]->type()))
-                  .topNRowNumber(partitionKeys, sortKeys, limit, true)
-                  .project(projectFields)
-                  .planNode();
+  auto plan =
+      test::PlanBuilder(planNodeIdGenerator)
+          .tableScan(asRowType(input[0]->type()))
+          .topNRank(
+              generateRankFunction(), partitionKeys, sortKeys, limit, true)
+          .project(projectFields)
+          .planNode();
 
   const std::vector<Split> splits = test::makeSplits(
       input, fmt::format("{}/topn_row_number", tableDir), writerPool_);
@@ -248,7 +270,7 @@ void TopNRowNumberFuzzer::runSingleIteration() {
   std::vector<PlanWithSplits> altPlans;
   altPlans.push_back(std::move(defaultPlan));
 
-  const auto tableScanDir = exec::test::TempDirectoryPath::create();
+  const auto tableScanDir = TempDirectoryPath::create();
   if (isTableScanSupported(input[0]->type())) {
     altPlans.push_back(makePlanWithTableScan(
         partitionKeys,

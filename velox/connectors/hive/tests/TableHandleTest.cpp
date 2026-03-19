@@ -55,3 +55,77 @@ TEST(FileHandleTest, hiveColumnHandle) {
           {"c0.c0c1[3][\"foo\"].c0c1c0"}),
       "data type ROW<c0c0:BIGINT,c0c1:ARRAY<MAP<VARCHAR,ROW<c0c1c0:BIGINT,c0c1c1:BIGINT>>>> and hive type ROW<c0c0:BIGINT,c0c1:BIGINT> do not match");
 }
+
+TEST(TableHandleTest, hiveTableHandleDbName) {
+  connector::hive::HiveTableHandle::registerSerDe();
+
+  // Default dbName is empty.
+  auto handleNoDb = std::make_shared<connector::hive::HiveTableHandle>(
+      "test-connector",
+      "test_table",
+      common::SubfieldFilters{},
+      /*remainingFilter=*/nullptr);
+  ASSERT_TRUE(handleNoDb->dbName().empty());
+  ASSERT_EQ(handleNoDb->tableName(), "test_table");
+
+  // Explicit dbName is preserved.
+  auto handleWithDb = std::make_shared<connector::hive::HiveTableHandle>(
+      "test-connector",
+      "test_table",
+      common::SubfieldFilters{},
+      /*remainingFilter=*/nullptr,
+      /*dataColumns=*/nullptr,
+      /*indexColumns=*/std::vector<std::string>{},
+      /*tableParameters=*/std::unordered_map<std::string, std::string>{},
+      /*filterColumnHandles=*/
+      std::vector<connector::hive::HiveColumnHandlePtr>{},
+      /*sampleRate=*/1.0,
+      /*dbName=*/"test_db");
+  ASSERT_EQ(handleWithDb->dbName(), "test_db");
+  ASSERT_EQ(handleWithDb->tableName(), "test_table");
+
+  // Serialization round-trip preserves dbName.
+  auto obj = handleWithDb->serialize();
+  auto clone = ISerializable::deserialize<connector::hive::HiveTableHandle>(
+      obj, /*context=*/nullptr);
+  ASSERT_EQ(clone->dbName(), "test_db");
+  ASSERT_EQ(clone->tableName(), "test_table");
+
+  // Round-trip with empty dbName omits the field.
+  auto objNoDb = handleNoDb->serialize();
+  auto cloneNoDb = ISerializable::deserialize<connector::hive::HiveTableHandle>(
+      objNoDb, /*context=*/nullptr);
+  ASSERT_TRUE(cloneNoDb->dbName().empty());
+}
+
+TEST(TableHandleTest, hiveTableHandleIndexSupport) {
+  // Test HiveTableHandle without index columns.
+  auto tableHandleWithoutIndex =
+      std::make_shared<connector::hive::HiveTableHandle>(
+          "test-connector",
+          "test_table",
+          common::SubfieldFilters{},
+          /*remainingFilter=*/nullptr,
+          /*dataColumns=*/nullptr,
+          /*indexColumns=*/std::vector<std::string>{});
+
+  ASSERT_FALSE(tableHandleWithoutIndex->supportsIndexLookup());
+  ASSERT_TRUE(tableHandleWithoutIndex->needsIndexSplit());
+  ASSERT_TRUE(tableHandleWithoutIndex->indexColumns().empty());
+
+  // Test HiveTableHandle with index columns.
+  auto tableHandleWithIndex =
+      std::make_shared<connector::hive::HiveTableHandle>(
+          "test-connector",
+          "test_table",
+          common::SubfieldFilters{},
+          /*remainingFilter=*/nullptr,
+          /*dataColumns=*/nullptr,
+          /*indexColumns=*/std::vector<std::string>{"col1", "col2"});
+
+  ASSERT_TRUE(tableHandleWithIndex->supportsIndexLookup());
+  ASSERT_TRUE(tableHandleWithIndex->needsIndexSplit());
+  ASSERT_EQ(tableHandleWithIndex->indexColumns().size(), 2);
+  ASSERT_EQ(tableHandleWithIndex->indexColumns()[0], "col1");
+  ASSERT_EQ(tableHandleWithIndex->indexColumns()[1], "col2");
+}

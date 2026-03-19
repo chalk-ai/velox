@@ -36,7 +36,7 @@ velox_add_library(
   DirectBufferedInput.cpp
   DirectDecoder.cpp
   DirectInputStream.cpp
-  DwioMetricsLog.cpp
+  MetricsLog.cpp
   ExecutorBarrier.cpp
   FileSink.cpp
   FlatMapHelper.cpp
@@ -60,6 +60,7 @@ velox_add_library(
   SelectiveStructColumnReader.cpp
   SortingWriter.cpp
   SortingWriter.h
+  StatisticsBuilder.cpp
   Throttler.cpp
   TypeUtils.cpp
   TypeWithId.cpp
@@ -76,13 +77,13 @@ velox_link_libraries(
   velox_common_io
   velox_common_compression
   velox_common_config
+  velox_common_hyperloglog
   velox_dwio_common_encryption
   velox_dwio_common_exception
   velox_exception
   velox_expression
   velox_memory
   velox_type_tz
-  Boost::regex
   Folly::folly
   glog::glog
   protobuf::libprotobuf

@@ -27,6 +27,7 @@ add_executable(
   ArrayShuffleTest.cpp
   ArrayUnionTest.cpp
   ArgTypesGeneratorTest.cpp
+  AssertNotNullTest.cpp
   AtLeastNNonNullsTest.cpp
   Base64Test.cpp
   BitwiseTest.cpp
@@ -40,6 +41,7 @@ add_executable(
   DecimalUtilTest.cpp
   ElementAtTest.cpp
   FactorialTest.cpp
+  FilterTest.cpp
   FromJsonTest.cpp
   FromToJsonRoundTripTest.cpp
   GetArrayStructFieldsTest.cpp
@@ -55,23 +57,29 @@ add_executable(
   MakeDecimalTest.cpp
   MakeTimestampTest.cpp
   MapConcatTest.cpp
+  MapFromEntriesTest.cpp
   MapTest.cpp
   MaskTest.cpp
   MightContainTest.cpp
   MonotonicallyIncreasingIdTest.cpp
   RaiseErrorTest.cpp
+  RandStrTest.cpp
   RandTest.cpp
   ReadSidePaddingFunctionTest.cpp
   RegexFunctionsTest.cpp
+  SequenceTest.cpp
   SliceTest.cpp
   SizeTest.cpp
   SortArrayTest.cpp
   SparkCastExprTest.cpp
+  XORShiftRandomTest.cpp
   SparkPartitionIdTest.cpp
   SplitTest.cpp
   StringTest.cpp
   StringToMapTest.cpp
   ToJsonTest.cpp
+  ToPrettyStringTest.cpp
+  TransformTest.cpp
   UnBase64Test.cpp
   UnscaledValueFunctionTest.cpp
   UpperLowerTest.cpp

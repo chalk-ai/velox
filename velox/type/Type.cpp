@@ -24,7 +24,9 @@
 #include <sstream>
 #include <typeindex>
 
+#include "velox/external/tzdb/exception.h"
 #include "velox/type/DecimalUtil.h"
+#include "velox/type/Time.h"
 #include "velox/type/TimestampConversion.h"
 
 namespace std {
@@ -276,7 +278,7 @@ const TypePtr& ArrayType::childAt(uint32_t idx) const {
 }
 
 ArrayType::ArrayType(TypePtr child)
-    : child_{std::move(child)}, parameters_{{TypeParameter(child_)}} {}
+    : child_{std::move(child)}, parameter_{child_} {}
 
 bool ArrayType::equivalent(const Type& other) const {
   if (&other == this) {
@@ -337,7 +339,7 @@ const char* MapType::nameOf(uint32_t idx) const {
 MapType::MapType(TypePtr keyType, TypePtr valueType)
     : keyType_{std::move(keyType)},
       valueType_{std::move(valueType)},
-      parameters_{{TypeParameter(keyType_), TypeParameter(valueType_)}} {}
+      parameters_{TypeParameter(keyType_), TypeParameter(valueType_)} {}
 
 std::string MapType::toString() const {
   return "MAP<" + keyType()->toString() + "," + valueType()->toString() + ">";
@@ -484,7 +486,7 @@ std::string makeFieldNotFoundErrorMessage(
 }
 } // namespace
 
-const TypePtr& RowType::findChild(folly::StringPiece name) const {
+const TypePtr& RowType::findChild(std::string_view name) const {
   if (auto i = getChildIdxIfExists(name)) {
     return children_[*i];
   }
@@ -568,11 +570,12 @@ bool RowType::equals(const Type& other) const {
 }
 
 size_t RowType::hashKind() const {
-  if (!hashKindComputed_.load(std::memory_order_relaxed)) {
-    hashKind_ = TypeBase<TypeKind::ROW>::hashKind();
-    hashKindComputed_ = true;
+  auto hashKind = hashKind_.load(std::memory_order_relaxed);
+  if (hashKind == 0) {
+    hashKind = TypeBase<TypeKind::ROW>::hashKind();
+    hashKind_.store(hashKind, std::memory_order_relaxed);
   }
-  return hashKind_;
+  return hashKind;
 }
 
 void RowType::printChildren(std::stringstream& ss, std::string_view delimiter)
@@ -635,8 +638,9 @@ folly::dynamic SerializedTypeCache::serialize() {
   // populated.
   std::vector<std::pair<int32_t, const folly::dynamic*>> cacheEntries;
   for (const auto& [_, pair] : cache_) {
-    cacheEntries.emplace_back(std::make_pair<int32_t, const folly::dynamic*>(
-        (int32_t)pair.first, &pair.second));
+    cacheEntries.emplace_back(
+        std::make_pair<int32_t, const folly::dynamic*>(
+            (int32_t)pair.first, &pair.second));
   }
 
   std::sort(cacheEntries.begin(), cacheEntries.end(), [](auto& a, auto& b) {
@@ -902,6 +906,15 @@ OpaqueType::DeserializeFunc<void> OpaqueType::getDeserializeFunc() const {
 std::shared_ptr<const OpaqueType> OpaqueType::deserializeExtra(
     const folly::dynamic&) const {
   return nullptr;
+}
+
+bool OpaqueType::unregisterSerialization(
+    const OpaqueTypePtr& opaqueType,
+    const std::string& persistentName) {
+  VELOX_CHECK_NOT_NULL(opaqueType);
+  auto& registry = OpaqueSerdeRegistry::get();
+  registry.reverse.erase(persistentName);
+  return registry.mapping.erase(opaqueType->typeIndex_);
 }
 
 void OpaqueType::clearSerializationRegistry() {
@@ -1314,7 +1327,7 @@ std::string DateType::toIso8601(int32_t days) {
   return result;
 }
 
-int32_t DateType::toDays(folly::StringPiece in) const {
+int32_t DateType::toDays(std::string_view in) const {
   return toDays(in.data(), in.size());
 }
 
@@ -1528,6 +1541,89 @@ StringView TimeType::valueToString(int64_t value, char* const startPos) const {
       seconds,
       millis);
   return StringView{startPos, kTimeToVarcharRowSize};
+}
+
+int64_t TimeType::valueToTime(const StringView& timeStr) const {
+  return util::fromTimeString(timeStr).thenOrThrow(
+      folly::identity,
+      [&](const Status& status) { VELOX_USER_FAIL("{}", status.message()); });
+}
+
+int64_t TimeType::valueToTime(
+    const StringView& timeStr,
+    const tz::TimeZone* timeZone,
+    int64_t sessionStartTimeMs) const {
+  // First parse the time string normally to get local time
+  int64_t parsedTimeMillis = valueToTime(timeStr);
+
+  // Apply timezone conversion if provided
+  if (FOLLY_UNLIKELY(!timeZone)) {
+    return parsedTimeMillis;
+  }
+
+  // Get the day boundary from session start time
+  auto sessionStartTime = std::chrono::milliseconds{sessionStartTimeMs};
+  auto systemDayStart =
+      std::chrono::duration_cast<std::chrono::days>(sessionStartTime);
+
+  // Create a local timestamp for the current day with the parsed time
+  auto localSystemTime =
+      std::chrono::duration_cast<std::chrono::milliseconds>(systemDayStart)
+          .count() +
+      parsedTimeMillis;
+
+  // Convert from local time to UTC with proper exception handling
+  std::chrono::milliseconds utcTime;
+  try {
+    utcTime = timeZone->to_sys(std::chrono::milliseconds{localSystemTime});
+  } catch (const facebook::velox::tzdb::ambiguous_local_time&) {
+    // If the time is ambiguous during DST fall-back, pick the earlier
+    // possibility to be consistent with Presto.
+    utcTime = timeZone->to_sys(
+        std::chrono::milliseconds{localSystemTime},
+        tz::TimeZone::TChoose::kEarliest);
+  } catch (const facebook::velox::tzdb::nonexistent_local_time&) {
+    // If the time does not exist during DST spring-forward, fail the
+    // conversion.
+    VELOX_USER_FAIL(
+        "Cannot cast VARCHAR '{}' to TIME. Time does not exist due to DST gap.",
+        std::string(timeStr));
+  }
+
+  int64_t adjustedTime =
+      (utcTime % std::chrono::milliseconds{kMillisInDay}).count();
+
+  // Handle day wrapping
+  if (adjustedTime < 0) {
+    adjustedTime += kMillisInDay;
+  } else if (adjustedTime >= kMillisInDay) {
+    adjustedTime -= kMillisInDay;
+  }
+
+  return adjustedTime;
+}
+
+// static
+std::string TimeType::toCompactIso8601(int64_t microseconds) {
+  int64_t hours = microseconds / util::kMicrosPerHour;
+  microseconds %= util::kMicrosPerHour;
+  int64_t minutes = microseconds / util::kMicrosPerMinute;
+  microseconds %= util::kMicrosPerMinute;
+  int64_t seconds = microseconds / util::kMicrosPerSec;
+  int64_t remainingMicros = microseconds % util::kMicrosPerSec;
+
+  std::string result = fmt::format("{:02d}:{:02d}", hours, minutes);
+  if (seconds > 0 || remainingMicros > 0) {
+    result += fmt::format(":{:02d}", seconds);
+    if (remainingMicros > 0) {
+      if (remainingMicros % 1000 == 0) {
+        result += fmt::format(".{:03d}", remainingMicros / 1000);
+      } else {
+        result += fmt::format(".{:06d}", remainingMicros);
+      }
+    }
+  }
+  return result;
 }
 
 std::string stringifyTruncatedElementList(

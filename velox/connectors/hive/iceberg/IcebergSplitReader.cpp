@@ -16,7 +16,11 @@
 
 #include "velox/connectors/hive/iceberg/IcebergSplitReader.h"
 
+#include <folly/lang/Bits.h>
+
+#include "velox/common/encode/Base64.h"
 #include "velox/connectors/hive/iceberg/IcebergDeleteFile.h"
+#include "velox/connectors/hive/iceberg/IcebergMetadataColumns.h"
 #include "velox/connectors/hive/iceberg/IcebergSplit.h"
 #include "velox/dwio/common/BufferUtil.h"
 
@@ -27,12 +31,12 @@ namespace facebook::velox::connector::hive::iceberg {
 IcebergSplitReader::IcebergSplitReader(
     const std::shared_ptr<const hive::HiveConnectorSplit>& hiveSplit,
     const HiveTableHandlePtr& hiveTableHandle,
-    const std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
+    const HiveColumnHandleMap* partitionKeys,
     const ConnectorQueryCtx* connectorQueryCtx,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const RowTypePtr& readerOutputType,
-    const std::shared_ptr<io::IoStatistics>& ioStats,
-    const std::shared_ptr<filesystems::File::IoStats>& fsStats,
+    const std::shared_ptr<io::IoStatistics>& ioStatistics,
+    const std::shared_ptr<IoStats>& ioStats,
     FileHandleFactory* const fileHandleFactory,
     folly::Executor* executor,
     const std::shared_ptr<common::ScanSpec>& scanSpec)
@@ -43,8 +47,8 @@ IcebergSplitReader::IcebergSplitReader(
           connectorQueryCtx,
           hiveConfig,
           readerOutputType,
+          ioStatistics,
           ioStats,
-          fsStats,
           fileHandleFactory,
           executor,
           scanSpec),
@@ -69,8 +73,7 @@ void IcebergSplitReader::prepareSplit(
 
   createRowReader(std::move(metadataFilter), std::move(rowType), std::nullopt);
 
-  std::shared_ptr<const HiveIcebergSplit> icebergSplit =
-      std::dynamic_pointer_cast<const HiveIcebergSplit>(hiveSplit_);
+  auto icebergSplit = checkedPointerCast<const HiveIcebergSplit>(hiveSplit_);
   baseReadOffset_ = 0;
   splitOffset_ = baseRowReader_->nextRowNumber();
   positionalDeleteFileReaders_.clear();
@@ -79,6 +82,25 @@ void IcebergSplitReader::prepareSplit(
   for (const auto& deleteFile : deleteFiles) {
     if (deleteFile.content == FileContent::kPositionalDeletes) {
       if (deleteFile.recordCount > 0) {
+        // Skip the delete file if all delete positions are before this split.
+        // TODO: Skip delete files where all positions are after the split, if
+        // split row count becomes available.
+        if (auto iter =
+                deleteFile.upperBounds.find(IcebergMetadataColumn::kPosId);
+            iter != deleteFile.upperBounds.end()) {
+          auto decodedBound = encoding::Base64::decode(iter->second);
+          VELOX_CHECK_EQ(
+              decodedBound.size(),
+              sizeof(uint64_t),
+              "Unexpected decoded size for positional delete upper bound.");
+          uint64_t posDeleteUpperBound;
+          std::memcpy(
+              &posDeleteUpperBound, decodedBound.data(), sizeof(uint64_t));
+          posDeleteUpperBound = folly::Endian::little(posDeleteUpperBound);
+          if (posDeleteUpperBound < splitOffset_) {
+            continue;
+          }
+        }
         positionalDeleteFileReaders_.push_back(
             std::make_unique<PositionalDeleteFileReader>(
                 deleteFile,
@@ -87,8 +109,8 @@ void IcebergSplitReader::prepareSplit(
                 connectorQueryCtx_,
                 ioExecutor_,
                 hiveConfig_,
+                ioStatistics_,
                 ioStats_,
-                fsStats_,
                 runtimeStats,
                 splitOffset_,
                 hiveSplit_->connectorId));
@@ -139,6 +161,59 @@ uint64_t IcebergSplitReader::next(uint64_t size, VectorPtr& output) {
   auto rowsScanned = baseRowReader_->next(actualSize, output, &mutation);
 
   return rowsScanned;
+}
+
+std::vector<TypePtr> IcebergSplitReader::adaptColumns(
+    const RowTypePtr& fileType,
+    const RowTypePtr& tableSchema) const {
+  std::vector<TypePtr> columnTypes = fileType->children();
+  auto& childrenSpecs = scanSpec_->children();
+  // Iceberg table stores all column's data in data file.
+  for (const auto& childSpec : childrenSpecs) {
+    const std::string& fieldName = childSpec->fieldName();
+    if (auto iter = hiveSplit_->infoColumns.find(fieldName);
+        iter != hiveSplit_->infoColumns.end()) {
+      auto infoColumnType = readerOutputType_->findChild(fieldName);
+      auto constant = newConstantFromString(
+          infoColumnType,
+          iter->second,
+          connectorQueryCtx_->memoryPool(),
+          hiveConfig_->readTimestampPartitionValueAsLocalTime(
+              connectorQueryCtx_->sessionProperties()),
+          false);
+      childSpec->setConstantValue(constant);
+    } else {
+      auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
+      auto outputTypeIdx = readerOutputType_->getChildIdxIfExists(fieldName);
+      if (outputTypeIdx.has_value() && fileTypeIdx.has_value()) {
+        childSpec->setConstantValue(nullptr);
+        auto& outputType = readerOutputType_->childAt(*outputTypeIdx);
+        columnTypes[*fileTypeIdx] = outputType;
+      } else if (!fileTypeIdx.has_value()) {
+        // Handle columns missing from the data file in two scenarios:
+        // 1. Schema evolution: Column was added after the data file was
+        // written and doesn't exist in older data files.
+        // 2. Partition columns: Hive migrated table. In Hive-written data
+        // files, partition column values are stored in partition metadata
+        // rather than in the data file itself, following Hive's partitioning
+        // convention.
+        if (auto it = hiveSplit_->partitionKeys.find(fieldName);
+            it != hiveSplit_->partitionKeys.end()) {
+          setPartitionValue(childSpec.get(), fieldName, it->second);
+        } else {
+          childSpec->setConstantValue(
+              BaseVector::createNullConstant(
+                  tableSchema->findChild(fieldName),
+                  1,
+                  connectorQueryCtx_->memoryPool()));
+        }
+      }
+    }
+  }
+
+  scanSpec_->resetCachedValues(false);
+
+  return columnTypes;
 }
 
 } // namespace facebook::velox::connector::hive::iceberg

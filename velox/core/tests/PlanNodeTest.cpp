@@ -13,10 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <gtest/gtest.h>
-
-#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/core/PlanNode.h"
+#include <gtest/gtest.h>
+#include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/Expressions.h"
+#include "velox/parse/PlanNodeIdGenerator.h"
+#include "velox/serializers/RegisterAllVectorSerdes.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -28,6 +30,7 @@ class PlanNodeTest : public testing::Test, public test::VectorTestBase {
  protected:
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
+    registerAllNamedVectorSerdes();
   }
 
   PlanNodeTest() {
@@ -213,6 +216,31 @@ class TestIndexTableHandle : public connector::ConnectorTableHandle {
   }
 };
 
+TEST_F(PlanNodeTest, nestedLoopJoin) {
+  auto leftData = makeRowVector(
+      {"a"},
+      {
+          makeFlatVector<int32_t>({1, 2, 3, 4, 5}),
+      });
+
+  auto rightData = makeRowVector({
+      makeFlatVector<int32_t>({1, 2, 3, 4, 5}),
+  });
+
+  core::PlanNodeIdGenerator planNodeIdGenerator;
+  auto nextId = [&planNodeIdGenerator]() { return planNodeIdGenerator.next(); };
+
+  auto leftValues = std::make_shared<ValuesNode>(
+      nextId(), std::vector<RowVectorPtr>{leftData});
+  auto rightValues = std::make_shared<ValuesNode>(
+      nextId(), std::vector<RowVectorPtr>{rightData});
+
+  VELOX_ASSERT_THROW(
+      std::make_shared<NestedLoopJoinNode>(
+          nextId(), leftValues, rightValues, ROW({"a"}, VARCHAR())),
+      "Join output column type must match the input type: VARCHAR vs. INTEGER");
+}
+
 TEST_F(PlanNodeTest, indexLookupJoin) {
   const auto rowType = ROW({"name"}, {BIGINT()});
   const auto valueNode = std::make_shared<ValuesNode>("orderBy", rowData_);
@@ -347,6 +375,21 @@ TEST_F(PlanNodeTest, indexLookupJoin) {
             outputTypeWithDuplicateMatchColumn),
         "");
   }
+  {
+    VELOX_ASSERT_THROW(
+        std::make_shared<IndexLookupJoinNode>(
+            "indexJoinNode",
+            core::JoinType::kLeft,
+            leftKeys,
+            rightKeys,
+            std::vector<IndexLookupConditionPtr>{},
+            /*filter=*/nullptr,
+            /*hasMarker=*/false,
+            probeNode,
+            buildNode,
+            ROW({"c0", "c1"}, {VARCHAR(), BIGINT()})),
+        "Join output column type must match the input type: VARCHAR vs. BIGINT");
+  }
 }
 
 TEST_F(PlanNodeTest, partitionedOutputNode) {
@@ -357,7 +400,7 @@ TEST_F(PlanNodeTest, partitionedOutputNode) {
       std::make_shared<FieldAccessTypedExpr>(BIGINT(), "c0")};
   const PartitionFunctionSpecPtr partitionFunctionSpec =
       std::make_shared<GatherPartitionFunctionSpec>();
-  const VectorSerde::Kind serdeKind = VectorSerde::Kind::kPresto;
+  const std::string serdeKind = "Presto";
   PlanNodePtr source = std::make_shared<ValuesNode>("source", rowData_);
 
   {
@@ -458,4 +501,239 @@ TEST_F(PlanNodeTest, partitionedOutputNode) {
           source),
       "partitioning doesn't allow for partitioning keys");
 }
+
+TEST_F(PlanNodeTest, aggregationNodeNoGroupsSpanBatches) {
+  auto values = std::make_shared<ValuesNode>("values", rowData_);
+
+  const std::vector<FieldAccessTypedExprPtr> groupingKeys{
+      std::make_shared<FieldAccessTypedExpr>(BIGINT(), "c0")};
+  const std::vector<FieldAccessTypedExprPtr> preGroupedKeys{
+      std::make_shared<FieldAccessTypedExpr>(BIGINT(), "c0")};
+  const std::vector<std::string> aggregateNames{"sum"};
+  const std::vector<AggregationNode::Aggregate> aggregates{
+      {.call = std::make_shared<CallTypedExpr>(BIGINT(), "sum"),
+       .rawInputTypes = {BIGINT()}}};
+
+  // noGroupsSpanBatches=true with preGroupedKeys (streaming aggregation) should
+  // succeed and the accessor should return true.
+  {
+    auto aggNode = std::make_shared<AggregationNode>(
+        "agg",
+        AggregationNode::Step::kSingle,
+        groupingKeys,
+        preGroupedKeys,
+        aggregateNames,
+        aggregates,
+        /*ignoreNullKeys=*/false,
+        /*noGroupsSpanBatches=*/true,
+        values);
+    ASSERT_TRUE(aggNode->noGroupsSpanBatches());
+    ASSERT_TRUE(aggNode->isPreGrouped());
+    ASSERT_EQ(
+        aggNode->toString(true),
+        "-- Aggregation[agg][SINGLE STREAMING [c0] sum := sum() noGroupsSpanBatches] -> c0:BIGINT, sum:BIGINT\n");
+  }
+
+  // noGroupsSpanBatches=false with preGroupedKeys should succeed and the
+  // accessor should return false.
+  {
+    auto aggNode = std::make_shared<AggregationNode>(
+        "agg",
+        AggregationNode::Step::kSingle,
+        groupingKeys,
+        preGroupedKeys,
+        aggregateNames,
+        aggregates,
+        /*ignoreNullKeys=*/false,
+        /*noGroupsSpanBatches=*/false,
+        values);
+    ASSERT_FALSE(aggNode->noGroupsSpanBatches());
+    ASSERT_TRUE(aggNode->isPreGrouped());
+    ASSERT_EQ(
+        aggNode->toString(true),
+        "-- Aggregation[agg][SINGLE STREAMING [c0] sum := sum()] -> c0:BIGINT, sum:BIGINT\n");
+  }
+
+  // noGroupsSpanBatches=true without preGroupedKeys (non-streaming aggregation)
+  // should fail.
+  VELOX_ASSERT_THROW(
+      std::make_shared<AggregationNode>(
+          "agg",
+          AggregationNode::Step::kSingle,
+          groupingKeys,
+          /*preGroupedKeys=*/std::vector<FieldAccessTypedExprPtr>{},
+          aggregateNames,
+          aggregates,
+          /*ignoreNullKeys=*/false,
+          /*noGroupsSpanBatches=*/true,
+          values),
+      "noGroupsSpanBatches can only be set for streaming aggregation (pre-grouped)");
+
+  // noGroupsSpanBatches=false without preGroupedKeys should succeed.
+  {
+    auto aggNode = std::make_shared<AggregationNode>(
+        "agg",
+        AggregationNode::Step::kSingle,
+        groupingKeys,
+        /*preGroupedKeys=*/std::vector<FieldAccessTypedExprPtr>{},
+        aggregateNames,
+        aggregates,
+        /*ignoreNullKeys=*/false,
+        /*noGroupsSpanBatches=*/false,
+        values);
+    ASSERT_FALSE(aggNode->noGroupsSpanBatches());
+    ASSERT_FALSE(aggNode->isPreGrouped());
+    ASSERT_EQ(
+        aggNode->toString(true),
+        "-- Aggregation[agg][SINGLE [c0] sum := sum()] -> c0:BIGINT, sum:BIGINT\n");
+  }
+}
+TEST_F(PlanNodeTest, rpcNodeSerdePerRowMode) {
+  Type::registerSerDe();
+  core::PlanNode::registerSerDe();
+  core::ITypedExpr::registerSerDe();
+
+  // Create a ValuesNode as the source with a "prompt" column.
+  auto sourceData =
+      makeRowVector({"prompt"}, {makeFlatVector<StringView>({"hello"})});
+  auto valuesNode = std::make_shared<core::ValuesNode>(
+      "values-1", std::vector<RowVectorPtr>{sourceData});
+
+  auto rpcNode = std::make_shared<core::RPCNode>(
+      "rpc-1",
+      valuesNode,
+      "test_function",
+      VARCHAR(),
+      "response",
+      ROW({"prompt", "response"}, {VARCHAR(), VARCHAR()}),
+      std::vector<std::string>{"prompt"},
+      std::vector<TypePtr>{VARCHAR()},
+      std::vector<VectorPtr>{nullptr},
+      rpc::RPCStreamingMode::kPerRow,
+      0);
+
+  // Serialize and deserialize.
+  const auto serialized = rpcNode->serialize();
+  auto copy =
+      ISerializable::deserialize<core::PlanNode>(serialized, pool_.get());
+
+  // Compare detailed string representation.
+  ASSERT_EQ(rpcNode->toString(true, true), copy->toString(true, true));
+
+  // Verify deserialized fields.
+  auto* copyRpc = dynamic_cast<const core::RPCNode*>(copy.get());
+  ASSERT_NE(copyRpc, nullptr);
+  EXPECT_EQ(copyRpc->functionName(), "test_function");
+  EXPECT_EQ(copyRpc->outputColumn(), "response");
+  EXPECT_EQ(copyRpc->streamingMode(), rpc::RPCStreamingMode::kPerRow);
+  EXPECT_EQ(copyRpc->dispatchBatchSize(), 0);
+  EXPECT_EQ(*copyRpc->rpcResultType(), *VARCHAR());
+  EXPECT_EQ(copyRpc->argumentColumns().size(), 1);
+  EXPECT_EQ(copyRpc->argumentColumns()[0], "prompt");
+  EXPECT_EQ(copyRpc->argumentTypes().size(), 1);
+  EXPECT_EQ(*copyRpc->argumentTypes()[0], *VARCHAR());
+}
+
+TEST_F(PlanNodeTest, rpcNodeSerdeBatchMode) {
+  Type::registerSerDe();
+  core::PlanNode::registerSerDe();
+  core::ITypedExpr::registerSerDe();
+
+  auto sourceData = makeRowVector(
+      {"prompt", "model"},
+      {makeFlatVector<StringView>({"hello"}),
+       makeFlatVector<StringView>({"llama"})});
+  auto valuesNode = std::make_shared<core::ValuesNode>(
+      "values-1", std::vector<RowVectorPtr>{sourceData});
+
+  auto rpcNode = std::make_shared<core::RPCNode>(
+      "rpc-2",
+      valuesNode,
+      "batch_function",
+      VARCHAR(),
+      "result",
+      ROW({"prompt", "model", "result"}, {VARCHAR(), VARCHAR(), VARCHAR()}),
+      std::vector<std::string>{"prompt", "model"},
+      std::vector<TypePtr>{VARCHAR(), VARCHAR()},
+      std::vector<VectorPtr>{nullptr, nullptr},
+      rpc::RPCStreamingMode::kBatch,
+      50);
+
+  const auto serialized = rpcNode->serialize();
+  auto copy =
+      ISerializable::deserialize<core::PlanNode>(serialized, pool_.get());
+
+  ASSERT_EQ(rpcNode->toString(true, true), copy->toString(true, true));
+
+  auto* copyRpc = dynamic_cast<const core::RPCNode*>(copy.get());
+  ASSERT_NE(copyRpc, nullptr);
+  EXPECT_EQ(copyRpc->functionName(), "batch_function");
+  EXPECT_EQ(copyRpc->outputColumn(), "result");
+  EXPECT_EQ(copyRpc->streamingMode(), rpc::RPCStreamingMode::kBatch);
+  EXPECT_EQ(copyRpc->dispatchBatchSize(), 50);
+  EXPECT_EQ(copyRpc->argumentColumns().size(), 2);
+  EXPECT_EQ(copyRpc->argumentColumns()[0], "prompt");
+  EXPECT_EQ(copyRpc->argumentColumns()[1], "model");
+}
+
+TEST_F(PlanNodeTest, rpcNodeSerdeWithConstants) {
+  Type::registerSerDe();
+  core::PlanNode::registerSerDe();
+  core::ITypedExpr::registerSerDe();
+
+  auto sourceData =
+      makeRowVector({"prompt"}, {makeFlatVector<StringView>({"hello"})});
+  auto valuesNode = std::make_shared<core::ValuesNode>(
+      "values-1", std::vector<RowVectorPtr>{sourceData});
+
+  // Create constant vectors for model and system_prompt arguments.
+  auto modelConstant = makeConstant("llama3", 1);
+  auto systemPromptConstant = makeConstant("You are helpful.", 1);
+
+  auto rpcNode = std::make_shared<core::RPCNode>(
+      "rpc-3",
+      valuesNode,
+      "test_function",
+      VARCHAR(),
+      "response",
+      ROW({"prompt", "response"}, {VARCHAR(), VARCHAR()}),
+      std::vector<std::string>{"prompt", "model", "system_prompt"},
+      std::vector<TypePtr>{VARCHAR(), VARCHAR(), VARCHAR()},
+      std::vector<VectorPtr>{nullptr, modelConstant, systemPromptConstant});
+
+  // Verify constants before serde.
+  ASSERT_EQ(rpcNode->constantInputs().size(), 3);
+  EXPECT_EQ(rpcNode->constantInputs()[0], nullptr);
+  EXPECT_NE(rpcNode->constantInputs()[1], nullptr);
+  EXPECT_NE(rpcNode->constantInputs()[2], nullptr);
+
+  // Serialize and deserialize.
+  const auto serialized = rpcNode->serialize();
+  auto copy =
+      ISerializable::deserialize<core::PlanNode>(serialized, pool_.get());
+
+  auto* copyRpc = dynamic_cast<const core::RPCNode*>(copy.get());
+  ASSERT_NE(copyRpc, nullptr);
+  EXPECT_EQ(copyRpc->functionName(), "test_function");
+  EXPECT_EQ(copyRpc->argumentColumns().size(), 3);
+
+  // Verify constants survive the round-trip.
+  ASSERT_EQ(copyRpc->constantInputs().size(), 3);
+  EXPECT_EQ(copyRpc->constantInputs()[0], nullptr);
+  ASSERT_NE(copyRpc->constantInputs()[1], nullptr);
+  ASSERT_NE(copyRpc->constantInputs()[2], nullptr);
+
+  // Verify constant values.
+  auto modelVec = copyRpc->constantInputs()[1];
+  EXPECT_TRUE(modelVec->isConstantEncoding());
+  EXPECT_EQ(
+      modelVec->as<ConstantVector<StringView>>()->valueAt(0).str(), "llama3");
+
+  auto promptVec = copyRpc->constantInputs()[2];
+  EXPECT_TRUE(promptVec->isConstantEncoding());
+  EXPECT_EQ(
+      promptVec->as<ConstantVector<StringView>>()->valueAt(0).str(),
+      "You are helpful.");
+}
+
 } // namespace

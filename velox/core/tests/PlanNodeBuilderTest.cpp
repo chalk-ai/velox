@@ -17,9 +17,11 @@
 
 #include "velox/common/memory/Memory.h"
 #include "velox/core/PlanNode.h"
+#include "velox/core/TableWriteTraits.h"
 #include "velox/duckdb/conversion/DuckParser.h"
 #include "velox/exec/tests/utils/AggregationResolver.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
+#include "velox/serializers/RegisterAllVectorSerdes.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 using namespace ::facebook::velox;
@@ -35,6 +37,7 @@ class PlanNodeBuilderTest : public testing::Test, public test::VectorTestBase {
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
     aggregate::prestosql::registerAllAggregateFunctions();
+    registerAllNamedVectorSerdes();
   }
 
   core::ColumnStatsSpec createStatsSpec(
@@ -74,7 +77,7 @@ class PlanNodeBuilderTest : public testing::Test, public test::VectorTestBase {
         agg.rawInputTypes = rawInputArgs[i];
       }
 
-      VELOX_CHECK_NULL(untypedExpr.maskExpr);
+      VELOX_CHECK_NULL(untypedExpr.filter);
       VELOX_CHECK(!untypedExpr.distinct);
       VELOX_CHECK(untypedExpr.orderBy.empty());
 
@@ -358,7 +361,6 @@ TEST_F(PlanNodeBuilderTest, tableWriteNode) {
   const PlanNodeId id = "table_write_node_id";
   const RowTypePtr columns = ROW({"c0"}, {INTEGER()});
   const std::vector<std::string> columnNames{"c0"};
-  const RowTypePtr outputType = ROW({"c1"}, {BIGINT()});
   const bool hasPartitioningScheme = true;
   const auto commitStrategy = connector::CommitStrategy::kNoCommit;
 
@@ -367,6 +369,7 @@ TEST_F(PlanNodeBuilderTest, tableWriteNode) {
       std::vector<std::string>{},
       AggregationNode::Step::kPartial,
       std::vector<std::string>{"sum(c0)"});
+  const auto outputType = TableWriteTraits::outputType(statsSpec);
 
   const auto insertTableHandle =
       std::make_shared<InsertTableHandle>("connector_id", nullptr);
@@ -378,7 +381,7 @@ TEST_F(PlanNodeBuilderTest, tableWriteNode) {
     EXPECT_EQ(node->insertTableHandle(), insertTableHandle);
     EXPECT_TRUE(node->hasColumnStatsSpec());
     EXPECT_EQ(node->hasPartitioningScheme(), hasPartitioningScheme);
-    EXPECT_EQ(node->outputType(), outputType);
+    EXPECT_TRUE(node->outputType()->equivalent(*outputType));
     EXPECT_EQ(node->commitStrategy(), commitStrategy);
     EXPECT_EQ(node->sources(), std::vector<PlanNodePtr>{source_});
   };
@@ -402,19 +405,19 @@ TEST_F(PlanNodeBuilderTest, tableWriteNode) {
 
 TEST_F(PlanNodeBuilderTest, tableWriteMergeNode) {
   const PlanNodeId id = "table_write_merge_node_id";
-  const RowTypePtr outputType = ROW({"c0"}, {BIGINT()});
 
   const auto statsSpec = createStatsSpec(
-      outputType,
+      source_->outputType(),
       std::vector<std::string>{},
       AggregationNode::Step::kIntermediate,
       std::vector<std::string>{"sum(c0)"},
       {{BIGINT()}});
+  const auto outputType = TableWriteTraits::outputType(statsSpec);
 
   const auto verify =
       [&](const std::shared_ptr<const TableWriteMergeNode>& node) {
         EXPECT_EQ(node->id(), id);
-        EXPECT_EQ(node->outputType(), outputType);
+        EXPECT_TRUE(node->outputType()->equivalent(*outputType));
         EXPECT_TRUE(node->hasColumnStatsSpec());
         EXPECT_EQ(node->sources()[0], source_);
       };
@@ -496,7 +499,7 @@ TEST_F(PlanNodeBuilderTest, groupIdNode) {
 TEST_F(PlanNodeBuilderTest, exchangeNode) {
   const PlanNodeId id = "exchange_node_id";
   const RowTypePtr type = ROW({"c0"}, {BIGINT()});
-  const auto serdeKind = VectorSerde::Kind::kPresto;
+  const auto serdeKind = "Presto";
 
   const auto verify = [&](const std::shared_ptr<const ExchangeNode>& node) {
     EXPECT_EQ(node->id(), id);
@@ -518,7 +521,7 @@ TEST_F(PlanNodeBuilderTest, exchangeNode) {
 TEST_F(PlanNodeBuilderTest, mergeExchangeNode) {
   const PlanNodeId id = "merge_exchange_node_id";
   const RowTypePtr type = ROW({"c0"}, {BIGINT()});
-  const auto serdeKind = VectorSerde::Kind::kPresto;
+  const auto serdeKind = "Presto";
   const std::vector<FieldAccessTypedExprPtr> sortingKeys = {
       std::make_shared<FieldAccessTypedExpr>(BIGINT(), "c1")};
   const std::vector<SortOrder> sortingOrders = {SortOrder(true, false)};
@@ -611,7 +614,7 @@ TEST_F(PlanNodeBuilderTest, partitionedOutputNode) {
   const auto partitionFunctionSpec =
       std::make_shared<GatherPartitionFunctionSpec>();
   const RowTypePtr outputType = ROW({"c0"}, {BIGINT()});
-  const auto serdeKind = VectorSerde::Kind::kPresto;
+  const auto serdeKind = "Presto";
 
   const auto verify =
       [&](const std::shared_ptr<const PartitionedOutputNode>& node) {
@@ -756,8 +759,8 @@ TEST_F(PlanNodeBuilderTest, indexLookupJoinNode) {
   const std::vector<IndexLookupConditionPtr> joinConditions{
       std::make_shared<BetweenIndexLookupCondition>(
           std::make_shared<FieldAccessTypedExpr>(BIGINT(), "c0"),
-          std::make_shared<ConstantTypedExpr>(BIGINT(), variant(1)),
-          std::make_shared<ConstantTypedExpr>(BIGINT(), variant(2)))};
+          std::make_shared<ConstantTypedExpr>(BIGINT(), Variant(1LL)),
+          std::make_shared<ConstantTypedExpr>(BIGINT(), Variant(2LL)))};
   const auto left =
       ValuesNode::Builder()
           .id("values_node_id_1")
@@ -768,8 +771,9 @@ TEST_F(PlanNodeBuilderTest, indexLookupJoinNode) {
       TableScanNode::Builder()
           .id("values_node_id_2")
           .outputType(ROW({"c1"}, {VARCHAR()}))
-          .tableHandle(std::make_shared<TestConnectorTableHandleForLookupJoin>(
-              "connector_id"))
+          .tableHandle(
+              std::make_shared<TestConnectorTableHandleForLookupJoin>(
+                  "connector_id"))
           .assignments({{"c1", std::make_shared<DummyColumnHandle>()}})
           .build();
   const auto outputType = ROW({"c0"}, {BIGINT()});
@@ -809,7 +813,7 @@ TEST_F(PlanNodeBuilderTest, nestedLoopJoinNode) {
   const PlanNodeId id = "nested_loop_join_node_id";
   const auto joinType = JoinType::kLeft;
   const auto joinCondition =
-      std::make_shared<ConstantTypedExpr>(BOOLEAN(), variant(true));
+      std::make_shared<ConstantTypedExpr>(BOOLEAN(), Variant(true));
   const auto left =
       ValuesNode::Builder()
           .id("values_node_id_1")
@@ -881,25 +885,35 @@ TEST_F(PlanNodeBuilderTest, spatialJoinNode) {
   const PlanNodeId id = "spatial_join_node_id";
   const auto joinType = JoinType::kInner;
   const auto joinCondition =
-      std::make_shared<ConstantTypedExpr>(BOOLEAN(), variant(true));
-  const auto left =
-      ValuesNode::Builder()
-          .id("values_node_id_1")
-          .values({makeRowVector(
-              {"c0"}, {makeFlatVector<int64_t>(std::vector<int64_t>{1})})})
-          .build();
-  const auto right =
-      ValuesNode::Builder()
-          .id("values_node_id_2")
-          .values({makeRowVector(
-              {"c1"}, {makeFlatVector<int64_t>(std::vector<int64_t>{2})})})
-          .build();
+      std::make_shared<ConstantTypedExpr>(BOOLEAN(), Variant(true));
+  const auto left = ValuesNode::Builder()
+                        .id("values_node_id_1")
+                        .values({makeRowVector(
+                            {"c0", "g0"},
+                            {makeFlatVector<int64_t>(std::vector<int64_t>{1}),
+                             makeFlatVector<std::string>(
+                                 std::vector<std::string>{"POINT(0 0)"})})})
+                        .build();
+  const auto right = ValuesNode::Builder()
+                         .id("values_node_id_2")
+                         .values({makeRowVector(
+                             {"c1", "g1"},
+                             {makeFlatVector<int64_t>(std::vector<int64_t>{2}),
+                              makeFlatVector<std::string>(
+                                  std::vector<std::string>{"POINT(0 0)"})})})
+                         .build();
   const auto outputType = ROW({"c0"}, {BIGINT()});
+  const auto probeGeom =
+      std::make_shared<FieldAccessTypedExpr>(VARCHAR(), "g0");
+  const auto buildGeom =
+      std::make_shared<FieldAccessTypedExpr>(VARCHAR(), "g1");
 
   const auto verify = [&](const std::shared_ptr<const SpatialJoinNode>& node) {
     EXPECT_EQ(node->id(), id);
     EXPECT_EQ(node->joinType(), joinType);
     EXPECT_EQ(node->joinCondition(), joinCondition);
+    EXPECT_EQ(node->probeGeometry(), probeGeom);
+    EXPECT_EQ(node->buildGeometry(), buildGeom);
     EXPECT_EQ(node->sources()[0], left);
     EXPECT_EQ(node->sources()[1], right);
     EXPECT_EQ(node->outputType(), outputType);
@@ -911,6 +925,8 @@ TEST_F(PlanNodeBuilderTest, spatialJoinNode) {
                         .joinCondition(joinCondition)
                         .left(left)
                         .right(right)
+                        .probeGeometry(probeGeom)
+                        .buildGeometry(buildGeom)
                         .outputType(outputType)
                         .build();
   verify(node);
@@ -988,6 +1004,7 @@ TEST_F(PlanNodeBuilderTest, unnestNode) {
   std::vector<std::string> unnestNames{"b"};
   std::optional<std::string> ordinalityName =
       std::make_optional<std::string>("ord");
+  std::optional<bool> splitOutput = false;
 
   const auto verify = [&](const std::shared_ptr<const UnnestNode>& node) {
     EXPECT_EQ(node->id(), id);
@@ -995,6 +1012,7 @@ TEST_F(PlanNodeBuilderTest, unnestNode) {
     EXPECT_EQ(node->unnestVariables(), unnestVariables);
     EXPECT_TRUE(node->hasOrdinality());
     EXPECT_EQ(node->sources()[0], source_);
+    EXPECT_EQ(node->splitOutput(), splitOutput);
 
     for (int i = 0; i < node->outputType()->size(); ++i) {
       if (i < replicateVariables.size()) {
@@ -1017,6 +1035,7 @@ TEST_F(PlanNodeBuilderTest, unnestNode) {
                         .unnestNames(unnestNames)
                         .ordinalityName(ordinalityName)
                         .source(source_)
+                        .splitOutput(splitOutput)
                         .build();
   verify(node);
 
