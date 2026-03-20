@@ -969,6 +969,17 @@ bool HashProbe::needToSpillInput() const {
   return !spillInputPartitionIds_.empty();
 }
 
+bool HashProbe::shouldWaitForPeersOnNoMoreInput() const {
+  if (!canSpill()) {
+    return false;
+  }
+  if (operatorCtx_->task()->hasMixedExecutionGroupJoin(joinNode_.get())) {
+    return true;
+  }
+  return hasMoreSpillData() || !spillOutputPartitionSet_.empty() ||
+      spillOutputReader_ != nullptr;
+}
+
 void HashProbe::setState(ProbeOperatorState state) {
   checkStateTransition(state);
   state_ = state;
@@ -1703,7 +1714,7 @@ void HashProbe::noMoreInputInternal() {
     VELOX_CHECK_EQ(spillStats_->rlock()->spillSortTimeNanos, 0);
   }
 
-  const bool hasSpillEnabled = canSpill();
+  const bool waitForPeers = shouldWaitForPeersOnNoMoreInput();
   std::vector<ContinuePromise> promises;
   std::vector<std::shared_ptr<Driver>> peers;
   // The last operator to finish processing inputs is responsible for
@@ -1711,10 +1722,10 @@ void HashProbe::noMoreInputInternal() {
   if (!operatorCtx_->task()->allPeersFinished(
           planNodeId(),
           operatorCtx_->driver(),
-          hasSpillEnabled ? &future_ : nullptr,
-          hasSpillEnabled ? promises_ : promises,
+          waitForPeers ? &future_ : nullptr,
+          waitForPeers ? promises_ : promises,
           peers)) {
-    if (hasSpillEnabled) {
+    if (waitForPeers) {
       VELOX_CHECK(future_.valid());
       setState(ProbeOperatorState::kWaitForPeers);
       VELOX_DCHECK(promises_.empty());
@@ -1725,12 +1736,10 @@ void HashProbe::noMoreInputInternal() {
   }
 
   VELOX_CHECK(promises.empty());
-  // NOTE: if 'hasSpillEnabled' is false, then a hash probe operator doesn't
-  // need to wait for all the other peers to finish probe processing.
-  // Otherwise, it needs to wait and might expect spill gets triggered by the
-  // other probe operators, or there is previously spilled table partition(s)
-  // that needs to restore.
-  VELOX_CHECK(hasSpillEnabled || peers.empty());
+  // If 'waitForPeers' is false, then this operator has no local spill state to
+  // coordinate and can finish independently. Late probe spilling ignores
+  // already-finished peers and only keeps active peers in the spill set.
+  VELOX_CHECK(waitForPeers || peers.empty());
   lastProber_ = true;
 }
 
@@ -1853,10 +1862,15 @@ void HashProbe::reclaim(
   const auto& task = driver->task();
   VELOX_CHECK(task->pauseRequested());
   const std::vector<HashProbe*> probeOps = findPeerOperators();
+  std::vector<HashProbe*> activeProbeOps;
+  activeProbeOps.reserve(probeOps.size());
   bool hasMoreProbeInput{false};
   for (auto* probeOp : probeOps) {
     VELOX_CHECK_NOT_NULL(probeOp);
     VELOX_CHECK(probeOp->canSpill());
+    if (probeOp->state_ == ProbeOperatorState::kFinish) {
+      continue;
+    }
     if (probeOp->nonReclaimableState()) {
       RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
       ++stats.numNonReclaimableAttempts;
@@ -1879,10 +1893,12 @@ void HashProbe::reclaim(
                    << succinctBytes(peerPool->parent()->reservedBytes());
       return;
     }
+    activeProbeOps.push_back(probeOp);
     hasMoreProbeInput |= !probeOp->noMoreSpillInput_;
   }
+  VELOX_CHECK(!activeProbeOps.empty());
 
-  spillOutput(probeOps);
+  spillOutput(activeProbeOps);
 
   SpillPartitionSet spillPartitionSet;
   if (hasMoreProbeInput) {
@@ -1899,7 +1915,7 @@ void HashProbe::reclaim(
   }
   const auto spillPartitionIdSet = toSpillPartitionIdSet(spillPartitionSet);
 
-  for (auto* probeOp : probeOps) {
+  for (auto* probeOp : activeProbeOps) {
     VELOX_CHECK_NOT_NULL(probeOp);
     probeOp->clearBuffers();
     // Setup all the probe operators to spill the rest of probe inputs if the

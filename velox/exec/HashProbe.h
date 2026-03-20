@@ -318,6 +318,10 @@ class HashProbe : public Operator {
   // next hash table from the spilled data.
   void noMoreInputInternal();
 
+  // Returns true if finishing the current probe input must still wait for peer
+  // operators because this operator already has spill state to coordinate.
+  bool shouldWaitForPeersOnNoMoreInput() const;
+
   // Indicates if this hash probe operator is under non-reclaimable state or
   // not.
   bool nonReclaimableState() const;
