@@ -32,6 +32,7 @@ COPY CMake/resolve_dependency_modules/arrow/cmake-compatibility.patch /
 
 ARG VELOX_BUILD_SHARED=ON
 # Building libvelox.so requires folly and gflags to be built shared as well for now
+# gflags is always both shared and static turned on.
 ENV VELOX_BUILD_SHARED=${VELOX_BUILD_SHARED}
 
 RUN mkdir build
@@ -45,6 +46,11 @@ ENV UV_TOOL_BIN_DIR=/usr/local/bin \
 # CMake 4.0 removed support for cmake minimums of <=3.5 and will fail builds, this overrides it
 ENV CMAKE_POLICY_VERSION_MINIMUM="3.5" \
     VELOX_ARROW_CMAKE_PATCH=/cmake-compatibility.patch
+
+# Ensure libraries installed to INSTALL_PREFIX are found at runtime (e.g.
+# thrift1 needs libgflags.so.2.2 when folly links gflags statically but
+# other tools still use shared gflags).
+ENV LD_LIBRARY_PATH="${INSTALL_PREFIX}/lib:${INSTALL_PREFIX}/lib64"
 
 # Some CMake configs contain the hard coded prefix '/deps', we need to replace that with
 # the future location to avoid build errors in the base-image
@@ -97,7 +103,9 @@ CMD ["/bin/bash"]
 ########################
 FROM base-image AS pyvelox
 
-ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:$LD_LIBRARY_PATH"
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/velox_deps.conf \
+ && echo "/usr/local/lib64" >> /etc/ld.so.conf.d/velox_deps.conf \
+ && ldconfig
 
 ########################
 # Stage: Adapters Build#
@@ -128,6 +136,9 @@ RUN bash /setup-centos-adapters.sh install_adapters && \
 FROM centos9 AS adapters
 
 COPY scripts/setup-centos-adapters.sh /
+
+ARG CUDA_VERSION
+ENV CUDA_VERSION=${CUDA_VERSION:-12.9}
 
 RUN bash /setup-centos-adapters.sh install_cuda && \
       dnf clean all
@@ -160,6 +171,11 @@ ENV HADOOP_HOME=/usr/local/hadoop \
     PATH=/usr/lib/jvm/java-1.8.0-openjdk/bin:${PATH}
 
 COPY --from=adapters-build /deps /usr/local
+
+# thrift1 requires shared libraries copied from /deps to /usr/local.
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/velox_deps.conf \
+ && echo "/usr/local/lib64" >> /etc/ld.so.conf.d/velox_deps.conf \
+ && ldconfig
 
 COPY scripts/setup-classpath.sh /
 ENTRYPOINT ["/bin/bash", "-c", "source /setup-classpath.sh && source /opt/rh/gcc-toolset-12/enable && exec \"$@\"", "--"]

@@ -38,8 +38,8 @@ velox_add_library(
   JsonFunctions.cpp
   Map.cpp
   MapEntries.cpp
-  MapFromEntries.cpp
   MapKeysAndValues.cpp
+  MapSubset.cpp
   MapZipWith.cpp
   Not.cpp
   Reduce.cpp
@@ -53,6 +53,7 @@ velox_add_library(
   Subscript.cpp
   ToUtf8.cpp
   Transform.cpp
+  TransformWithIndex.cpp
   TransformKeys.cpp
   TransformValues.cpp
   TypeOf.cpp
@@ -75,6 +76,7 @@ velox_link_libraries(
   velox_presto_types
   velox_functions_util
   Folly::folly
+  FastFloat::fast_float
   stemmer::stemmer
 )
 

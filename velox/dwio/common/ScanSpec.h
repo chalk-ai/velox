@@ -28,17 +28,16 @@
 
 #include <vector>
 
-namespace facebook {
-namespace velox {
+namespace facebook::velox {
 namespace dwio::common {
 class ColumnStatistics;
 }
 namespace common {
 
-// Describes the filtering and value extraction for a
-// SelectiveColumnReader. This is owned by the TableScan Operator and
-// is passed to SelectiveColumnReaders at construction.  This is
-// mutable by readers to reflect filter order and other adaptations.
+/// Describes the filtering and value extraction for a
+/// SelectiveColumnReader. This is owned by the TableScan Operator and
+/// is passed to SelectiveColumnReaders at construction.  This is
+/// mutable by readers to reflect filter order and other adaptations.
 class ScanSpec {
  public:
   enum class ColumnType : int8_t {
@@ -47,7 +46,7 @@ class ScanSpec {
     kComposite, // A struct with all children not read from file
   };
 
-  // Convert ColumnType to its string name representation.
+  /// Convert ColumnType to its string name representation.
   static std::string_view columnTypeString(ColumnType columnType);
 
   static constexpr column_index_t kNoChannel = ~0;
@@ -57,15 +56,15 @@ class ScanSpec {
 
   explicit ScanSpec(const std::string& name) : fieldName_(name) {}
 
-  // Filter to apply. If 'this' corresponds to a struct/list/map, this
-  // can only be isNull or isNotNull, other filtering is given by
-  // 'children'.
+  /// Filter to apply. If 'this' corresponds to a struct/list/map, this
+  /// can only be isNull or isNotNull, other filtering is given by
+  /// 'children'.
   const common::Filter* filter() const {
     return filterDisabled_ ? nullptr : filter_.get();
   }
 
-  // Sets 'filter_'. May be used at initialization or when adding a
-  // pushed down filter, e.g. top k cutoff.
+  /// Sets 'filter_'. May be used at initialization or when adding a
+  /// pushed down filter, e.g. top k cutoff.
   void setFilter(std::shared_ptr<Filter> filter) {
     filter_ = std::move(filter);
   }
@@ -96,8 +95,8 @@ class ScanSpec {
     return metadataFilters_[i].second;
   }
 
-  // Returns a constant vector if 'this' corresponds to a partitioning
-  // column or to a missing column. These change from split to split.
+  /// Returns a constant vector if 'this' corresponds to a partitioning
+  /// column or to a missing column. These change from split to split.
   VectorPtr constantValue() const {
     return constantValue_;
   }
@@ -128,22 +127,22 @@ class ScanSpec {
     return columnType_ == ColumnType::kRegular && !isConstant();
   }
 
-  // Name of the value in its container, i.e. field name in struct or
-  // string key in map. Not all fields of 'this' apply in list/map
-  // value cases but the overhead is manageable, the space taken is
-  // less than the Subfield path that will in any case exist for each
-  // separately named list/map element.
+  /// Name of the value in its container, i.e. field name in struct or
+  /// string key in map. Not all fields of 'this' apply in list/map
+  /// value cases but the overhead is manageable, the space taken is
+  /// less than the Subfield path that will in any case exist for each
+  /// separately named list/map element.
   const std::string& fieldName() const {
     return fieldName_;
   }
 
-  // Subscript if this refers to a member of a list or an
-  // integer-keyed map value. If this is a member in a row, this is
-  // the ordinal position in the row type.  Subscript is mutable, for
-  // example the position of the reader in a struct's readers may vary
-  // between splits. Set to correspond to the position of 'fieldName'
-  // when first reading a struct. Not mutable if this refers to a
-  // list/map subscript.
+  /// Subscript if this refers to a member of a list or an
+  /// integer-keyed map value. If this is a member in a row, this is
+  /// the ordinal position in the row type.  Subscript is mutable, for
+  /// example the position of the reader in a struct's readers may vary
+  /// between splits. Set to correspond to the position of 'fieldName'
+  /// when first reading a struct. Not mutable if this refers to a
+  /// list/map subscript.
   int64_t subscript() const {
     return subscript_;
   }
@@ -154,8 +153,8 @@ class ScanSpec {
     }
   }
 
-  // True if the value is returned from scan.  A runtime pushdown of a filter
-  // function may cause this to become false at run time.
+  /// True if the value is returned from scan.  A runtime pushdown of a filter
+  /// function may cause this to become false at run time.
   bool projectOut() const {
     return projectOut_;
   }
@@ -168,8 +167,8 @@ class ScanSpec {
     return projectOut_ || deltaUpdate_;
   }
 
-  // Position in the RowVector returned by the top level scan. Applies
-  // only to children of the root struct where projectOut_ is true.
+  /// Position in the RowVector returned by the top level scan. Applies
+  /// only to children of the root struct where projectOut_ is true.
   column_index_t channel() const {
     return channel_;
   }
@@ -182,31 +181,31 @@ class ScanSpec {
     return children_;
   }
 
-  // Returns 'children in a stable order. May be used for parallel
-  // construction and read-ahead of reader trees while the main user
-  // of 'this' is running. 'children_' may be reordered while running
-  // but the tree being constructed must see a single, unchanging
-  // order.
+  /// Returns 'children in a stable order. May be used for parallel
+  /// construction and read-ahead of reader trees while the main user
+  /// of 'this' is running. 'children_' may be reordered while running
+  /// but the tree being constructed must see a single, unchanging
+  /// order.
   const std::vector<ScanSpec*>& stableChildren();
 
-  // Returns a read sequence number. This can b used for tagging
-  // lazy vectors with a generation number so that we can check that
-  // the reader that made them has not advanced between the making and
-  // the loading of the lazy vector. This must be called if 'this'
-  // corresponds to a struct or flat map reader with pushdown. This
-  // may periodically do adaptation such as filter reordering. This
-  // will initialize the read order on first call and calling this at
-  // each level of struct is mandatory.
+  /// Returns a read sequence number. This can b used for tagging
+  /// lazy vectors with a generation number so that we can check that
+  /// the reader that made them has not advanced between the making and
+  /// the loading of the lazy vector. This must be called if 'this'
+  /// corresponds to a struct or flat map reader with pushdown. This
+  /// may periodically do adaptation such as filter reordering. This
+  /// will initialize the read order on first call and calling this at
+  /// each level of struct is mandatory.
   uint64_t newRead();
 
   /// Returns the ScanSpec corresponding to 'name'. Creates it if needed without
   /// any intermediate level.
   ScanSpec* getOrCreateChild(const std::string& name);
 
-  // Returns the ScanSpec corresponding to 'subfield'. Creates it if
-  // needed, including any intermediate levels. This is used at
-  // TableScan initialization to create the ScanSpec tree that
-  // corresponds to the ColumnReader tree.
+  /// Returns the ScanSpec corresponding to 'subfield'. Creates it if
+  /// needed, including any intermediate levels. This is used at
+  /// TableScan initialization to create the ScanSpec tree that
+  /// corresponds to the ColumnReader tree.
   ScanSpec* getOrCreateChild(const Subfield& subfield);
 
   ScanSpec* childByName(const std::string& name) const {
@@ -229,11 +228,11 @@ class ScanSpec {
     valueHook_ = valueHook;
   }
 
-  // Returns true if the corresponding reader only needs to reference the nulls
-  // stream.  True if filter is is-null with or without value extraction or if
-  // filter is is-not-null and no value is extracted.  Note that this does not
-  // apply to Nimble format leaf nodes, because nulls are mixed in the encoding
-  // with actual values.
+  /// Returns true if the corresponding reader only needs to reference the nulls
+  /// stream.  True if filter is is-null with or without value extraction or if
+  /// filter is is-not-null and no value is extracted.  Note that this does not
+  /// apply to Nimble format leaf nodes, because nulls are mixed in the encoding
+  /// with actual values.
   bool readsNullsOnly() const {
     if (auto* filter = this->filter()) {
       if (filter->kind() == FilterKind::kIsNull) {
@@ -254,11 +253,11 @@ class ScanSpec {
     makeFlat_ = makeFlat;
   }
 
-  // True if this or a descendant has a filter that will affect the number of
-  // output rows.  Note that filter on map keys and array indices is not
-  // counted, as they do not change the number of container output rows.
-  //
-  // This may change as a result of runtime adaptation.
+  /// True if this or a descendant has a filter that will affect the number of
+  /// output rows.  Note that filter on map keys and array indices is not
+  /// counted, as they do not change the number of container output rows.
+  ///
+  /// This may change as a result of runtime adaptation.
   bool hasFilter() const;
 
   /// Similar as hasFilter() but also return true even there is a filter on
@@ -273,8 +272,8 @@ class ScanSpec {
   /// filtered out.
   bool testNull() const;
 
-  // Resets cached values after this or children were updated, e.g. a new filter
-  // was added or existing filter was modified.
+  /// Resets cached values after this or children were updated, e.g. a new
+  /// filter was added or existing filter was modified.
   void resetCachedValues(bool doReorder) {
     hasFilter_.reset();
     for (auto& child : children_) {
@@ -285,49 +284,50 @@ class ScanSpec {
     }
   }
 
-  // Returns the child which produces values for 'channel'. Throws if not found.
+  /// Returns the child which produces values for 'channel'. Throws if not
+  /// found.
   ScanSpec& getChildByChannel(column_index_t channel);
 
-  // sets filter order and filters of 'this' from 'other'. Used when
-  // initializing a ScanSpec for a new split or stripe. This transfers
-  // dynamically acquired filters and adaptive filter order. 'other'
-  // should not be used after this. Different splits or stripes may
-  // have their own ScanSpec trees, so we only move the content, not
-  // the ScanSpec tree itself.
+  /// Sets filter order and filters of 'this' from 'other'. Used when
+  /// initializing a ScanSpec for a new split or stripe. This transfers
+  /// dynamically acquired filters and adaptive filter order. 'other'
+  /// should not be used after this. Different splits or stripes may
+  /// have their own ScanSpec trees, so we only move the content, not
+  /// the ScanSpec tree itself.
   void moveAdaptationFrom(ScanSpec& other);
 
   std::string toString() const;
 
-  // Add a field to this ScanSpec, with content projected out.
+  /// Add a field to this ScanSpec, with content projected out.
   ScanSpec* addField(const std::string& name, column_index_t channel);
 
-  // Add a field and its children recursively to this ScanSpec, all projected
-  // out.
+  /// Add a field and its children recursively to this ScanSpec, all projected
+  /// out.
   ScanSpec* addFieldRecursively(
       const std::string& name,
       const Type&,
       column_index_t channel);
 
-  // Add a field for map key.
+  /// Add a field for map key.
   ScanSpec* addMapKeyField();
 
-  // Add a field for map key, along with its child recursively.
+  /// Add a field for map key, along with its child recursively.
   ScanSpec* addMapKeyFieldRecursively(const Type&);
 
-  // Add a field for map value.
+  /// Add a field for map value.
   ScanSpec* addMapValueField();
 
-  // Add a field for map value, along with its child recursively.
+  /// Add a field for map value, along with its child recursively.
   ScanSpec* addMapValueFieldRecursively(const Type&);
 
-  // Add a field for array element.
+  /// Add a field for array element.
   ScanSpec* addArrayElementField();
 
-  // Add a field for array element, along with its child recursively.
+  /// Add a field for array element, along with its child recursively.
   ScanSpec* addArrayElementFieldRecursively(const Type&);
 
-  // Add all child fields on the type recursively to this ScanSpec, all
-  // projected out.
+  /// Add all child fields on the type recursively to this ScanSpec, all
+  /// projected out.
   void addAllChildFields(const Type&);
 
   const std::vector<std::string>& flatMapFeatureSelection() const {
@@ -409,29 +409,29 @@ class ScanSpec {
   // Number of times read is called on the corresponding reader. This
   // is used for setup on first use and to produce a read sequence
   // number for LazyVectors.
-  uint64_t numReads_ = 0;
+  uint64_t numReads_{0};
 
   // Ordinal position of 'this' in its containing spec. For a struct
   // member this is the position of the reader in the child
   // readers. If this describes an operation on an array element or a
   // map with numeric key, this is the subscript as defined for array
   // or map.
-  int64_t subscript_ = -1;
+  int64_t subscript_{-1};
   // Column name if this is a struct mamber. String key if this
   // describes an operation on a map value.
   std::string fieldName_;
   // Ordinal position of the extracted value in the containing
   // RowVector. Set only when this describes a struct member.
-  column_index_t channel_ = kNoChannel;
+  column_index_t channel_{kNoChannel};
 
   VectorPtr constantValue_;
-  bool projectOut_ = false;
+  bool projectOut_{false};
 
-  ColumnType columnType_ = ColumnType::kRegular;
+  ColumnType columnType_{ColumnType::kRegular};
 
   // True if a string dictionary or flat map in this field should be
   // returned as flat.
-  bool makeFlat_ = false;
+  bool makeFlat_{false};
   std::shared_ptr<const common::Filter> filter_;
   bool filterDisabled_ = false;
   dwio::common::DeltaColumnUpdater* deltaUpdate_ = nullptr;
@@ -503,8 +503,8 @@ void ScanSpec::visit(const Type& type, F&& f) {
   }
 }
 
-// Returns false if no value from a range defined by stats can pass the
-// filter. True, otherwise.
+/// Returns false if no value from a range defined by stats can pass the
+/// filter. True, otherwise.
 bool testFilter(
     const common::Filter* filter,
     dwio::common::ColumnStatistics* stats,
@@ -512,8 +512,7 @@ bool testFilter(
     const TypePtr& type);
 
 } // namespace common
-} // namespace velox
-} // namespace facebook
+} // namespace facebook::velox
 
 template <>
 struct fmt::formatter<facebook::velox::common::ScanSpec::ColumnType>

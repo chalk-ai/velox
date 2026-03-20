@@ -32,6 +32,7 @@
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
 namespace facebook::velox::test {
+using namespace facebook::velox::common::testutil;
 
 namespace {
 /// Creates a RowVector from a list of child vectors. Uses _col0, _col1,..
@@ -111,7 +112,7 @@ std::vector<core::TypedExprPtr> ExpressionRunner::parseSql(
     const TypePtr& inputType,
     memory::MemoryPool* pool,
     const VectorPtr& complexConstants) {
-  auto exprs = parse::parseMultipleExpressions(sql, {});
+  auto exprs = parse::DuckSqlExpressionsParser().parseExprs(sql);
 
   std::vector<core::TypedExprPtr> typedExprs;
   typedExprs.reserve(exprs.size());

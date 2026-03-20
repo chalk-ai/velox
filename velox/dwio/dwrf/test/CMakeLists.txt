@@ -87,7 +87,7 @@ target_link_libraries(
   ${TEST_LINK_LIBS}
 )
 
-add_executable(velox_dwio_dwrf_stripe_stream_test TestStripeStream.cpp)
+add_executable(velox_dwio_dwrf_stripe_stream_test StripeStreamTest.cpp)
 add_test(velox_dwio_dwrf_stripe_stream_test velox_dwio_dwrf_stripe_stream_test)
 
 target_link_libraries(
@@ -618,7 +618,7 @@ target_link_libraries(
   velox_dwio_cache_test
   velox_common_io
   velox_link_libs
-  velox_temp_path
+  velox_test_util
   Folly::folly
   fmt::fmt
   lz4::lz4

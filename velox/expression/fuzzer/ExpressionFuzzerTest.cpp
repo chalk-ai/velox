@@ -24,10 +24,11 @@
 #include "velox/expression/fuzzer/FuzzerRunner.h"
 #include "velox/expression/fuzzer/SpecialFormSignatureGenerator.h"
 #include "velox/functions/prestosql/fuzzer/DivideArgTypesGenerator.h"
-#include "velox/functions/prestosql/fuzzer/FloorAndRoundArgTypesGenerator.h"
+#include "velox/functions/prestosql/fuzzer/FloorCeilRoundArgTypesGenerator.h"
 #include "velox/functions/prestosql/fuzzer/ModulusArgTypesGenerator.h"
 #include "velox/functions/prestosql/fuzzer/MultiplyArgTypesGenerator.h"
 #include "velox/functions/prestosql/fuzzer/PlusMinusArgTypesGenerator.h"
+#include "velox/functions/prestosql/fuzzer/SkipIPAddressArgTypesGenerator.h"
 
 #include "velox/functions/prestosql/fuzzer/SortArrayTransformer.h"
 #include "velox/functions/prestosql/fuzzer/TruncateArgTypesGenerator.h"
@@ -56,12 +57,14 @@ using namespace facebook::velox::exec::test;
 using facebook::velox::exec::test::PrestoQueryRunner;
 using facebook::velox::fuzzer::ArgTypesGenerator;
 using facebook::velox::fuzzer::ArgValuesGenerator;
+using facebook::velox::fuzzer::AtTimezoneArgValuesGenerator;
 using facebook::velox::fuzzer::CastVarcharAndJsonArgValuesGenerator;
 using facebook::velox::fuzzer::ExpressionFuzzer;
 using facebook::velox::fuzzer::FuzzerRunner;
 using facebook::velox::fuzzer::JsonExtractArgValuesGenerator;
 using facebook::velox::fuzzer::JsonParseArgValuesGenerator;
 using facebook::velox::fuzzer::QDigestArgValuesGenerator;
+using facebook::velox::fuzzer::SetDigestArgValuesGenerator;
 using facebook::velox::fuzzer::TDigestArgValuesGenerator;
 using facebook::velox::fuzzer::UnifiedDigestArgValuesGenerator;
 using facebook::velox::fuzzer::URLArgValuesGenerator;
@@ -73,10 +76,16 @@ std::unordered_map<std::string, std::shared_ptr<ArgTypesGenerator>>
         {"minus", std::make_shared<PlusMinusArgTypesGenerator>()},
         {"multiply", std::make_shared<MultiplyArgTypesGenerator>()},
         {"divide", std::make_shared<DivideArgTypesGenerator>()},
-        {"floor", std::make_shared<FloorAndRoundArgTypesGenerator>()},
-        {"round", std::make_shared<FloorAndRoundArgTypesGenerator>()},
+        {"floor", std::make_shared<FloorCeilRoundArgTypesGenerator>()},
+        {"ceil", std::make_shared<FloorCeilRoundArgTypesGenerator>()},
+        {"round", std::make_shared<FloorCeilRoundArgTypesGenerator>()},
         {"mod", std::make_shared<ModulusArgTypesGenerator>()},
-        {"truncate", std::make_shared<TruncateArgTypesGenerator>()}};
+        {"truncate", std::make_shared<TruncateArgTypesGenerator>()},
+        // Block IPADDRESS in containers for functions whose hash-based
+        // deduplication calls compareTo() on Int128ArrayBlock, which is not
+        // implemented. See: https://github.com/prestodb/presto/issues/26836
+        {"distinct_from", std::make_shared<SkipIPAddressArgTypesGenerator>()},
+        {"array_union", std::make_shared<SkipIPAddressArgTypesGenerator>()}};
 
 std::unordered_map<std::string, std::shared_ptr<ExprTransformer>>
     exprTransformers = {
@@ -89,6 +98,7 @@ std::unordered_map<std::string, std::shared_ptr<ExprTransformer>>
 
 std::unordered_map<std::string, std::shared_ptr<ArgValuesGenerator>>
     argValuesGenerators = {
+        {"at_timezone", std::make_shared<AtTimezoneArgValuesGenerator>()},
         {"cast", std::make_shared<CastVarcharAndJsonArgValuesGenerator>()},
         {"json_parse", std::make_shared<JsonParseArgValuesGenerator>()},
         {"json_extract", std::make_shared<JsonExtractArgValuesGenerator>()},
@@ -117,7 +127,16 @@ std::unordered_map<std::string, std::shared_ptr<ArgValuesGenerator>>
         {"destructure_tdigest",
          std::make_shared<TDigestArgValuesGenerator>("destructure_tdigest")},
         {"trimmed_mean",
-         std::make_shared<TDigestArgValuesGenerator>("trimmed_mean")}};
+         std::make_shared<TDigestArgValuesGenerator>("trimmed_mean")},
+        {"hash_counts",
+         std::make_shared<SetDigestArgValuesGenerator>("hash_counts")},
+        {"cardinality",
+         std::make_shared<SetDigestArgValuesGenerator>("cardinality")},
+        {"jaccard_index",
+         std::make_shared<SetDigestArgValuesGenerator>("jaccard_index")},
+        {"intersection_cardinality",
+         std::make_shared<SetDigestArgValuesGenerator>(
+             "intersection_cardinality")}};
 
 // TODO: List of the functions that at some point crash or fail and need to
 // be fixed before we can enable.
@@ -126,6 +145,9 @@ std::unordered_map<std::string, std::shared_ptr<ArgValuesGenerator>>
 // testing. Use function signature to exclude only a specific signature.
 std::unordered_set<std::string> skipFunctions = {
     "noisy_empty_approx_set_sfm", // Non-deterministic because of privacy.
+    "current_timestamp", // Non-deterministic: returns the current timestamp at
+                         // query execution time, so results differ across runs
+    "now", // alias for current_timestamp
     "merge_sfm", // Fuzzer can generate sketches of different sizes.
     "element_at",
     "width_bucket",
@@ -143,6 +165,19 @@ std::unordered_set<std::string> skipFunctions = {
     "construct_tdigest",
     "destructure_tdigest",
     "trimmed_mean",
+    // Fuzzer and the underlying engine are confused about SetDigest functions
+    // (since KHLL is a user defined type), and tries to pass a
+    // VARBINARY (since KHLL's implementation uses an
+    // alias to VARBINARY).
+    "cardinality(hyperloglog) -> bigint", // Skip HLL version, only test
+                                          // setdigest
+    "cardinality(khyperloglog) -> bigint",
+    "intersection_cardinality(khyperloglog,khyperloglog) -> bigint",
+    "jaccard_index(khyperloglog,khyperloglog) -> double",
+    "reidentification_potential(khyperloglog,bigint) -> double",
+    "uniqueness_distribution(khyperloglog) -> map(bigint,double)",
+    "uniqueness_distribution(khyperloglog,bigint) -> map(bigint,double)",
+    "merge_khll(array(khyperloglog)) -> khyperloglog",
     // Fuzzer cannot generate valid 'comparator' lambda.
     "array_sort(array(T),constant function(T,T,bigint)) -> array(T)",
     "array_sort(array(T),constant function(T,U)) -> array(T)",
@@ -257,9 +292,28 @@ std::unordered_set<std::string> skipFunctions = {
     "geometry_to_bing_tiles",
     "geometry_to_dissolved_bing_tiles",
     "geometry_union",
+    "to_geometry",
+    "to_spherical_geography",
+    "convex_hull_agg",
+    "geometry_union_agg",
+    "localtime",
 };
 
 std::unordered_set<std::string> skipFunctionsSOT = {
+    "l2_norm", // Velox-only function, not available in Presto
+    "t_cdf", // New function, not yet widely deployed in Presto instances
+    "inverse_t_cdf", // New function, not yet widely deployed in Presto
+                     // instances
+    "array_subset", // Velox-only function, not available in Presto
+    "map_values_in_range", // Velox-only function, not available in Presto
+    "transform_with_index", // Velox-only function, not available in Presto
+    "dot_product", // Velox-only function, not available in Presto
+    "remap_keys", // Velox-only function, not available in Presto
+    "map_intersect", // Velox-only function, not available in Presto
+    "map_keys_overlap", // Velox-only function, not available in Presto
+    "map_append", // Velox-only function, not available in Presto
+    "map_update", // Velox-only function, not available in Presto
+    "map_trim_values", // Velox-only function, not available in Presto
     "noisy_empty_approx_set_sfm", // non-deterministic because of privacy.
     // https://github.com/facebookincubator/velox/issues/11034
     "cast(real) -> varchar",
@@ -270,6 +324,9 @@ std::unordered_set<std::string> skipFunctionsSOT = {
     "cast(array(real)) -> array(varchar)",
     "cast(map(varchar,double)) -> map(varchar,varchar)",
     "cast(map(varchar,real)) -> map(varchar,varchar)",
+    // Velox and Presto may not match with regards to sparse vs. dense HLL
+    "cast(hyperloglog) -> p4hyperloglog",
+    "cast(p4hyperloglog) -> hyperloglog",
     "round", // https://github.com/facebookincubator/velox/issues/10634
     "bitwise_right_shift_arithmetic", // https://github.com/facebookincubator/velox/issues/10841
     "map_size_with", // https://github.com/facebookincubator/velox/issues/10964
@@ -300,6 +357,7 @@ std::unordered_set<std::string> skipFunctionsSOT = {
     "inverse_cauchy_cdf", // https://github.com/facebookincubator/velox/issues/10840
     "array_position", // https://github.com/facebookincubator/velox/issues/10580
     "chi_squared_cdf", // https://github.com/facebookincubator/velox/issues/12327
+    "map_except",
     "bitwise_left_shift", // https://github.com/facebookincubator/velox/issues/12330
     "log2", // https://github.com/facebookincubator/velox/issues/12338
     "bitwise_right_shift", // https://github.com/facebookincubator/velox/issues/12339
@@ -330,6 +388,7 @@ std::unordered_set<std::string> skipFunctionsSOT = {
     "escape", // https://github.com/facebookincubator/velox/issues/12558
     "from_base64url", // https://github.com/facebookincubator/velox/issues/12562
     "array_top_n", // https://github.com/prestodb/presto/issues/24700
+    "array_subset",
     "codepoint", // https://github.com/facebookincubator/velox/issues/12598
     "in", // https://github.com/facebookincubator/velox/issues/12597
     "multimap_from_entries", // https://github.com/facebookincubator/velox/issues/12628
@@ -401,10 +460,28 @@ std::unordered_set<std::string> skipFunctionsSOT = {
     // https://github.com/prestodb/presto/pull/25521
     "xxhash64(varbinary,bigint) -> varbinary",
     "map_keys_by_top_n_values", // https://github.com/facebookincubator/velox/issues/14374
+    "$internal$split_to_map",
     "$internal$canonicalize",
     "$internal$contains",
-    "localtime", // localtime cannot be called with paranthesis:
-                 // https://github.com/facebookincubator/velox/issues/14937
+    "current_time", // current_time cannot be called with parenthesis
+    "localtime", // localtime cannot be called with parenthesis:
+                 // https://github.com/facebookincubator/velox/issues/14937,
+    "localtimestamp", // localtimestamp cannot be called with parenthesis
+    "jarowinkler_similarity", // https://github.com/facebookincubator/velox/issues/15736
+    // Fuzzer and the underlying engine are confused about SetDigest functions
+    // (since KHLL is a user defined type), and tries to pass a
+    // VARBINARY (since KHLL's implementation uses an
+    // alias to VARBINARY).
+    "cardinality(hyperloglog) -> bigint", // Skip HLL version, only test
+                                          // setdigest
+    // Same with KHyperLogLog functions
+    "cardinality(khyperloglog) -> bigint",
+    "intersection_cardinality(khyperloglog,khyperloglog) -> bigint",
+    "jaccard_index(khyperloglog,khyperloglog) -> double",
+    "reidentification_potential(khyperloglog,bigint) -> double",
+    "uniqueness_distribution(khyperloglog) -> map(bigint,double)",
+    "uniqueness_distribution(khyperloglog,bigint) -> map(bigint,double)",
+    "merge_khll(array(khyperloglog)) -> khyperloglog",
 };
 
 int main(int argc, char** argv) {

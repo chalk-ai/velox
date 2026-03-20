@@ -49,8 +49,12 @@ add_executable(
   ReaderTest.cpp
   RetryTests.cpp
   ScanSpecTest.cpp
+  SelectiveColumnReaderTest.cpp
   SortingWriterTest.cpp
-  TestBufferedInput.cpp
+  StreamUtilTest.cpp
+  BufferedInputTest.cpp
+  CachedBufferedInputTest.cpp
+  DirectBufferedInputTest.cpp
   ThrottlerTest.cpp
   TypeTests.cpp
   UnitLoaderToolsTests.cpp
@@ -61,9 +65,9 @@ add_test(velox_dwio_common_test velox_dwio_common_test)
 target_link_libraries(
   velox_dwio_common_test
   velox_dwio_common_test_utils
-  velox_temp_path
+  velox_hive_connector
+  velox_test_util
   velox_vector_test_lib
-  Boost::regex
   velox_link_libs
   Folly::folly
   ${TEST_LINK_LIBS}

@@ -23,6 +23,7 @@ This guide is intended for Velox contributors and developers of Velox-based appl
     develop/anti-join
     develop/operators
     develop/task
+    develop/task-barrier
     develop/simd
     develop/memory
     develop/spilling
@@ -33,3 +34,4 @@ This guide is intended for Velox contributors and developers of Velox-based appl
     develop/TpchBenchmark
     develop/window
     develop/dynamic-loading
+    develop/hash-table-caching

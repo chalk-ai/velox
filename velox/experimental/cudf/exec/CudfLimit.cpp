@@ -14,7 +14,9 @@
  * limitations under the License.
  */
 
+#include "velox/experimental/cudf/CudfNoDefaults.h"
 #include "velox/experimental/cudf/exec/CudfLimit.h"
+#include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/vector/CudfVector.h"
 
 #include <cudf/copying.hpp>
@@ -84,8 +86,8 @@ RowVectorPtr CudfLimit::getOutput() {
          static_cast<int>(remainingOffset_ + outputSize)},
         cudfInput->stream());
 
-    auto materializedTable =
-        std::make_unique<cudf::table>(slicedTable[0], cudfInput->stream());
+    auto materializedTable = std::make_unique<cudf::table>(
+        slicedTable[0], cudfInput->stream(), get_output_mr());
 
     remainingOffset_ = 0;
     remainingLimit_ -= outputSize;
@@ -122,8 +124,8 @@ RowVectorPtr CudfLimit::getOutput() {
       {0, static_cast<int>(remainingLimit_)},
       cudfInput->stream());
 
-  auto materializedTable =
-      std::make_unique<cudf::table>(slicedTable[0], cudfInput->stream());
+  auto materializedTable = std::make_unique<cudf::table>(
+      slicedTable[0], cudfInput->stream(), get_output_mr());
 
   auto output = std::make_shared<cudf_velox::CudfVector>(
       input_->pool(),

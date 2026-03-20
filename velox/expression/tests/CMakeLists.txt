@@ -23,6 +23,7 @@ add_executable(
   CustomTypeTest.cpp
   ExprCompilerTest.cpp
   ExprEncodingsTest.cpp
+  ExprOptimizerTest.cpp
   ExprRewriteRegistryTest.cpp
   ExprStatsTest.cpp
   ExprTest.cpp
@@ -45,6 +46,10 @@ add_executable(
   SimpleFunctionInitTest.cpp
   SimpleFunctionPresetNullsTest.cpp
   SimpleFunctionTest.cpp
+  SpecialFormRewriteTestBase.cpp
+  SwitchRewriteTest.cpp
+  CoalesceRewriteTest.cpp
+  ConjunctRewriteTest.cpp
   StringWriterTest.cpp
   TryExprTest.cpp
   VariadicViewTest.cpp
@@ -128,7 +133,7 @@ target_link_libraries(
   velox_expression_verifier_unit_test
   velox_expression_verifier
   velox_file
-  velox_temp_path
+  velox_test_util
   velox_parse_expression
   velox_parse_parser
   velox_parse_utils
@@ -147,7 +152,7 @@ target_link_libraries(
   velox_expression_fuzzer
   velox_expression_verifier
   velox_function_registry
-  velox_temp_path
+  velox_test_util
   velox_exec_test_lib
   velox_vector_test_lib
   GTest::gtest

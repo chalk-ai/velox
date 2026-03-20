@@ -19,6 +19,7 @@
 #include <fmt/format.h>
 #include <folly/CppAttributes.h>
 #include <limits>
+#include <string_view>
 
 namespace facebook::velox {
 
@@ -48,6 +49,14 @@ struct RuntimeMetric {
       RuntimeCounter::Unit _unit = RuntimeCounter::Unit::kNone)
       : unit(_unit), sum{value}, count{1}, min{value}, max{value} {}
 
+  explicit RuntimeMetric(
+      int64_t _sum,
+      int64_t _count,
+      int64_t _min,
+      int64_t _max,
+      RuntimeCounter::Unit _unit = RuntimeCounter::Unit::kNone)
+      : unit(_unit), sum{_sum}, count{_count}, min{_min}, max{_max} {}
+
   void addValue(int64_t value);
 
   /// Aggregate sets 'min' and 'max' to 'sum', also sets 'count' to 1 if
@@ -69,7 +78,7 @@ class BaseRuntimeStatWriter {
   virtual ~BaseRuntimeStatWriter() = default;
 
   virtual void addRuntimeStat(
-      const std::string& /* name */,
+      std::string_view /* name */,
       const RuntimeCounter& /* value */) {}
 };
 
@@ -85,7 +94,7 @@ BaseRuntimeStatWriter* getThreadLocalRunTimeStatWriter();
 
 /// Writes runtime counter to the current Operator running on that thread.
 void addThreadLocalRuntimeStat(
-    const std::string& name,
+    std::string_view name,
     const RuntimeCounter& value);
 
 /// Scope guard to conveniently set and revert back the current stat writer.

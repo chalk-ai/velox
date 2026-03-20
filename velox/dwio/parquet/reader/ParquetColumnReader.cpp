@@ -27,6 +27,7 @@
 #include "velox/dwio/parquet/reader/RepeatedColumnReader.h"
 #include "velox/dwio/parquet/reader/StringColumnReader.h"
 #include "velox/dwio/parquet/reader/StructColumnReader.h"
+#include "velox/dwio/parquet/reader/TimeColumnReader.h"
 #include "velox/dwio/parquet/reader/TimestampColumnReader.h"
 #include "velox/dwio/parquet/thrift/ParquetThriftTypes.h"
 
@@ -41,6 +42,12 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> ParquetColumnReader::build(
     common::ScanSpec& scanSpec) {
   auto colName = scanSpec.fieldName();
 
+  if (fileType->type()->isTime()) {
+    VELOX_CHECK(fileType->type()->equivalent(*TIME()));
+    return std::make_unique<TimeColumnReader>(
+        requestedType, fileType, params, scanSpec);
+  }
+
   switch (fileType->type()->kind()) {
     case TypeKind::INTEGER:
     case TypeKind::BIGINT:
@@ -51,8 +58,13 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> ParquetColumnReader::build(
           requestedType, fileType, params, scanSpec);
 
     case TypeKind::REAL:
-      return std::make_unique<FloatingPointColumnReader<float, float>>(
-          requestedType, fileType, params, scanSpec);
+      if (requestedType->kind() == TypeKind::REAL) {
+        return std::make_unique<FloatingPointColumnReader<float, float>>(
+            requestedType, fileType, params, scanSpec);
+      } else {
+        return std::make_unique<FloatingPointColumnReader<float, double>>(
+            requestedType, fileType, params, scanSpec);
+      }
     case TypeKind::DOUBLE:
       return std::make_unique<FloatingPointColumnReader<double, double>>(
           requestedType, fileType, params, scanSpec);
@@ -99,7 +111,7 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> ParquetColumnReader::build(
     default:
       VELOX_FAIL(
           "buildReader unhandled type: " +
-          mapTypeKindToName(fileType->type()->kind()));
+          std::string(TypeKindName::toName(fileType->type()->kind())));
   }
 }
 

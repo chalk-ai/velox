@@ -75,7 +75,7 @@ DeltaSplitReader::DeltaSplitReader(
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const RowTypePtr& readerOutputType,
     const std::shared_ptr<io::IoStatistics>& ioStats,
-    const std::shared_ptr<filesystems::File::IoStats>& fsStats,
+    const std::shared_ptr<IoStats>& fsStats,
     FileHandleFactory* fileHandleFactory,
     folly::Executor* executor,
     const std::shared_ptr<common::ScanSpec>& scanSpec)

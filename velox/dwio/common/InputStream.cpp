@@ -64,24 +64,25 @@ ReadFileInputStream::ReadFileInputStream(
     std::shared_ptr<velox::ReadFile> readFile,
     const MetricsLogPtr& metricsLog,
     IoStatistics* stats,
-    filesystems::File::IoStats* fsStats,
-    folly::F14FastMap<std::string, std::string> fileReadOps)
-    : InputStream(readFile->getName(), metricsLog, stats, fsStats),
-      fileReadOps_(std::move(fileReadOps)),
+    velox::IoStats* ioStats,
+    folly::F14FastMap<std::string, std::string> fileOpts,
+    bool cacheable)
+    : InputStream(readFile->getName(), metricsLog, stats, ioStats),
+      fileIoContext_(ioStats, std::move(fileOpts), nullptr, cacheable),
       readFile_(std::move(readFile)) {}
 
 void ReadFileInputStream::read(
     void* buf,
     uint64_t length,
     uint64_t offset,
-    MetricsLog::MetricsType purpose) {
+    MetricsLog::Type purpose) {
   VELOX_CHECK_NOT_NULL(buf);
   logRead(offset, length, purpose);
   uint64_t readTimeUs{0};
   std::string_view readData;
   {
     MicrosecondTimer timer(&readTimeUs);
-    readData = readFile_->pread(offset, length, buf, fsStats_, fileReadOps_);
+    readData = readFile_->pread(offset, length, buf, fileIoContext_);
   }
   if (stats_) {
     stats_->incRawBytesRead(length);
@@ -104,7 +105,7 @@ void ReadFileInputStream::read(
     LogType logType) {
   const int64_t bufferSize = totalBufferSize(buffers);
   logRead(offset, bufferSize, logType);
-  const auto size = readFile_->preadv(offset, buffers, fsStats_, fileReadOps_);
+  const auto size = readFile_->preadv(offset, buffers, fileIoContext_);
   VELOX_CHECK_EQ(
       size,
       bufferSize,
@@ -121,7 +122,7 @@ folly::SemiFuture<uint64_t> ReadFileInputStream::readAsync(
     LogType logType) {
   const int64_t bufferSize = totalBufferSize(buffers);
   logRead(offset, bufferSize, logType);
-  return readFile_->preadvAsync(offset, buffers, fsStats_, fileReadOps_);
+  return readFile_->preadvAsync(offset, buffers, fileIoContext_);
 }
 
 bool ReadFileInputStream::hasReadAsync() const {
@@ -140,7 +141,7 @@ void ReadFileInputStream::vread(
       [&](size_t acc, const auto& r) { return acc + r.length; });
   logRead(regions[0].offset, length, purpose);
   auto readStartMicros = getCurrentTimeMicro();
-  readFile_->preadv(regions, iobufs, fsStats_, fileReadOps_);
+  readFile_->preadv(regions, iobufs, fileIoContext_);
   if (stats_) {
     stats_->incRawBytesRead(length);
     stats_->incTotalScanTime((getCurrentTimeMicro() - readStartMicros) * 1000);

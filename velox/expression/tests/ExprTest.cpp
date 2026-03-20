@@ -23,9 +23,9 @@
 #include "gtest/gtest.h"
 
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/core/Expressions.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
-#include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/expression/CoalesceExpr.h"
 #include "velox/expression/ConjunctExpr.h"
 #include "velox/expression/ConstantExpr.h"
@@ -36,14 +36,16 @@
 #include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/parse/ExpressionsParser.h"
 #include "velox/parse/TypeResolver.h"
+#include "velox/vector/BaseVector.h"
 #include "velox/vector/SelectivityVector.h"
-#include "velox/vector/VariantToVector.h"
 #include "velox/vector/VectorSaver.h"
 #include "velox/vector/tests/TestingAlwaysThrowsFunction.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 DECLARE_string(velox_save_input_on_expression_any_failure_path);
 DECLARE_string(velox_save_input_on_expression_system_failure_path);
+
+using namespace facebook::velox::common::testutil;
 
 namespace facebook::velox::test {
 namespace {
@@ -69,7 +71,7 @@ class ExprTest : public testing::Test, public VectorTestBase {
       const std::string& text,
       const RowTypePtr& rowType,
       const VectorPtr& complexConstants = nullptr) {
-    auto untyped = parse::parseExpr(text, options_);
+    auto untyped = parse::DuckSqlExpressionsParser(options_).parseExpr(text);
     return core::Expressions::inferTypes(
         untyped, rowType, execCtx_->pool(), complexConstants);
   }
@@ -78,7 +80,7 @@ class ExprTest : public testing::Test, public VectorTestBase {
       const std::string& text,
       const RowTypePtr& rowType,
       const std::vector<TypePtr>& lambdaInputTypes) {
-    auto untyped = parse::parseExpr(text, options_);
+    auto untyped = parse::DuckSqlExpressionsParser(options_).parseExpr(text);
     return core::Expressions::inferTypes(
         untyped, rowType, lambdaInputTypes, execCtx_->pool(), nullptr);
   }
@@ -86,13 +88,15 @@ class ExprTest : public testing::Test, public VectorTestBase {
   std::vector<core::TypedExprPtr> parseMultipleExpression(
       const std::string& text,
       const RowTypePtr& rowType) {
-    auto untyped = parse::parseMultipleExpressions(text, options_);
-    std::vector<core::TypedExprPtr> parsed;
-    for (auto& iExpr : untyped) {
-      parsed.push_back(
-          core::Expressions::inferTypes(iExpr, rowType, execCtx_->pool()));
+    auto untypedExprs =
+        parse::DuckSqlExpressionsParser(options_).parseExprs(text);
+    std::vector<core::TypedExprPtr> typedExprs;
+    typedExprs.reserve(untypedExprs.size());
+    for (const auto& expr : untypedExprs) {
+      typedExprs.push_back(
+          core::Expressions::inferTypes(expr, rowType, execCtx_->pool()));
     }
-    return parsed;
+    return typedExprs;
   }
 
   // T can be ExprSet or ExprSetSimplified.
@@ -237,8 +241,7 @@ class ExprTest : public testing::Test, public VectorTestBase {
       const RowVectorPtr& input,
       VectorPtr& result,
       const VectorPtr& expected) {
-    parse::ParseOptions options;
-    auto untyped = parse::parseExpr(expr, options);
+    auto untyped = parse::DuckSqlExpressionsParser().parseExpr(expr);
     auto typedExpr = core::Expressions::inferTypes(
         untyped, asRowType(input->type()), pool());
 
@@ -2403,6 +2406,40 @@ struct ThrowRuntimeError {
     VELOX_FAIL();
   }
 };
+
+// Simple function with custom owner that always throws.
+template <typename T>
+struct AlwaysThrowsWithCustomOwner {
+  static constexpr std::string_view owner = "custom-owner-team";
+
+  template <typename TResult, typename TInput>
+  FOLLY_ALWAYS_INLINE void call(TResult&, const TInput&) {
+    VELOX_USER_FAIL("Expected error from custom owner function");
+  }
+};
+
+// Vector function with custom owner that always throws.
+class AlwaysThrowsVectorFunctionWithCustomOwner : public exec::VectorFunction {
+ public:
+  void apply(
+      const SelectivityVector& rows,
+      std::vector<VectorPtr>& /* args */,
+      const TypePtr& /* outputType */,
+      exec::EvalCtx& context,
+      VectorPtr& /* result */) const override {
+    auto error = std::make_exception_ptr(
+        std::invalid_argument(
+            "Expected error from custom owner vector function"));
+    context.setErrors(rows, error);
+  }
+
+  static std::vector<std::shared_ptr<exec::FunctionSignature>> signatures() {
+    return {exec::FunctionSignatureBuilder()
+                .returnType("integer")
+                .argumentType("integer")
+                .build()};
+  }
+};
 } // namespace
 
 TEST_P(ParameterizedExprTest, exceptionContext) {
@@ -2449,7 +2486,7 @@ TEST_P(ParameterizedExprTest, exceptionContext) {
   }
 
   // Enable saving vector and expression SQL for system errors only.
-  auto tempDirectory = exec::test::TempDirectoryPath::create();
+  auto tempDirectory = TempDirectoryPath::create();
   FLAGS_velox_save_input_on_expression_system_failure_path =
       tempDirectory->getPath();
 
@@ -2535,6 +2572,50 @@ TEST_P(ParameterizedExprTest, exceptionContext) {
   }
 }
 
+// Test that custom owner is included in exception context.
+TEST_P(ParameterizedExprTest, exceptionContextWithCustomOwner) {
+  auto data = makeFlatVector<int32_t>({1, 2, 3});
+
+  // Register test simple function.
+  registerFunction<AlwaysThrowsWithCustomOwner, int32_t, int32_t>(
+      {"always_throws_custom_owner"});
+
+  assertError(
+      "always_throws_custom_owner(c0)",
+      data,
+      "Owner: custom-owner-team. Top-level Expression: always_throws_custom_owner(c0)",
+      "",
+      "Expected error from custom owner function");
+
+  assertError(
+      "always_throws_custom_owner(c0) + 1",
+      data,
+      "Owner: custom-owner-team. Expression: always_throws_custom_owner(c0)",
+      "Top-level Expression: plus(cast((always_throws_custom_owner(c0)) as BIGINT), 1:BIGINT)",
+      "Expected error from custom owner function");
+
+  // Register and test vector function.
+  exec::registerVectorFunction(
+      "always_throws_vector_custom_owner",
+      AlwaysThrowsVectorFunctionWithCustomOwner::signatures(),
+      std::make_unique<AlwaysThrowsVectorFunctionWithCustomOwner>(),
+      exec::VectorFunctionMetadataBuilder().owner("vector-owner-team").build());
+
+  assertError(
+      "always_throws_vector_custom_owner(c0)",
+      data,
+      "Owner: vector-owner-team. Top-level Expression: always_throws_vector_custom_owner(c0)",
+      "",
+      "Expected error from custom owner vector function");
+
+  assertError(
+      "always_throws_vector_custom_owner(c0) + 1",
+      data,
+      "Owner: vector-owner-team. Expression: always_throws_vector_custom_owner(c0)",
+      "Top-level Expression: plus(cast((always_throws_vector_custom_owner(c0)) as BIGINT), 1:BIGINT)",
+      "Expected error from custom owner vector function");
+}
+
 namespace {
 
 template <typename T>
@@ -2595,8 +2676,8 @@ TEST_P(ParameterizedExprTest, constantToString) {
 
 TEST_F(ExprTest, constantEqualsNullConsistency) {
   // Constant expr created using variant
-  auto nullVariantToExpr =
-      std::make_shared<core::ConstantTypedExpr>(VARCHAR(), Variant{});
+  auto nullVariantToExpr = std::make_shared<core::ConstantTypedExpr>(
+      VARCHAR(), variant::null(TypeKind::VARCHAR));
   auto nonNullVariantToExpr =
       std::make_shared<core::ConstantTypedExpr>(VARCHAR(), Variant{"test"});
 
@@ -2617,13 +2698,14 @@ TEST_F(ExprTest, constantEqualsNullConsistency) {
 // of a Vector.
 TEST_F(ExprTest, constantToStringEqualsHashConsistency) {
   auto testValue = [&](const TypePtr& type, const Variant& value) {
-    SCOPED_TRACE(fmt::format(
-        "Type: {}, Value: {}", type->toString(), value.toJson(type)));
+    SCOPED_TRACE(
+        fmt::format(
+            "Type: {}, Value: {}", type->toString(), value.toJson(type)));
 
     auto a = std::make_shared<core::ConstantTypedExpr>(type, value);
 
     auto b = std::make_shared<core::ConstantTypedExpr>(
-        variantToVector(type, value, pool()));
+        BaseVector::createConstant(type, value, 1, pool()));
 
     EXPECT_EQ(a->toString(), b->toString());
 
@@ -2818,9 +2900,10 @@ TEST_P(ParameterizedExprTest, constantToSql) {
   ASSERT_EQ(toSql(variant::null(TypeKind::ARRAY)), "NULL");
 
   ASSERT_EQ(
-      toSqlComplex(makeMapVector<int32_t, int32_t>({
-          {{1, 10}, {2, 20}, {3, 30}},
-      })),
+      toSqlComplex(
+          makeMapVector<int32_t, int32_t>({
+              {{1, 10}, {2, 20}, {3, 30}},
+          })),
       "map(ARRAY['1'::INTEGER, '2'::INTEGER, '3'::INTEGER], ARRAY['10'::INTEGER, '20'::INTEGER, '30'::INTEGER])");
   ASSERT_EQ(
       toSqlComplex(
@@ -2831,8 +2914,9 @@ TEST_P(ParameterizedExprTest, constantToSql) {
           1),
       "map(ARRAY['1'::INTEGER, '2'::INTEGER, '3'::INTEGER], ARRAY['10'::INTEGER, '20'::INTEGER, '30'::INTEGER])");
   ASSERT_EQ(
-      toSqlComplex(BaseVector::createNullConstant(
-          MAP(INTEGER(), VARCHAR()), 10, pool())),
+      toSqlComplex(
+          BaseVector::createNullConstant(
+              MAP(INTEGER(), VARCHAR()), 10, pool())),
       "NULL::MAP(INTEGER, VARCHAR)");
 
   ASSERT_EQ(
@@ -2842,14 +2926,17 @@ TEST_P(ParameterizedExprTest, constantToSql) {
       })),
       "row_constructor('1'::INTEGER, TRUE)");
   ASSERT_EQ(
-      toSqlComplex(BaseVector::createNullConstant(
-          ROW({"a", "b"}, {BOOLEAN(), DOUBLE()}), 10, pool())),
+      toSqlComplex(
+          BaseVector::createNullConstant(
+              ROW({"a", "b"}, {BOOLEAN(), DOUBLE()}), 10, pool())),
       "NULL::STRUCT(a BOOLEAN, b DOUBLE)");
   ASSERT_EQ(
-      toSqlComplex(BaseVector::createNullConstant(
-          ROW({"a", "b"}, {BOOLEAN(), ROW({"c", "d"}, {DOUBLE(), VARCHAR()})}),
-          10,
-          pool())),
+      toSqlComplex(
+          BaseVector::createNullConstant(
+              ROW({"a", "b"},
+                  {BOOLEAN(), ROW({"c", "d"}, {DOUBLE(), VARCHAR()})}),
+              10,
+              pool())),
       "NULL::STRUCT(a BOOLEAN, b STRUCT(c DOUBLE, d VARCHAR))");
 }
 
@@ -3256,6 +3343,30 @@ TEST_P(ParameterizedExprTest, flatNoNullsFastPath) {
   ASSERT_FALSE(exprSet->exprs()[0]->supportsFlatNoNullsFastPath());
 }
 
+TEST_P(ParameterizedExprTest, flatNoNullsFastPathDisabledByConfig) {
+  auto data = makeRowVector(
+      {"a", "b"},
+      {
+          makeFlatVector<int32_t>({1, 2, 3}),
+          makeFlatVector<int32_t>({10, 20, 30}),
+      });
+
+  // Evaluate with fast path enabled (default).
+  auto result = evaluate("a + b", data);
+  auto expected = makeFlatVector<int32_t>({11, 22, 33});
+  assertEqualVectors(expected, result);
+
+  // Evaluate with fast path disabled via config.
+  std::unordered_map<std::string, std::string> configData(
+      {{core::QueryConfig::kExprEvalFlatNoNulls, "false"}});
+  auto queryCtx = velox::core::QueryCtx::create(
+      nullptr, core::QueryConfig(std::move(configData)));
+  auto execCtx = std::make_unique<core::ExecCtx>(pool_.get(), queryCtx.get());
+
+  result = evaluateMultiple({"a + b"}, data, std::nullopt, execCtx.get())[0];
+  assertEqualVectors(expected, result);
+}
+
 TEST_P(ParameterizedExprTest, commonSubExpressionWithEncodedInput) {
   // This test case does a sanity check of the code path that re-uses
   // precomputed results for common sub-expressions.
@@ -3651,10 +3762,10 @@ TEST_P(ParameterizedExprTest, applyFunctionNoResult) {
   // not.  Conjuncts have the nice property that they set throwOnError to
   // false and don't check if the result VectorPtr is nullptr.
   assertError(
-      "always_throws_vector_function(c0) AND true",
+      "always_throws_vector_function(c0) AND (c0 = 1)",
       makeFlatVector<int32_t>({1, 2, 3}),
       "always_throws_vector_function(c0)",
-      "Top-level Expression: and(always_throws_vector_function(c0), true:BOOLEAN)",
+      "Top-level Expression: and(always_throws_vector_function(c0), eq(cast((c0) as BIGINT), 1:BIGINT))",
       TestingAlwaysThrowsVectorFunction::kVeloxErrorMessage);
 
   exec::registerVectorFunction(
@@ -3663,10 +3774,10 @@ TEST_P(ParameterizedExprTest, applyFunctionNoResult) {
       std::make_unique<NoOpVectorFunction>());
 
   assertError(
-      "no_op(c0) AND true",
+      "no_op(c0) AND (c0 = 2)",
       makeFlatVector<int32_t>({1, 2, 3}),
       "no_op(c0)",
-      "Top-level Expression: and(no_op(c0), true:BOOLEAN)",
+      "Top-level Expression: and(no_op(c0), eq(cast((c0) as BIGINT), 2:BIGINT))",
       "Function neither returned results nor threw exception.");
 }
 
@@ -4421,8 +4532,9 @@ TEST_F(ExprTest, commonSubExpressionWithPeeling) {
       // is evaluated twice.
       auto queryCtx = velox::core::QueryCtx::create(
           nullptr,
-          core::QueryConfig(std::unordered_map<std::string, std::string>{
-              {core::QueryConfig::kMaxSharedSubexprResultsCached, "1"}}));
+          core::QueryConfig(
+              std::unordered_map<std::string, std::string>{
+                  {core::QueryConfig::kMaxSharedSubexprResultsCached, "1"}}));
       core::ExecCtx execCtx(pool_.get(), queryCtx.get());
       auto results = makeRowVector(evaluateMultiple(
           {expr1, expr2, expr1, expr2}, data, std::nullopt, &execCtx));
@@ -5176,17 +5288,11 @@ TEST_F(ExprTest, peelingOnDeterministicFunctionInNonDeterministicExpr) {
 }
 
 TEST_F(ExprTest, lambdaConstantFolded) {
-  const auto makeTypedExpr =
-      [this](const std::string& text, const RowTypePtr& rowType) {
-        auto untyped = parse::parseExpr(text, {});
-        return core::Expressions::inferTypes(untyped, rowType, pool());
-      };
-
   // Test the resource clear of lambda constant folding which relies on an
   // uninitialized ExprSet for eval.
   std::string expression =
       "reduce(regexp_split('a,b,c,d,e,f,g,h',','), array[array['']], (acc, x) -> array[array[x]], (id) -> id)";
-  auto typedExpr = makeTypedExpr(expression, ROW({"c0"}, {INTEGER()}));
+  auto typedExpr = parseExpression(expression, ROW({"c0"}, {INTEGER()}));
   exec::ExprSet exprSet({typedExpr}, execCtx_.get());
   exprSet.clear();
 }

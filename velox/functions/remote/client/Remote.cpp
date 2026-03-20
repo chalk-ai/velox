@@ -20,7 +20,6 @@
 #include "velox/functions/remote/client/RemoteVectorFunction.h"
 #include "velox/functions/remote/client/ThriftClient.h"
 #include "velox/functions/remote/if/GetSerde.h"
-#include "velox/functions/remote/if/gen-cpp2/RemoteFunctionServiceAsyncClient.h"
 
 namespace facebook::velox::functions {
 namespace {
@@ -30,16 +29,17 @@ class RemoteThriftFunction : public RemoteVectorFunction {
   RemoteThriftFunction(
       const std::string& functionName,
       const std::vector<exec::VectorFunctionArg>& inputArgs,
-      const RemoteVectorFunctionMetadata& metadata)
+      const RemoteThriftVectorFunctionMetadata& metadata)
       : RemoteVectorFunction(functionName, inputArgs, metadata),
         location_(metadata.location),
-        thriftClient_(getThriftClient(location_, &eventBase_)) {}
+        client_(createClient(metadata)) {}
 
-  std::unique_ptr<remote::RemoteFunctionResponse> invokeRemoteFunction(
+  folly::coro::Task<std::unique_ptr<remote::RemoteFunctionResponse>>
+  invokeRemoteFunction(
       const remote::RemoteFunctionRequest& request) const override {
     auto remoteResponse = std::make_unique<remote::RemoteFunctionResponse>();
-    thriftClient_->sync_invokeFunction(*remoteResponse, request);
-    return remoteResponse;
+    client_->invokeFunction(*remoteResponse, request);
+    co_return remoteResponse;
   }
 
   std::string remoteLocationToString() const override {
@@ -47,17 +47,25 @@ class RemoteThriftFunction : public RemoteVectorFunction {
   }
 
  private:
+  std::unique_ptr<IRemoteFunctionClient> createClient(
+      const RemoteThriftVectorFunctionMetadata& metadata) {
+    if (metadata.clientFactory) {
+      return metadata.clientFactory(metadata.location, &eventBase_);
+    }
+    return getDefaultRemoteFunctionClient(metadata.location, &eventBase_);
+  }
+
   folly::SocketAddress location_;
   folly::EventBase eventBase_;
 
-  std::unique_ptr<RemoteFunctionClient> thriftClient_;
+  std::unique_ptr<IRemoteFunctionClient> client_;
 };
 
 std::shared_ptr<exec::VectorFunction> createRemoteFunction(
     const std::string& name,
     const std::vector<exec::VectorFunctionArg>& inputArgs,
     const core::QueryConfig& /*config*/,
-    const RemoteVectorFunctionMetadata& metadata) {
+    const RemoteThriftVectorFunctionMetadata& metadata) {
   return std::make_unique<RemoteThriftFunction>(name, inputArgs, metadata);
 }
 
@@ -70,25 +78,7 @@ void registerRemoteFunction(
     bool overwrite) {
   exec::registerStatefulVectorFunction(
       name,
-      signatures,
-      std::bind(
-          createRemoteFunction,
-          std::placeholders::_1,
-          std::placeholders::_2,
-          std::placeholders::_3,
-          metadata),
-      metadata,
-      overwrite);
-}
-
-void registerRemoteFunction(
-    const std::string& name,
-    std::vector<exec::FunctionSignaturePtr> signatures,
-    const RemoteVectorFunctionMetadata& metadata,
-    bool overwrite) {
-  exec::registerStatefulVectorFunction(
-      name,
-      signatures,
+      std::move(signatures),
       std::bind(
           createRemoteFunction,
           std::placeholders::_1,

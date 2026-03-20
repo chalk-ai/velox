@@ -21,16 +21,67 @@
 
 namespace facebook::velox::exec {
 
-std::pair<TypePtr, TypePtr> resolveAggregateFunction(
+namespace {
+std::string makeSignatureNotSupportedError(
+    const std::string& name,
+    const std::vector<TypePtr>& argTypes,
+    const std::vector<std::shared_ptr<AggregateFunctionSignature>>&
+        signatures) {
+  std::stringstream error;
+  error << "Aggregate function signature is not supported: "
+        << toString(name, argTypes)
+        << ". Supported signatures: " << toString(signatures) << ".";
+  return error.str();
+}
+} // namespace
+
+TypePtr resolveResultType(
     const std::string& name,
     const std::vector<TypePtr>& argTypes) {
   if (auto signatures = getAggregateFunctionSignatures(name)) {
     for (const auto& signature : signatures.value()) {
       SignatureBinder binder(*signature, argTypes);
       if (binder.tryBind()) {
-        return std::make_pair(
-            binder.tryResolveReturnType(),
-            binder.tryResolveType(signature->intermediateType()));
+        return binder.tryResolveReturnType();
+      }
+    }
+
+    VELOX_USER_FAIL(
+        makeSignatureNotSupportedError(name, argTypes, signatures.value()));
+  }
+
+  VELOX_USER_FAIL("Aggregate function not registered: {}", name);
+}
+
+TypePtr resolveResultTypeWithCoercions(
+    const std::string& name,
+    const std::vector<TypePtr>& argTypes,
+    std::vector<TypePtr>& coercions) {
+  coercions.clear();
+
+  if (auto signatures = getAggregateFunctionSignatures(name)) {
+    std::vector<FunctionSignaturePtr> baseSignatures(
+        signatures.value().begin(), signatures.value().end());
+    if (auto type = tryResolveReturnTypeWithCoercions(
+            baseSignatures, argTypes, coercions)) {
+      return type;
+    }
+
+    VELOX_USER_FAIL(
+        makeSignatureNotSupportedError(name, argTypes, signatures.value()));
+  }
+
+  VELOX_USER_FAIL("Aggregate function not registered: {}", name);
+}
+
+TypePtr resolveIntermediateType(
+    const std::string& name,
+    const std::vector<TypePtr>& argTypes) {
+  if (auto signatures = getAggregateFunctionSignatures(name)) {
+    for (const auto& signature : signatures.value()) {
+      SignatureBinder binder(*signature, argTypes);
+      if (binder.tryBind()) {
+        return binder.tryResolveType(signature->intermediateType());
       }
     }
 
@@ -39,7 +90,6 @@ std::pair<TypePtr, TypePtr> resolveAggregateFunction(
           << toString(name, argTypes)
           << ". Supported signatures: " << toString(signatures.value()) << ".";
     VELOX_USER_FAIL(error.str());
-
   } else {
     VELOX_USER_FAIL("Aggregate function not registered: {}", name);
   }

@@ -63,7 +63,9 @@ BiasVector<T>::BiasVector(
           valueType_ == TypeKind::TINYINT,
       "Invalid array type for biased values");
 
+#ifdef VELOX_ENABLE_LOAD_SIMD_VALUE_BUFFER
   biasBuffer_ = simd::setAll(bias_);
+#endif
   rawValues_ = values_->as<uint8_t>();
 }
 
@@ -96,7 +98,8 @@ std::unique_ptr<SimpleVector<uint64_t>> BiasVector<T>::hashAll() const {
 }
 
 template <typename T>
-const T BiasVector<T>::valueAtFast(vector_size_t idx) const {
+typename SimpleVector<T>::TValueAt BiasVector<T>::valueAtFast(
+    vector_size_t idx) const {
   switch (valueType_) {
     case TypeKind::INTEGER:
       return bias_ + reinterpret_cast<const int32_t*>(rawValues_)[idx];
@@ -109,6 +112,7 @@ const T BiasVector<T>::valueAtFast(vector_size_t idx) const {
   }
 }
 
+#ifdef VELOX_ENABLE_LOAD_SIMD_VALUE_BUFFER
 template <typename T>
 xsimd::batch<T> BiasVector<T>::loadSIMDValueBufferAt(size_t index) const {
   if constexpr (std::is_same_v<T, int64_t>) {
@@ -142,5 +146,6 @@ xsimd::batch<T> BiasVector<T>::loadSIMDValueBufferAt(size_t index) const {
     VELOX_UNSUPPORTED("Unsupported type for biased vector");
   }
 }
+#endif
 
 } // namespace facebook::velox

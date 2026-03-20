@@ -110,7 +110,7 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
 
   // The subscript of childSpecs will be set to this value if the column is
   // constant (either explicitly or because it's missing).
-  static constexpr int32_t kConstantChildSpecSubscript = -1;
+  static constexpr int32_t kConstantChildSpecSubscript{-1};
 
   SelectiveStructColumnReaderBase(
       const TypePtr& requestedType,
@@ -199,7 +199,7 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
 
   int64_t lazyVectorReadOffset_;
 
-  int64_t currentRowNumber_ = -1;
+  int64_t currentRowNumber_{-1};
 
   const Mutation* mutation_ = nullptr;
 
@@ -339,7 +339,7 @@ void SelectiveFlatMapColumnReaderHelper<T, KeyNode, FormatData>::read(
     reader_.advanceFieldReader(child, offset);
   }
   for (auto* child : reader_.children_) {
-    child->read(offset, activeRows, mapNulls);
+    child->readWithTiming(offset, activeRows, mapNulls);
     child->addParentNulls(offset, mapNulls, rows);
   }
   reader_.lazyVectorReadOffset_ = offset;
