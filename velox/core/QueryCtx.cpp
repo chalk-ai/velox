@@ -40,6 +40,7 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
       .connectorConfigs(std::move(connectorConfigs))
       .asyncDataCache(cache)
       .pool(std::move(pool))
+      .exprPool(std::move(expr_pool))
       .spillExecutor(spillExecutor)
       .queryId(std::move(queryId))
       .tokenProvider(std::move(tokenProvider))

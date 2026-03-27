@@ -334,7 +334,7 @@ if(VELOX_ENABLE_S3)
   if(AWSSDK_ROOT_DIR)
     list(APPEND CMAKE_PREFIX_PATH ${AWSSDK_ROOT_DIR})
   endif()
-  find_package(AWSSDK 1.11.654 REQUIRED COMPONENTS s3;identity-management)
+  find_package(AWSSDK 1.11.321 REQUIRED COMPONENTS s3;identity-management)
   add_definitions(-DVELOX_ENABLE_S3)
 endif()
 
@@ -654,7 +654,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO} OR ${VELOX_ENABLE_HIVE_CONNECTOR} OR VELOX_E
 endif()
 
 velox_set_source(simdjson)
-velox_resolve_dependency(simdjson 4.1.0)
+velox_resolve_dependency(simdjson 3.9.3)
 
 velox_set_source(FastFloat)
 velox_resolve_dependency(FastFloat)

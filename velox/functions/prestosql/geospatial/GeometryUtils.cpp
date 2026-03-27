@@ -265,7 +265,7 @@ std::optional<std::string> geometryInvalidReason(
       return fmt::format(
           "Unknown Geometry type: {}", geometry->getGeometryType());
   }
-  geos::geom::Coordinate nonSimpleLocation = isSimpleOp.getNonSimpleLocation();
+  const auto nonSimpleLocation = isSimpleOp.getNonSimpleLocation();
   return fmt::format(
       "Non-simple {}: {} ({} {})",
       geometry->getGeometryType(),

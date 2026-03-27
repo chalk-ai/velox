@@ -112,8 +112,8 @@ std::unique_ptr<SplitReader> SplitReader::create(
         connectorQueryCtx,
         hiveConfig,
         readerOutputType,
+        ioStatistics,
         ioStats,
-        fsStats,
         fileHandleFactory,
         ioExecutor,
         scanSpec);
@@ -127,8 +127,8 @@ std::unique_ptr<SplitReader> SplitReader::create(
         connectorQueryCtx,
         hiveConfig,
         readerOutputType,
+        ioStatistics,
         ioStats,
-        fsStats,
         fileHandleFactory,
         ioExecutor,
         scanSpec);
