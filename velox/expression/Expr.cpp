@@ -695,16 +695,35 @@ std::string onTopLevelException(VeloxException::Type exceptionType, void* arg) {
   if (strlen(basePath) == 0 && exceptionType == VeloxException::Type::kSystem) {
     basePath = FLAGS_velox_save_input_on_expression_system_failure_path.c_str();
   }
+
+  const auto& owner = context->expr()->vectorFunctionMetadata().owner;
   if (strlen(basePath) == 0) {
-    return fmt::format("Top-level Expression: {}", context->expr()->toString());
+    if (owner.empty()) {
+      return fmt::format(
+          "Top-level Expression: {}", context->expr()->toString());
+    }
+    return fmt::format(
+        "Owner: {}. Top-level Expression: {}",
+        owner,
+        context->expr()->toString());
   }
 
   // Save input vector to a file.
   context->persistDataAndSql(basePath);
 
+  if (owner.empty()) {
+    return fmt::format(
+        "Top-level Expression: {}. Input data: {}. SQL expression: {}."
+        " All SQL expressions: {}. ",
+        context->expr()->toString(),
+        context->dataPath(),
+        context->sqlPath(),
+        context->allExprSqlPath());
+  }
   return fmt::format(
-      "Top-level Expression: {}. Input data: {}. SQL expression: {}."
+      "Owner: {}. Top-level Expression: {}. Input data: {}. SQL expression: {}."
       " All SQL expressions: {}. ",
+      owner,
       context->expr()->toString(),
       context->dataPath(),
       context->sqlPath(),
@@ -715,7 +734,12 @@ std::string onTopLevelException(VeloxException::Type exceptionType, void* arg) {
 /// sub-expression. Returns the output of Expr::toString() for the
 /// sub-expression.
 std::string onException(VeloxException::Type /*exceptionType*/, void* arg) {
-  return static_cast<Expr*>(arg)->toString();
+  auto* expr = static_cast<Expr*>(arg);
+  const auto& owner = expr->vectorFunctionMetadata().owner;
+  if (owner.empty()) {
+    return static_cast<Expr*>(arg)->toString();
+  }
+  return fmt::format("Owner: {}. Expression: {}", owner, expr->toString());
 }
 } // namespace
 
@@ -790,7 +814,8 @@ void Expr::eval(
     VectorPtr& result,
     const ExprSet* parentExprSet) {
   if (supportsFlatNoNullsFastPath_ && context.throwOnError() &&
-      context.inputFlatNoNulls() && rows.countSelected() < 1'000) {
+      context.inputFlatNoNulls() &&
+      context.execCtx()->queryCtx()->queryConfig().exprEvalFlatNoNulls()) {
     evalFlatNoNulls(rows, context, result, parentExprSet);
     checkResultInternalState(result);
     return;
@@ -1749,24 +1774,29 @@ common::Subfield extractSubfield(
     }
     switch (index->value()->typeKind()) {
       case TypeKind::TINYINT:
-        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
-            index->value()->as<ConstantVector<int8_t>>()->value()));
+        path.push_back(
+            std::make_unique<common::Subfield::LongSubscript>(
+                index->value()->as<ConstantVector<int8_t>>()->value()));
         break;
       case TypeKind::SMALLINT:
-        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
-            index->value()->as<ConstantVector<int16_t>>()->value()));
+        path.push_back(
+            std::make_unique<common::Subfield::LongSubscript>(
+                index->value()->as<ConstantVector<int16_t>>()->value()));
         break;
       case TypeKind::INTEGER:
-        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
-            index->value()->as<ConstantVector<int32_t>>()->value()));
+        path.push_back(
+            std::make_unique<common::Subfield::LongSubscript>(
+                index->value()->as<ConstantVector<int32_t>>()->value()));
         break;
       case TypeKind::BIGINT:
-        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
-            index->value()->as<ConstantVector<int64_t>>()->value()));
+        path.push_back(
+            std::make_unique<common::Subfield::LongSubscript>(
+                index->value()->as<ConstantVector<int64_t>>()->value()));
         break;
       case TypeKind::VARCHAR:
-        path.push_back(std::make_unique<common::Subfield::StringSubscript>(
-            index->value()->as<ConstantVector<StringView>>()->value()));
+        path.push_back(
+            std::make_unique<common::Subfield::StringSubscript>(std::string(
+                index->value()->as<ConstantVector<StringView>>()->value())));
         break;
       default:
         return {};
@@ -2123,13 +2153,16 @@ core::ExecCtx* SimpleExpressionEvaluator::ensureExecCtx() {
   return execCtx_.get();
 }
 
-VectorPtr tryEvaluateConstantExpression(
+namespace {
+VectorPtr tryEvaluateConstantExpressionInternal(
     const core::TypedExprPtr& expr,
     memory::MemoryPool* pool,
-    const std::shared_ptr<core::QueryCtx>& queryCtx,
+    core::ExecCtx* execCtx,
     bool suppressEvaluationFailures) {
-  velox::core::ExecCtx execCtx{pool, queryCtx.get()};
-  velox::exec::ExprSet exprSet({expr}, &execCtx);
+  // Disable constant folding to avoid an infinite loop between ExprOptimizer
+  // and ExprCompiler.
+  velox::exec::ExprSet exprSet(
+      {expr}, execCtx, /*enableConstantFolding*/ false);
 
   // The construction of ExprSet involves compiling and constant folding the
   // expression. If constant folding succeeded, then we get a ConstantExpr.
@@ -2142,7 +2175,7 @@ VectorPtr tryEvaluateConstantExpression(
 
   if (doEvaluate) {
     auto data = BaseVector::create<RowVector>(ROW({}), 1, pool);
-    velox::exec::EvalCtx evalCtx(&execCtx, &exprSet, data.get());
+    velox::exec::EvalCtx evalCtx(execCtx, &exprSet, data.get());
     velox::SelectivityVector singleRow(1);
     std::vector<velox::VectorPtr> results(1);
     exprSet.eval(singleRow, evalCtx, results);
@@ -2150,6 +2183,27 @@ VectorPtr tryEvaluateConstantExpression(
   }
 
   return nullptr;
+}
+} // namespace
+
+VectorPtr tryEvaluateConstantExpression(
+    const core::TypedExprPtr& expr,
+    memory::MemoryPool* pool,
+    const std::shared_ptr<core::QueryCtx>& queryCtx,
+    bool suppressEvaluationFailures) {
+  velox::core::ExecCtx execCtx{pool, queryCtx.get()};
+  return tryEvaluateConstantExpressionInternal(
+      expr, pool, &execCtx, suppressEvaluationFailures);
+}
+
+VectorPtr tryEvaluateConstantExpression(
+    const core::TypedExprPtr& expr,
+    memory::MemoryPool* pool,
+    core::QueryCtx* queryCtx,
+    bool suppressEvaluationFailures) {
+  velox::core::ExecCtx execCtx{pool, queryCtx};
+  return tryEvaluateConstantExpressionInternal(
+      expr, pool, &execCtx, suppressEvaluationFailures);
 }
 
 } // namespace facebook::velox::exec

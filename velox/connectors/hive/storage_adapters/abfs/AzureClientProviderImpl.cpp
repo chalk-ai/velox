@@ -17,71 +17,54 @@
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
 
 #include <azure/identity/client_secret_credential.hpp>
+#include <azure/identity/default_azure_credential.hpp>
 
 namespace facebook::velox::filesystems {
 
-namespace {
 
-class DataLakeFileClientWrapper final : public AzureDataLakeFileClient {
- public:
-  DataLakeFileClientWrapper(std::unique_ptr<DataLakeFileClient> client)
-      : client_(std::move(client)) {}
+void DataLakeFileClientWrapper::create() {
+  client_->Create();
+}
 
-  void create() override {
-    client_->Create();
-  }
+Azure::Storage::Files::DataLake::Models::PathProperties
+DataLakeFileClientWrapper::getProperties() {
+  return client_->GetProperties().Value;
+}
 
-  Azure::Storage::Files::DataLake::Models::PathProperties getProperties()
-      override {
-    return client_->GetProperties().Value;
-  }
+void DataLakeFileClientWrapper::append(
+    const uint8_t* buffer,
+    size_t size,
+    uint64_t offset) {
+  auto bodyStream = Azure::Core::IO::MemoryBodyStream(buffer, size);
+  client_->Append(bodyStream, offset);
+}
 
-  void append(const uint8_t* buffer, size_t size, uint64_t offset) override {
-    auto bodyStream = Azure::Core::IO::MemoryBodyStream(buffer, size);
-    client_->Append(bodyStream, offset);
-  }
+void DataLakeFileClientWrapper::flush(uint64_t position) {
+  client_->Flush(position);
+}
 
-  void flush(uint64_t position) override {
-    client_->Flush(position);
-  }
+void DataLakeFileClientWrapper::close() {
+  // do nothing.
+}
 
-  void close() override {
-    // do nothing.
-  }
+std::string DataLakeFileClientWrapper::getUrl() {
+  return client_->GetUrl();
+}
 
-  std::string getUrl() override {
-    return client_->GetUrl();
-  }
+Azure::Response<Azure::Storage::Blobs::Models::BlobProperties>
+BlobClientWrapper::getProperties() {
+  return blobClient_->GetProperties();
+}
 
- private:
-  const std::unique_ptr<DataLakeFileClient> client_;
-};
+Azure::Response<Azure::Storage::Blobs::Models::DownloadBlobResult>
+BlobClientWrapper::download(
+    const Azure::Storage::Blobs::DownloadBlobOptions& options) {
+  return blobClient_->Download(options);
+}
 
-class BlobClientWrapper : public AzureBlobClient {
- public:
-  BlobClientWrapper(std::unique_ptr<Azure::Storage::Blobs::BlobClient> client) {
-    blobClient_ = std::move(client);
-  }
-
-  Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
-      override {
-    return blobClient_->GetProperties();
-  }
-
-  Azure::Response<Azure::Storage::Blobs::Models::DownloadBlobResult> download(
-      const Azure::Storage::Blobs::DownloadBlobOptions& options) override {
-    return blobClient_->Download(options);
-  }
-
-  std::string getUrl() override {
-    return blobClient_->GetUrl();
-  }
-
- private:
-  std::unique_ptr<Azure::Storage::Blobs::BlobClient> blobClient_;
-};
-
-} // namespace
+std::string BlobClientWrapper::getUrl() {
+  return blobClient_->GetUrl();
+}
 
 std::unique_ptr<AzureBlobClient>
 SharedKeyAzureClientProvider::getReadFileClient(
@@ -199,6 +182,28 @@ void OAuthAzureClientProvider::init(
       config.get<std::string>(clientIdKey).value(),
       config.get<std::string>(clientSecretKey).value(),
       options);
+}
+
+std::unique_ptr<AzureBlobClient>
+DefaultAzureCredentialProvider::getReadFileClient(
+    const std::shared_ptr<AbfsPath>& abfsPath,
+    const config::ConfigBase& config) {
+  auto credential =
+      std::make_shared<Azure::Identity::DefaultAzureCredential>();
+  const auto url = abfsPath->getUrl(true); // true = use blob endpoint
+  auto client = std::make_unique<BlobClient>(url, credential);
+  return std::make_unique<BlobClientWrapper>(std::move(client));
+}
+
+std::unique_ptr<AzureDataLakeFileClient>
+DefaultAzureCredentialProvider::getWriteFileClient(
+    const std::shared_ptr<AbfsPath>& abfsPath,
+    const config::ConfigBase& config) {
+  auto credential =
+      std::make_shared<Azure::Identity::DefaultAzureCredential>();
+  const auto url = abfsPath->getUrl(false); // false = use datalake endpoint
+  auto client = std::make_unique<DataLakeFileClient>(url, credential);
+  return std::make_unique<DataLakeFileClientWrapper>(std::move(client));
 }
 
 std::unique_ptr<AzureBlobClient> FixedSasAzureClientProvider::getReadFileClient(

@@ -35,7 +35,6 @@ namespace facebook::velox::functions {
 // vector function definition.
 // Higher order functions.
 void registerSparkArrayFunctions(const std::string& prefix) {
-  VELOX_REGISTER_VECTOR_FUNCTION(udf_transform, prefix + "transform");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_reduce, prefix + "aggregate");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_constructor, prefix + "array");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_contains, prefix + "array_contains");
@@ -46,12 +45,12 @@ void registerSparkArrayFunctions(const std::string& prefix) {
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_position, prefix + "array_position");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_zip, prefix + "arrays_zip");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_any_match, prefix + "exists");
-  VELOX_REGISTER_VECTOR_FUNCTION(udf_array_filter, prefix + "filter");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_all_match, prefix + "forall");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_zip_with, prefix + "zip_with");
 }
 
 namespace sparksql {
+
 template <typename T>
 inline void registerArrayConcatFunction(const std::string& prefix) {
   registerFunction<
@@ -216,6 +215,10 @@ void registerArrayFunctions(const std::string& prefix) {
   registerArrayRemoveFunctions(prefix);
   registerArrayPrependFunctions(prefix);
   registerSparkArrayFunctions(prefix);
+  // Register Spark-specific filter with index support.
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_spark_filter, prefix + "filter");
+  // Register Spark-specific transform with index support.
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_spark_transform, prefix + "transform");
   // Register array sort functions.
   exec::registerStatefulVectorFunction(
       prefix + "array_sort", arraySortSignatures(true), makeArraySortAsc);
@@ -252,6 +255,7 @@ void registerArrayFunctions(const std::string& prefix) {
       makeArrayShuffleWithCustomSeed,
       getMetadataForArrayShuffle());
   registerIntegerSliceFunction(prefix);
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_spark_sequence, prefix + "sequence");
   registerFunction<
       ArrayAppendFunction,
       Array<Generic<T1>>,

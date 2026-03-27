@@ -18,6 +18,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/type/CppToType.h"
 #include "velox/type/SimpleFunctionApi.h"
+#include "velox/type/TimestampConversion.h"
 #include "velox/type/TypeEncodingUtil.h"
 #include "velox/type/tests/utils/CustomTypesForTesting.h"
 
@@ -577,20 +578,21 @@ TEST(TypeTest, rowParametersMultiThreaded) {
   }
   auto type = ROW(std::move(names), std::move(types));
   constexpr int kNumThreads = 72;
-  const std::vector<TypeParameter>* parameters[kNumThreads];
+  std::span<const TypeParameter> parameters[kNumThreads];
   std::vector<std::thread> threads;
   for (int i = 0; i < kNumThreads; ++i) {
-    threads.emplace_back([&, i] { parameters[i] = &type->parameters(); });
+    threads.emplace_back([&, i] { parameters[i] = type->parameters(); });
   }
   for (auto& thread : threads) {
     thread.join();
   }
   for (int i = 1; i < kNumThreads; ++i) {
-    ASSERT_TRUE(parameters[i] == parameters[0]);
+    ASSERT_TRUE(parameters[i].data() == parameters[0].data());
+    ASSERT_TRUE(parameters[i].size() == parameters[0].size());
   }
-  ASSERT_EQ(parameters[0]->size(), type->size());
-  for (int i = 0; i < parameters[0]->size(); ++i) {
-    ASSERT_TRUE((*parameters[0])[i].type.get() == type->childAt(i).get());
+  ASSERT_EQ(parameters[0].size(), type->size());
+  for (int i = 0; i < parameters[0].size(); ++i) {
+    ASSERT_TRUE(parameters[0][i].type.get() == type->childAt(i).get());
   }
 }
 
@@ -660,12 +662,24 @@ TEST(TypeTest, opaque) {
   auto foo3 = Type::create(foo->serialize());
   ASSERT_EQ(*foo, *foo3);
 
+  // Clearing the serialization registry when no serialization/deserialization
+  // functions have been provided, should return true, since the registry
+  // contained nullptr as serialization/deserialization functions.
+  EXPECT_TRUE(OpaqueType::unregisterSerialization(foo2, "id_of_foo"));
+  // Clearing the serialization registry a second time should return false.
+  EXPECT_FALSE(OpaqueType::unregisterSerialization(foo2, "id_of_foo"));
+
   OpaqueType::registerSerialization<Bar>(
       "id_of_bar",
       [](const std::shared_ptr<Bar>&) -> std::string { return ""; },
       [](const std::string&) -> std::shared_ptr<Bar> { return nullptr; });
   bar->getSerializeFunc();
   bar->getDeserializeFunc();
+
+  // Clearing the serialization registry should return true.
+  EXPECT_TRUE(
+      OpaqueType::unregisterSerialization(
+          OpaqueType::create<Bar>(), "id_of_bar"));
 }
 
 // Example of an opaque type that keeps some additional type-level metadata.
@@ -1155,8 +1169,9 @@ TEST(TypeTest, providesCustomComparison) {
 
   // This type claims it providesCustomComparison but does not implement the
   // compare and hash functions so invoking them should still fail.
-  EXPECT_TRUE(test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()
-                  ->providesCustomComparison());
+  EXPECT_TRUE(
+      test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()
+          ->providesCustomComparison());
   EXPECT_THROW(
       test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()->compare(0, 0),
       VeloxRuntimeError);
@@ -1223,4 +1238,25 @@ TEST(TypeTest, time) {
   ASSERT_TRUE(timeType->isComparable());
 
   testTypeSerde(timeType);
+}
+
+TEST(TypeTest, timeToIso8601) {
+  const auto toIso8601 =
+      [](int64_t hours, int64_t minutes, int64_t seconds, int64_t micros) {
+        return TimeType::toCompactIso8601(
+            hours * util::kMicrosPerHour + minutes * util::kMicrosPerMinute +
+            seconds * util::kMicrosPerSec + micros);
+      };
+
+  EXPECT_EQ("00:00", toIso8601(0, 0, 0, 0));
+  EXPECT_EQ("00:00:00.000001", toIso8601(0, 0, 0, 1));
+  EXPECT_EQ("00:00:00.100", toIso8601(0, 0, 0, 100'000));
+  EXPECT_EQ("00:00:01", toIso8601(0, 0, 1, 0));
+  EXPECT_EQ("00:00:00.001", toIso8601(0, 0, 0, 1'000));
+  EXPECT_EQ("00:00:00.038", toIso8601(0, 0, 0, 38'000));
+  EXPECT_EQ("00:00:00.038001", toIso8601(0, 0, 0, 38'001));
+  EXPECT_EQ("00:00:00.038100", toIso8601(0, 0, 0, 38'100));
+  EXPECT_EQ("08:08:08", toIso8601(8, 8, 8, 0));
+  EXPECT_EQ("10:12:55.038", toIso8601(10, 12, 55, 38'000));
+  EXPECT_EQ("23:59:59.999999", toIso8601(23, 59, 59, 999'999));
 }

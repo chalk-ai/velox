@@ -122,7 +122,7 @@ Memory Manager
     :alt: Memory Manager
 
 The memory manager is created on server startup with the provided
-*MemoryManagerOption*. It creates a memory allocator instance to manage the
+*MemoryManager::Options*. It creates a memory allocator instance to manage the
 physical memory allocations for both query memory allocated through memory pool
 and cache memory allocated through the file cache. It ensures the total
 allocated memory is within the system memory limit (specified by
@@ -667,7 +667,7 @@ Here is the memory reclaim process within a query:
    reclamation through disk spilling and table writer flush. *Operator::reclaim*
    is added to support memory reclamation with the default implementation does
    nothing. Only spillable operators override that method: *OrderBy*, *HashBuild*,
-   *HashAggregation*, *RowNumber*, *TopNRowNumber*, *Window* and *TableWriter*.
+   *HashAggregation*, *RowNumber*, *TopNRowNumber*, *MarkDistinct*, *Window* and *TableWriter*.
    As for now, we simply spill everything from the spillable operator’s row
    container to free up memory. After we add memory compaction support for row
    containers, we could leverage fine-grained disk spilling features in Velox

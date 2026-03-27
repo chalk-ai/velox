@@ -123,8 +123,11 @@ class PrestoSerializerTest
         serdeOptions == nullptr ? false : serdeOptions->nullsFirst;
     const bool preserveEncodings =
         serdeOptions == nullptr ? false : serdeOptions->preserveEncodings;
+    const bool useMicrosecondPrecision =
+        serdeOptions == nullptr ? false : serdeOptions->useMicrosecondPrecision;
     serializer::presto::PrestoVectorSerde::PrestoOptions paramOptions{
         useLosslessTimestamp, kind, 0.8, nullsFirst, preserveEncodings};
+    paramOptions.useMicrosecondPrecision = useMicrosecondPrecision;
 
     return paramOptions;
   }
@@ -1157,6 +1160,40 @@ TEST_P(PrestoSerializerTest, timestampWithNanosecondPrecision) {
   assertEqualVectors(deserialized, expectedOutputWithLostPrecision);
 }
 
+TEST_P(PrestoSerializerTest, timestampMicrosecondPrecision) {
+  auto timestamps = makeFlatVector<Timestamp>({
+      Timestamp::fromMicros(1704067200000000),
+      Timestamp::fromMicros(1704153600000000),
+      Timestamp::fromMicros(-1000000),
+      Timestamp::fromMicros(0),
+  });
+
+  serializer::presto::PrestoVectorSerde::PrestoOptions opts;
+  opts.useMicrosecondPrecision = true;
+  testRoundTrip(timestamps, &opts);
+}
+
+TEST_P(PrestoSerializerTest, timestampMicrosecondPrecisionSomeNulls) {
+  auto timestamps = makeNullableFlatVector<Timestamp>(
+      {Timestamp::fromMicros(1704067200000000),
+       std::nullopt,
+       Timestamp::fromMicros(0),
+       std::nullopt});
+
+  serializer::presto::PrestoVectorSerde::PrestoOptions opts;
+  opts.useMicrosecondPrecision = true;
+  testRoundTrip(timestamps, &opts);
+}
+
+TEST_P(PrestoSerializerTest, timestampMicrosecondPrecisionAllNulls) {
+  auto timestamps = makeNullableFlatVector<Timestamp>(
+      {std::nullopt, std::nullopt, std::nullopt, std::nullopt});
+
+  serializer::presto::PrestoVectorSerde::PrestoOptions opts;
+  opts.useMicrosecondPrecision = true;
+  testRoundTrip(timestamps, &opts);
+}
+
 TEST_P(PrestoSerializerTest, longDecimal) {
   std::vector<int128_t> decimalValues(102);
   decimalValues[0] = DecimalUtil::kLongDecimalMin;
@@ -1934,13 +1971,9 @@ class PrestoSerializerBatchEstimateSizeTest : public testing::Test,
     if (!isRegisteredVectorSerde()) {
       serializer::presto::PrestoVectorSerde::registerVectorSerde();
     }
-    ASSERT_EQ(getVectorSerde()->kind(), VectorSerde::Kind::kPresto);
-    if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kPresto)) {
+    if (!isRegisteredNamedVectorSerde("Presto")) {
       serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
     }
-    ASSERT_EQ(
-        getNamedVectorSerde(VectorSerde::Kind::kPresto)->kind(),
-        VectorSerde::Kind::kPresto);
 
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }

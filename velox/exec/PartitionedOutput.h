@@ -33,6 +33,7 @@ class Destination {
       const std::string& taskId,
       int destination,
       VectorSerde* serde,
+      const std::string& serdeKind,
       VectorSerde::Options* options,
       memory::MemoryPool* pool,
       bool eagerFlush,
@@ -102,9 +103,19 @@ class Destination {
     targetNumRows_ = (10'000 * targetSizePct_) / 100;
   }
 
+  // Creates VectorStreamGroup if needed. May recreate the stream tree
+  // after flush() to reinitialize the serializer.
+  void createVectorStreamGroup(const RowVectorPtr& output);
+
+  // Clears the VectorStreamGroup and marks it for recreation.
+  // This ensures the serializer is properly reinitialized before the next
+  // append to avoid crashes from stale references to freed StreamArena memory.
+  void clearVectorStreamGroup();
+
   const std::string taskId_;
   const int destination_;
   VectorSerde* const serde_;
+  const std::string serdeKind_;
   VectorSerde::Options* const serdeOptions_;
   memory::MemoryPool* const pool_;
   const bool eagerFlush_;
@@ -122,6 +133,16 @@ class Destination {
   // The current stream where the input is serialized to. This is cleared on
   // every flush() call.
   std::unique_ptr<VectorStreamGroup> current_;
+
+  // Whether the stream tree needs to be recreated. Set after flush() to ensure
+  // proper initialization of the serializer before the next append.
+  bool needsStreamTreeRecreation_{false};
+
+  // Accumulated runtime stats from previous serialization cycles. Stats are
+  // collected before recreating the stream tree to avoid losing compression
+  // metrics from earlier flushes.
+  std::unordered_map<std::string, RuntimeCounter> accumulatedStats_;
+
   bool finished_{false};
 
   // Flush accumulated data to buffer manager after reaching this
@@ -220,6 +241,7 @@ class PartitionedOutput : public Operator {
   const int64_t maxBufferedBytes_;
   const bool eagerFlush_;
   VectorSerde* const serde_;
+  const std::string serdeKind_;
   const std::unique_ptr<VectorSerde::Options> serdeOptions_;
 
   BlockingReason blockingReason_{BlockingReason::kNotBlocked};

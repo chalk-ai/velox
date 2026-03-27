@@ -23,6 +23,7 @@
 #include "velox/functions/prestosql/InPredicate.h"
 #include "velox/functions/prestosql/Reduce.h"
 #include "velox/functions/prestosql/types/IPAddressType.h"
+#include "velox/functions/prestosql/types/TimeWithTimezoneType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 
 namespace facebook::velox::functions {
@@ -60,6 +61,8 @@ void registerAllGreatestLeastFunctions(const std::string& prefix) {
   registerGreatestLeastFunction<Timestamp>(prefix);
   registerGreatestLeastFunction<TimestampWithTimezone>(prefix);
   registerGreatestLeastFunction<IPAddress>(prefix);
+  registerGreatestLeastFunction<Time>(prefix);
+  registerGreatestLeastFunction<TimeWithTimezone>(prefix);
 }
 } // namespace
 
@@ -88,6 +91,8 @@ void registerGeneralFunctions(const std::string& prefix) {
   registerElementAtFunction(prefix + "element_at", true);
 
   VELOX_REGISTER_VECTOR_FUNCTION(udf_transform, prefix + "transform");
+  VELOX_REGISTER_VECTOR_FUNCTION(
+      udf_transform_with_index, prefix + "transform_with_index");
   VELOX_REGISTER_VECTOR_FUNCTION(udf_reduce, prefix + "reduce");
   registerReduceRewrites(prefix);
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_filter, prefix + "filter");

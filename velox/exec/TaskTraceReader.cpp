@@ -18,8 +18,8 @@
 
 #include "velox/common/file/FileSystems.h"
 #include "velox/core/PlanNode.h"
-#include "velox/exec/Trace.h"
-#include "velox/exec/TraceUtil.h"
+#include "velox/exec/trace/Trace.h"
+#include "velox/exec/trace/TraceUtil.h"
 
 namespace facebook::velox::exec::trace {
 
@@ -31,9 +31,10 @@ TaskTraceMetadataReader::TaskTraceMetadataReader(
       traceFilePath_(getTaskTraceMetaFilePath(traceDir_)),
       pool_(pool),
       metadataObj_(getTaskMetadata(traceFilePath_, fs_)),
-      tracePlanNode_(ISerializable::deserialize<core::PlanNode>(
-          metadataObj_[TraceTraits::kPlanNodeKey],
-          pool_)) {}
+      tracePlanNode_(
+          ISerializable::deserialize<core::PlanNode>(
+              metadataObj_[TraceTraits::kPlanNodeKey],
+              pool_)) {}
 
 std::unordered_map<std::string, std::string>
 TaskTraceMetadataReader::queryConfigs() const {
@@ -70,6 +71,8 @@ std::string TaskTraceMetadataReader::nodeName(const std::string& nodeId) const {
              << tracePlanNode_->toString(true, true);
   const auto* traceNode =
       core::PlanNode::findNodeById(tracePlanNode_.get(), nodeId);
+  VELOX_CHECK_NOT_NULL(
+      traceNode, "trace node id {} not found in the trace plan", nodeId);
   return std::string(traceNode->name());
 }
 
@@ -77,6 +80,11 @@ std::optional<std::string> TaskTraceMetadataReader::connectorId(
     const std::string& nodeId) const {
   const auto* traceNode =
       core::PlanNode::findNodeById(tracePlanNode_.get(), nodeId);
+  VELOX_CHECK_NOT_NULL(
+      traceNode,
+      "trace node id {} not found in the trace plan: {}",
+      nodeId,
+      tracePlanNode_->toString(true, true));
 
   if (const auto* indexLookupJoinNode =
           dynamic_cast<const core::IndexLookupJoinNode*>(traceNode)) {

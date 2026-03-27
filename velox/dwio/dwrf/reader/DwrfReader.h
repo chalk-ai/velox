@@ -111,8 +111,7 @@ class DwrfRowReader : public StrideIndexProvider,
     stats.processedStrides += processedStrides_;
     stats.footerBufferOverread += getReader().footerBufferOverread();
     stats.numStripes += stripeCeiling_ - firstStripe_;
-    stats.columnReaderStatistics.flattenStringDictionaryValues +=
-        columnReaderStatistics_.flattenStringDictionaryValues;
+    stats.columnReaderStats.mergeFrom(*columnReaderStats_);
     stats.unitLoaderStats.merge(unitLoadStats_);
   }
 
@@ -149,11 +148,14 @@ class DwrfRowReader : public StrideIndexProvider,
   }
 
  private:
-  bool shouldReadNode(uint32_t nodeId) const;
+  bool shouldReadNode(
+      uint32_t nodeId,
+      const velox::common::ScanSpec* fieldScanSpec) const;
 
   std::optional<size_t> estimatedRowSizeHelper(
       const FooterWrapper& fileFooter,
       const dwio::common::Statistics& stats,
+      const velox::common::ScanSpec* scanSpec,
       uint32_t nodeId) const;
 
   bool emptyFile() const {
@@ -218,7 +220,7 @@ class DwrfRowReader : public StrideIndexProvider,
   // instead of next stripe.
   bool recomputeStridesToSkip_{false};
 
-  dwio::common::ColumnReaderStatistics columnReaderStatistics_;
+  std::shared_ptr<dwio::common::ColumnReaderStatistics> columnReaderStats_;
 
   std::optional<int64_t> nextRowNumber_;
 

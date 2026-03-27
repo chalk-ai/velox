@@ -37,7 +37,7 @@ re2::StringPiece toStringPiece(const T& s) {
 namespace detail {
 
 Expected<RE2*> ReCache::tryFindOrCompile(const StringView& pattern) {
-  const std::string key = pattern;
+  const auto key = std::string(pattern);
 
   auto reIt = cache_.find(key);
   if (reIt != cache_.end()) {
@@ -866,8 +866,9 @@ class LikeWithRe2 final : public exec::VectorFunction {
     VELOX_CHECK(args.size() == 2 || args.size() == 3);
 
     if (!validPattern_) {
-      auto error = std::make_exception_ptr(std::invalid_argument(
-          "Escape character must be followed by '%', '_' or the escape character itself"));
+      auto error = std::make_exception_ptr(
+          std::invalid_argument(
+              "Escape character must be followed by '%', '_' or the escape character itself"));
       context.setErrors(rows, error);
       return;
     }
@@ -1719,7 +1720,7 @@ std::shared_ptr<exec::VectorFunction> makeRe2Extract(
             groupIdTypeKind == TypeKind::BIGINT,
         "{} requires third argument of type INTEGER or BIGINT, but got {}",
         name,
-        mapTypeKindToName(groupIdTypeKind));
+        TypeKindName::toName(groupIdTypeKind));
   }
 
   BaseVector* constantPattern = inputArgs[1].constantValue.get();
@@ -2153,16 +2154,18 @@ PatternMetadata determinePatternKind(
           return PatternMetadata::prefix(
               std::string(unescapedPattern, 0, firstSubPatternLength));
         } else if (lastSubPatternKind == SubPatternKind::kLiteralString) {
-          return PatternMetadata::suffix(std::string(
-              unescapedPattern, lastSubPatternStart, lastSubPatternLength));
+          return PatternMetadata::suffix(
+              std::string(
+                  unescapedPattern, lastSubPatternStart, lastSubPatternLength));
         } else if (
             numSubPatterns == 3 &&
             firstSubPatternKind == SubPatternKind::kAnyCharsWildcard &&
             lastSubPatternKind == SubPatternKind::kAnyCharsWildcard) {
-          return PatternMetadata::substring(std::string(
-              unescapedPattern,
-              subPatternRanges[1].first,
-              subPatternRanges[1].second));
+          return PatternMetadata::substring(
+              std::string(
+                  unescapedPattern,
+                  subPatternRanges[1].first,
+                  subPatternRanges[1].second));
         }
       }
 
@@ -2372,7 +2375,7 @@ std::shared_ptr<exec::VectorFunction> makeRe2ExtractAll(
             groupIdTypeKind == TypeKind::BIGINT,
         "{} requires third argument of type INTEGER or BIGINT, but got {}",
         name,
-        mapTypeKindToName(groupIdTypeKind));
+        TypeKindName::toName(groupIdTypeKind));
   }
 
   BaseVector* constantPattern = inputArgs[1].constantValue.get();

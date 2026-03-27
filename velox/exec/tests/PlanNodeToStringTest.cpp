@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/WindowFunction.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/parse/TypeResolver.h"
+#include "velox/serializers/RegisterAllVectorSerdes.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 #include <gtest/gtest.h>
@@ -36,6 +38,7 @@ class PlanNodeToStringTest : public testing::Test,
     functions::prestosql::registerAllScalarFunctions();
     aggregate::prestosql::registerAllAggregateFunctions();
     parse::registerTypeResolver();
+    registerAllNamedVectorSerdes();
     data_ = makeRowVector(
         {makeFlatVector<int16_t>({0, 1, 2, 3, 4}),
          makeFlatVector<int32_t>({0, 1, 2, 3, 4}),
@@ -592,10 +595,8 @@ TEST_F(PlanNodeToStringTest, localPartition) {
 }
 
 TEST_F(PlanNodeToStringTest, partitionedOutput) {
-  for (auto serdeKind : std::vector<VectorSerde::Kind>{
-           VectorSerde::Kind::kPresto,
-           VectorSerde::Kind::kCompactRow,
-           VectorSerde::Kind::kUnsafeRow}) {
+  for (auto serdeKind :
+       std::vector<std::string>{"Presto", "CompactRow", "UnsafeRow"}) {
     SCOPED_TRACE(fmt::format("serdeKind: {}", serdeKind));
     auto plan =
         PlanBuilder()
@@ -698,10 +699,8 @@ TEST_F(PlanNodeToStringTest, localMerge) {
 }
 
 TEST_F(PlanNodeToStringTest, exchange) {
-  for (auto serdeKind : std::vector<VectorSerde::Kind>{
-           VectorSerde::Kind::kPresto,
-           VectorSerde::Kind::kCompactRow,
-           VectorSerde::Kind::kUnsafeRow}) {
+  for (auto serdeKind :
+       std::vector<std::string>{"Presto", "CompactRow", "UnsafeRow"}) {
     SCOPED_TRACE(fmt::format("serdeKind: {}", serdeKind));
 
     auto plan = PlanBuilder()
@@ -716,10 +715,8 @@ TEST_F(PlanNodeToStringTest, exchange) {
 }
 
 TEST_F(PlanNodeToStringTest, mergeExchange) {
-  for (auto serdeKind : std::vector<VectorSerde::Kind>{
-           VectorSerde::Kind::kPresto,
-           VectorSerde::Kind::kCompactRow,
-           VectorSerde::Kind::kUnsafeRow}) {
+  for (auto serdeKind :
+       std::vector<std::string>{"Presto", "CompactRow", "UnsafeRow"}) {
     SCOPED_TRACE(fmt::format("serdeKind: {}", serdeKind));
 
     auto plan =
@@ -992,6 +989,73 @@ TEST_F(PlanNodeToStringTest, markDistinct) {
   ASSERT_EQ(
       "-- MarkDistinct[1][a, b] -> a:VARCHAR, b:BIGINT, c:BIGINT, marker:BOOLEAN\n",
       op->toString(true, false));
+}
+
+TEST_F(PlanNodeToStringTest, tableWrite) {
+  auto outputDir = common::testutil::TempDirectoryPath::create();
+
+  // TableWrite without stats.
+  {
+    auto plan = PlanBuilder()
+                    .values({data_})
+                    .tableWrite(outputDir->getPath())
+                    .planNode();
+    ASSERT_EQ("-- TableWrite[1]\n", plan->toString());
+    ASSERT_EQ(
+        "-- TableWrite[1][test-hive, c0, c1, c2] -> rows:BIGINT, fragments:VARBINARY, commitcontext:VARBINARY\n",
+        plan->toString(true, false));
+  }
+
+  // TableWrite with stats (no grouping keys) and TableWriteMerge.
+  {
+    core::TableWriteNodePtr writeNode;
+    auto plan = PlanBuilder()
+                    .values({data_})
+                    .tableWrite(
+                        outputDir->getPath(),
+                        dwio::common::FileFormat::DWRF,
+                        {"min(c0)"})
+                    .capturePlanNode(writeNode)
+                    .localGather()
+                    .tableWriteMerge()
+                    .planNode();
+
+    ASSERT_EQ("-- TableWrite[1]\n", writeNode->toString());
+    ASSERT_EQ(
+        "-- TableWrite[1][test-hive, c0, c1, c2, stats[PARTIAL: min(ROW[\"c0\"])]] -> rows:BIGINT, fragments:VARBINARY, commitcontext:VARBINARY, a0:SMALLINT\n",
+        writeNode->toString(true, false));
+
+    ASSERT_EQ("-- TableWriteMerge[3]\n", plan->toString());
+    ASSERT_EQ(
+        "-- TableWriteMerge[3][stats[INTERMEDIATE: min(\"a0\")]] -> rows:BIGINT, fragments:VARBINARY, commitcontext:VARBINARY, a0:SMALLINT\n",
+        plan->toString(true, false));
+  }
+
+  // TableWrite with stats and grouping keys (partitioned table).
+  {
+    core::TableWriteNodePtr writeNode;
+    auto plan = PlanBuilder()
+                    .values({data_})
+                    .tableWrite(
+                        outputDir->getPath(),
+                        {"c2"},
+                        dwio::common::FileFormat::DWRF,
+                        {"min(c0)", "max(c1)"})
+                    .capturePlanNode(writeNode)
+                    .localGather()
+                    .tableWriteMerge()
+                    .planNode();
+
+    ASSERT_EQ("-- TableWrite[1]\n", writeNode->toString());
+    ASSERT_EQ(
+        "-- TableWrite[1][test-hive, c0, c1, c2, stats[PARTIAL [c2]: min(ROW[\"c0\"]), max(ROW[\"c1\"])]] -> rows:BIGINT, fragments:VARBINARY, commitcontext:VARBINARY, c2:BIGINT, a0:SMALLINT, a1:INTEGER\n",
+        writeNode->toString(true, false));
+
+    ASSERT_EQ("-- TableWriteMerge[3]\n", plan->toString());
+    ASSERT_EQ(
+        "-- TableWriteMerge[3][stats[INTERMEDIATE [c2]: min(\"a0\"), max(\"a1\")]] -> rows:BIGINT, fragments:VARBINARY, commitcontext:VARBINARY, c2:BIGINT, a0:SMALLINT, a1:INTEGER\n",
+        plan->toString(true, false));
+  }
 }
 
 } // namespace

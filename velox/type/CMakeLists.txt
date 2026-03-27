@@ -15,7 +15,6 @@ if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)
 endif()
 
-add_subdirectory(parser)
 add_subdirectory(tz)
 add_subdirectory(fbhive)
 
@@ -29,6 +28,7 @@ velox_add_library(
   StringView.cpp
   StringView.h
   Subfield.cpp
+  Time.cpp
   Timestamp.cpp
   TimestampConversion.cpp
   Tokenizer.cpp

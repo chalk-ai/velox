@@ -18,24 +18,13 @@
 #include <folly/Traits.h>
 #include <exception>
 #include "velox/common/testutil/TestValue.h"
+#include "velox/exec/OperatorType.h"
+#include "velox/exec/OperatorUtils.h"
 #include "velox/exec/Task.h"
 
 using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::exec {
-namespace {
-std::unique_ptr<VectorSerde::Options> getVectorSerdeOptions(
-    const core::QueryConfig& queryConfig,
-    VectorSerde::Kind kind) {
-  std::unique_ptr<VectorSerde::Options> options =
-      kind == VectorSerde::Kind::kPresto
-      ? std::make_unique<serializer::presto::PrestoVectorSerde::PrestoOptions>()
-      : std::make_unique<VectorSerde::Options>();
-  options->compressionKind =
-      common::stringToCompressionKind(queryConfig.shuffleCompressionKind());
-  return options;
-}
-} // namespace
 
 Merge::Merge(
     int32_t operatorId,
@@ -45,7 +34,7 @@ Merge::Merge(
         sortingKeys,
     const std::vector<core::SortOrder>& sortingOrders,
     const std::string& planNodeId,
-    const std::string& operatorType,
+    std::string_view operatorType,
     const std::optional<common::SpillConfig>& spillConfig)
     : SourceOperator(
           driverCtx,
@@ -171,8 +160,12 @@ void Merge::setupSpillMerger() {
     std::vector<std::unique_ptr<SpillReadFile>> spillReadFiles;
     spillReadFiles.reserve(spillFiles.size());
     for (const auto& spillFile : spillFiles) {
-      spillReadFiles.emplace_back(SpillReadFile::create(
-          spillFile, spillConfig_->readBufferSize, pool(), spillStats_.get()));
+      spillReadFiles.emplace_back(
+          SpillReadFile::create(
+              spillFile,
+              spillConfig_->readBufferSize,
+              pool(),
+              spillStats_.get()));
     }
     spillReadFilesGroups.push_back(std::move(spillReadFiles));
   }
@@ -207,8 +200,9 @@ void Merge::maybeStartNextMergeSourceGroup() {
   std::vector<std::unique_ptr<SourceStream>> cursors;
   cursors.reserve(sources.size());
   for (auto* source : sources) {
-    cursors.push_back(std::make_unique<SourceStream>(
-        source, sortingKeys_, maxOutputBatchRows_));
+    cursors.push_back(
+        std::make_unique<SourceStream>(
+            source, sortingKeys_, maxOutputBatchRows_));
   }
 
   // TODO: consider to provide a config other than the regular operator batch
@@ -343,8 +337,9 @@ SourceMerger::SourceMerger(
         }
         return streams;
       }()),
-      merger_(std::make_unique<TreeOfLosers<SourceStream>>(
-          std::move(sourceStreams))),
+      merger_(
+          std::make_unique<TreeOfLosers<SourceStream>>(
+              std::move(sourceStreams))),
       pool_(pool) {}
 
 void SourceMerger::isBlocked(
@@ -391,10 +386,7 @@ RowVectorPtr SourceMerger::getOutput(
   VELOX_CHECK_GT(outputBatchRows_, 0);
 
   if (!output_) {
-    output_ = BaseVector::create<RowVector>(type_, outputBatchRows_, pool_);
-    for (auto& child : output_->children()) {
-      child->resize(outputBatchRows_);
-    }
+    output_ = createOutputVector();
   }
 
   for (;;) {
@@ -438,6 +430,23 @@ RowVectorPtr SourceMerger::getOutput(
       return nullptr;
     }
   }
+}
+
+RowVectorPtr SourceMerger::createOutputVector() {
+  // Attempt to generate output vector using stream data to preserve encodings.
+  // First, find the first stream with non-null data to determine column
+  // encodings.
+  const RowVector* source = nullptr;
+  for (const auto* stream : streams_) {
+    if (stream->hasData() && (source = stream->data())) {
+      return BaseVector::createEmptyLike<RowVector>(
+          source, outputBatchRows_, pool_);
+    }
+  }
+
+  // If a non-null stream cannot be found, default to generating row vector by
+  // type.
+  return BaseVector::create<RowVector>(type_, outputBatchRows_, pool_);
 }
 
 bool SourceStream::operator<(const MergeStream& other) const {
@@ -497,7 +506,8 @@ void SourceStream::copyToOutput(RowVectorPtr& output) {
 
 bool SourceStream::fetchMoreData(std::vector<ContinueFuture>& futures) {
   ContinueFuture future;
-  auto reason = source_->next(data_, &future);
+  bool drained{false};
+  auto reason = source_->next(data_, &future, drained);
   if (reason != BlockingReason::kNotBlocked) {
     needData_ = true;
     futures.emplace_back(std::move(future));
@@ -529,7 +539,7 @@ SpillMerger::SpillMerger(
     uint64_t maxOutputBatchBytes,
     int mergeSourceQueueSize,
     const common::SpillConfig* spillConfig,
-    const std::shared_ptr<folly::Synchronized<common::SpillStats>>& spillStats,
+    const std::shared_ptr<exec::SpillStats>& spillStats,
     velox::memory::MemoryPool* pool)
     : executor_(spillConfig->executor),
       spillStats_(spillStats),
@@ -617,8 +627,9 @@ std::unique_ptr<SourceMerger> SpillMerger::createSourceMerger(
   std::vector<std::unique_ptr<SourceStream>> streams;
   streams.reserve(sources.size());
   for (const auto& source : sources) {
-    streams.push_back(std::make_unique<SourceStream>(
-        source.get(), sortingKeys, maxOutputBatchRows));
+    streams.push_back(
+        std::make_unique<SourceStream>(
+            source.get(), sortingKeys, maxOutputBatchRows));
   }
   return std::make_unique<SourceMerger>(
       type, std::move(streams), maxOutputBatchRows, maxOutputBatchBytes, pool);
@@ -729,9 +740,11 @@ LocalMerge::LocalMerge(
           localMergeNode->sortingKeys(),
           localMergeNode->sortingOrders(),
           localMergeNode->id(),
-          "LocalMerge",
+          OperatorType::kLocalMerge,
           localMergeNode->canSpill(driverCtx->queryConfig())
-              ? driverCtx->makeSpillConfig(operatorId)
+              ? driverCtx->makeSpillConfig(
+                    operatorId,
+                    OperatorType::kLocalMerge)
               : std::nullopt) {
   VELOX_CHECK_EQ(
       operatorCtx_->driverCtx()->driverId,
@@ -766,11 +779,13 @@ MergeExchange::MergeExchange(
           mergeExchangeNode->sortingKeys(),
           mergeExchangeNode->sortingOrders(),
           mergeExchangeNode->id(),
-          "MergeExchange"),
-      serde_(getNamedVectorSerde(mergeExchangeNode->serdeKind())),
+          OperatorType::kMergeExchange),
+      serdeKind_(mergeExchangeNode->serdeKind()),
+      serde_(getNamedVectorSerde(serdeKind_)),
       serdeOptions_(getVectorSerdeOptions(
-          driverCtx->queryConfig(),
-          mergeExchangeNode->serdeKind())) {}
+          common::stringToCompressionKind(
+              driverCtx->queryConfig().shuffleCompressionKind()),
+          serdeKind_)) {}
 
 BlockingReason MergeExchange::addMergeSources(ContinueFuture* future) {
   if (operatorCtx_->driverCtx()->driverId != 0) {
@@ -785,7 +800,14 @@ BlockingReason MergeExchange::addMergeSources(ContinueFuture* future) {
   for (;;) {
     exec::Split split;
     auto reason = operatorCtx_->task()->getSplitOrFuture(
-        operatorCtx_->driverCtx()->splitGroupId, planNodeId(), split, *future);
+
+        operatorCtx_->driverCtx()->driverId,
+        operatorCtx_->driverCtx()->splitGroupId,
+        planNodeId(),
+        /*maxPreloadSplits=*/0,
+        /*preload=*/nullptr,
+        split,
+        *future);
     if (reason != BlockingReason::kNotBlocked) {
       return reason;
     }
@@ -814,13 +836,14 @@ BlockingReason MergeExchange::addMergeSources(ContinueFuture* future) {
             operatorCtx_->planNodeId(),
             operatorCtx_->driverCtx()->pipelineId,
             remoteSourceIndex);
-        sources_.emplace_back(MergeSource::createMergeExchangeSource(
-            this,
-            remoteSourceTaskIds_[remoteSourceIndex],
-            operatorCtx_->task()->destination(),
-            maxQueuedBytesPerSource,
-            pool,
-            operatorCtx_->task()->queryCtx()->executor()));
+        sources_.emplace_back(
+            MergeSource::createMergeExchangeSource(
+                this,
+                remoteSourceTaskIds_[remoteSourceIndex],
+                operatorCtx_->task()->destination(),
+                maxQueuedBytesPerSource,
+                pool,
+                operatorCtx_->task()->queryCtx()->executor()));
       }
     }
     // TODO Delay this call until all input data has been processed.
@@ -839,7 +862,7 @@ void MergeExchange::close() {
     auto lockedStats = stats_.wlock();
     lockedStats->addRuntimeStat(
         Operator::kShuffleSerdeKind,
-        RuntimeCounter(static_cast<int64_t>(serde_->kind())));
+        RuntimeCounter(Operator::shuffleSerdeStatsValue(serdeKind_)));
     lockedStats->addRuntimeStat(
         Operator::kShuffleCompressionKind,
         RuntimeCounter(static_cast<int64_t>(serdeOptions_->compressionKind)));
