@@ -16,7 +16,13 @@ add_library(velox_file_test_utils TestUtils.cpp FaultyFile.cpp FaultyFileSystem.
 
 target_link_libraries(velox_file_test_utils PUBLIC velox_file)
 
-add_executable(velox_file_test FileTest.cpp FileInputStreamTest.cpp UtilsTest.cpp)
+add_executable(
+  velox_file_test
+  FileTest.cpp
+  FileInputStreamTest.cpp
+  FileIoTracerTest.cpp
+  FileUtilsTest.cpp
+)
 add_test(velox_file_test velox_file_test)
 target_link_libraries(
   velox_file_test
@@ -24,7 +30,7 @@ target_link_libraries(
     velox_buffer
     velox_file
     velox_file_test_utils
-    velox_temp_path
+    velox_test_util
     GTest::gmock
     GTest::gtest
     GTest::gtest_main

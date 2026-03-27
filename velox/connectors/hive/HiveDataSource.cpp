@@ -20,42 +20,40 @@
 #include <string>
 #include <unordered_map>
 
+#include "velox/common/Casts.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/common/time/CpuWallTimer.h"
 #include "velox/connectors/hive/HiveConfig.h"
+
 #include "velox/expression/FieldReference.h"
 
 using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::connector::hive {
 
-namespace {
-
-bool isMember(
-    const std::vector<exec::FieldReference*>& fields,
-    const exec::FieldReference& field) {
-  return std::find(fields.begin(), fields.end(), &field) != fields.end();
-}
-
-bool shouldEagerlyMaterialize(
-    const exec::Expr& remainingFilter,
-    const exec::FieldReference& field) {
-  if (!remainingFilter.evaluatesArgumentsOnNonIncreasingSelection()) {
-    return true;
+void HiveDataSource::processColumnHandle(const HiveColumnHandlePtr& handle) {
+  switch (handle->columnType()) {
+    case HiveColumnHandle::ColumnType::kRegular:
+      break;
+    case HiveColumnHandle::ColumnType::kPartitionKey:
+      partitionKeys_.emplace(handle->name(), handle);
+      break;
+    case HiveColumnHandle::ColumnType::kSynthesized:
+      infoColumns_.emplace(handle->name(), handle);
+      break;
+    case HiveColumnHandle::ColumnType::kRowIndex:
+      specialColumns_.rowIndex = handle->name();
+      break;
+    case HiveColumnHandle::ColumnType::kRowId:
+      specialColumns_.rowId = handle->name();
+      break;
   }
-  for (auto& input : remainingFilter.inputs()) {
-    if (isMember(input->distinctFields(), field) && input->hasConditionals()) {
-      return true;
-    }
-  }
-  return false;
 }
-
-} // namespace
 
 HiveDataSource::HiveDataSource(
     const RowTypePtr& outputType,
     const connector::ConnectorTableHandlePtr& tableHandle,
-    const connector::ColumnHandleMap& columnHandles,
+    const connector::ColumnHandleMap& assignments,
     FileHandleFactory* fileHandleFactory,
     folly::Executor* ioExecutor,
     const ConnectorQueryCtx* connectorQueryCtx,
@@ -67,38 +65,43 @@ HiveDataSource::HiveDataSource(
       pool_(connectorQueryCtx->memoryPool()),
       outputType_(outputType),
       expressionEvaluator_(connectorQueryCtx->expressionEvaluator()) {
+  hiveTableHandle_ = checkedPointerCast<const HiveTableHandle>(tableHandle);
+
+  folly::F14FastMap<std::string_view, const HiveColumnHandle*> columnHandles;
   // Column handled keyed on the column alias, the name used in the query.
-  for (const auto& [canonicalizedName, columnHandle] : columnHandles) {
-    auto handle =
-        std::dynamic_pointer_cast<const HiveColumnHandle>(columnHandle);
-    VELOX_CHECK_NOT_NULL(
-        handle,
-        "ColumnHandle must be an instance of HiveColumnHandle for {}",
-        canonicalizedName);
-    switch (handle->columnType()) {
-      case HiveColumnHandle::ColumnType::kRegular:
-        break;
-      case HiveColumnHandle::ColumnType::kPartitionKey:
-        partitionKeys_.emplace(handle->name(), handle);
-        break;
-      case HiveColumnHandle::ColumnType::kSynthesized:
-        infoColumns_.emplace(handle->name(), handle);
-        break;
-      case HiveColumnHandle::ColumnType::kRowIndex:
-        specialColumns_.rowIndex = handle->name();
-        break;
-      case HiveColumnHandle::ColumnType::kRowId:
-        specialColumns_.rowId = handle->name();
-        break;
+  for (const auto& [_, columnHandle] : assignments) {
+    auto handle = checkedPointerCast<const HiveColumnHandle>(columnHandle);
+    const auto [it, unique] =
+        columnHandles.emplace(handle->name(), handle.get());
+    if (!unique) {
+      // This should not happen normally, but there is some bug in Presto DELETE
+      // queries that sometimes we do get duplicate assignments for partitioning
+      // columns.
+      checkColumnHandleConsistent(*handle, *it->second);
+      VELOX_CHECK_EQ(
+          handle->columnType(),
+          HiveColumnHandle::ColumnType::kPartitionKey,
+          "Cannot map from same table column to different outputs in table scan; a project node should be used instead: {}",
+          handle->name());
+      continue;
     }
+    processColumnHandle(handle);
+  }
+  for (auto& handle : hiveTableHandle_->filterColumnHandles()) {
+    auto it = columnHandles.find(handle->name());
+    if (it != columnHandles.end()) {
+      checkColumnHandleConsistent(*handle, *it->second);
+      continue;
+    }
+    processColumnHandle(handle);
   }
 
   std::vector<std::string> readColumnNames;
   auto readColumnTypes = outputType_->children();
   for (const auto& outputName : outputType_->names()) {
-    auto it = columnHandles.find(outputName);
+    auto it = assignments.find(outputName);
     VELOX_CHECK(
-        it != columnHandles.end(),
+        it != assignments.end(),
         "ColumnHandle is missing for output column: {}",
         outputName);
 
@@ -111,12 +114,9 @@ HiveDataSource::HiveDataSource(
           "Required subfield does not match column name");
       subfields_[handle->name()].push_back(&subfield);
     }
+    columnPostProcessors_.push_back(handle->postProcessor());
   }
 
-  hiveTableHandle_ =
-      std::dynamic_pointer_cast<const HiveTableHandle>(tableHandle);
-  VELOX_CHECK_NOT_NULL(
-      hiveTableHandle_, "TableHandle must be an instance of HiveTableHandle");
   if (hiveConfig_->isFileColumnNamesReadAsLowerCase(
           connectorQueryCtx->sessionProperties())) {
     checkColumnNameLowerCase(outputType_);
@@ -127,11 +127,10 @@ HiveDataSource::HiveDataSource(
   for (const auto& [k, v] : hiveTableHandle_->subfieldFilters()) {
     filters_.emplace(k.clone(), v);
   }
-  double sampleRate = 1;
+  double sampleRate = hiveTableHandle_->sampleRate();
   auto remainingFilter = extractFiltersFromRemainingFilter(
       hiveTableHandle_->remainingFilter(),
       expressionEvaluator_,
-      false,
       filters_,
       sampleRate);
   if (sampleRate != 1) {
@@ -186,6 +185,7 @@ HiveDataSource::HiveDataSource(
       readerOutputType_,
       subfields_,
       filters_,
+      /*indexColumns=*/{},
       hiveTableHandle_->dataColumns(),
       partitionKeys_,
       infoColumns_,
@@ -198,8 +198,8 @@ HiveDataSource::HiveDataSource(
         *scanSpec_, *remainingFilter, expressionEvaluator_);
   }
 
-  ioStats_ = std::make_shared<io::IoStatistics>();
-  fsStats_ = std::make_shared<filesystems::File::IoStats>();
+  ioStatistics_ = std::make_shared<io::IoStatistics>();
+  ioStats_ = std::make_shared<IoStats>();
 }
 
 std::unique_ptr<SplitReader> HiveDataSource::createSplitReader() {
@@ -210,11 +210,12 @@ std::unique_ptr<SplitReader> HiveDataSource::createSplitReader() {
       connectorQueryCtx_,
       hiveConfig_,
       readerOutputType_,
+      ioStatistics_,
       ioStats_,
-      fsStats_,
       fileHandleFactory_,
       ioExecutor_,
-      scanSpec_);
+      scanSpec_,
+      /*subfieldFiltersForValidation=*/&filters_);
 }
 
 std::vector<column_index_t> HiveDataSource::setupBucketConversion() {
@@ -255,6 +256,7 @@ std::vector<column_index_t> HiveDataSource::setupBucketConversion() {
         readerOutputType_,
         subfields_,
         filters_,
+        /*indexColumns=*/{},
         hiveTableHandle_->dataColumns(),
         partitionKeys_,
         infoColumns_,
@@ -296,10 +298,11 @@ void HiveDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
   VELOX_CHECK_NULL(
       split_,
       "Previous split has not been processed yet. Call next to process the split.");
-  split_ = std::dynamic_pointer_cast<HiveConnectorSplit>(split);
-  VELOX_CHECK_NOT_NULL(split_, "Wrong type of split");
+  split_ = checkedPointerCast<HiveConnectorSplit>(split);
 
   VLOG(1) << "Adding split " << split_->toString();
+
+  ++numSplitsByFileFormat_[split_->fileFormat];
 
   if (splitReader_) {
     splitReader_.reset();
@@ -314,6 +317,7 @@ void HiveDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
   }
 
   splitReader_ = createSplitReader();
+  splitReader_->setInfoColumns(&infoColumns_);
   if (!bucketChannels.empty()) {
     splitReader_->setBucketConversion(std::move(bucketChannels));
   }
@@ -399,8 +403,11 @@ std::optional<RowVectorPtr> HiveDataSource::next(
       // don't need to reallocate the result for every batch.
       child->disableMemo();
     }
-    outputColumns.emplace_back(
-        exec::wrapChild(rowsRemaining, remainingIndices, child));
+    auto column = exec::wrapChild(rowsRemaining, remainingIndices, child);
+    if (columnPostProcessors_[i]) {
+      columnPostProcessors_[i](column);
+    }
+    outputColumns.push_back(std::move(column));
   }
 
   return std::make_shared<RowVector>(
@@ -422,53 +429,138 @@ std::unordered_map<std::string, RuntimeMetric>
 HiveDataSource::getRuntimeStats() {
   auto res = runtimeStats_.toRuntimeMetricMap();
   res.insert(
-      {{"numPrefetch", RuntimeMetric(ioStats_->prefetch().count())},
-       {"prefetchBytes",
+      {std::string(Connector::kIoWaitWallNanos),
+       RuntimeMetric(
+           ioStatistics_->queryThreadIoLatencyUs().sum() * 1'000,
+           ioStatistics_->queryThreadIoLatencyUs().count(),
+           ioStatistics_->queryThreadIoLatencyUs().min() * 1'000,
+           ioStatistics_->queryThreadIoLatencyUs().max() * 1'000,
+           RuntimeCounter::Unit::kNanos)});
+  // Breakdown of ioWaitWallNanos by I/O type
+  if (ioStatistics_->storageReadLatencyUs().count() > 0) {
+    res.insert(
+        {std::string(Connector::kStorageReadWallNanos),
+         RuntimeMetric(
+             ioStatistics_->storageReadLatencyUs().sum() * 1'000,
+             ioStatistics_->storageReadLatencyUs().count(),
+             ioStatistics_->storageReadLatencyUs().min() * 1'000,
+             ioStatistics_->storageReadLatencyUs().max() * 1'000,
+             RuntimeCounter::Unit::kNanos)});
+  }
+  if (ioStatistics_->ssdCacheReadLatencyUs().count() > 0) {
+    res.insert(
+        {std::string(Connector::kSsdCacheReadWallNanos),
+         RuntimeMetric(
+             ioStatistics_->ssdCacheReadLatencyUs().sum() * 1'000,
+             ioStatistics_->ssdCacheReadLatencyUs().count(),
+             ioStatistics_->ssdCacheReadLatencyUs().min() * 1'000,
+             ioStatistics_->ssdCacheReadLatencyUs().max() * 1'000,
+             RuntimeCounter::Unit::kNanos)});
+  }
+  if (ioStatistics_->cacheWaitLatencyUs().count() > 0) {
+    res.insert(
+        {std::string(Connector::kCacheWaitWallNanos),
+         RuntimeMetric(
+             ioStatistics_->cacheWaitLatencyUs().sum() * 1'000,
+             ioStatistics_->cacheWaitLatencyUs().count(),
+             ioStatistics_->cacheWaitLatencyUs().min() * 1'000,
+             ioStatistics_->cacheWaitLatencyUs().max() * 1'000,
+             RuntimeCounter::Unit::kNanos)});
+  }
+  if (ioStatistics_->coalescedSsdLoadLatencyUs().count() > 0) {
+    res.insert(
+        {std::string(Connector::kCoalescedSsdLoadWallNanos),
+         RuntimeMetric(
+             ioStatistics_->coalescedSsdLoadLatencyUs().sum() * 1'000,
+             ioStatistics_->coalescedSsdLoadLatencyUs().count(),
+             ioStatistics_->coalescedSsdLoadLatencyUs().min() * 1'000,
+             ioStatistics_->coalescedSsdLoadLatencyUs().max() * 1'000,
+             RuntimeCounter::Unit::kNanos)});
+  }
+  if (ioStatistics_->coalescedStorageLoadLatencyUs().count() > 0) {
+    res.insert(
+        {std::string(Connector::kCoalescedStorageLoadWallNanos),
+         RuntimeMetric(
+             ioStatistics_->coalescedStorageLoadLatencyUs().sum() * 1'000,
+             ioStatistics_->coalescedStorageLoadLatencyUs().count(),
+             ioStatistics_->coalescedStorageLoadLatencyUs().min() * 1'000,
+             ioStatistics_->coalescedStorageLoadLatencyUs().max() * 1'000,
+             RuntimeCounter::Unit::kNanos)});
+  }
+  res.insert(
+      {{std::string(kNumPrefetch),
+        RuntimeMetric(ioStatistics_->prefetch().count())},
+       {std::string(kPrefetchBytes),
         RuntimeMetric(
-            ioStats_->prefetch().sum(), RuntimeCounter::Unit::kBytes)},
-       {"totalScanTime",
-        RuntimeMetric(ioStats_->totalScanTime(), RuntimeCounter::Unit::kNanos)},
-       {Connector::kTotalRemainingFilterTime,
+            ioStatistics_->prefetch().sum(),
+            ioStatistics_->prefetch().count(),
+            ioStatistics_->prefetch().min(),
+            ioStatistics_->prefetch().max(),
+            RuntimeCounter::Unit::kBytes)},
+       {std::string(kTotalScanTime),
+        RuntimeMetric(
+            ioStatistics_->totalScanTime(), RuntimeCounter::Unit::kNanos)},
+       {std::string(Connector::kTotalRemainingFilterTime),
         RuntimeMetric(
             totalRemainingFilterTime_.load(std::memory_order_relaxed),
             RuntimeCounter::Unit::kNanos)},
-       {"ioWaitWallNanos",
+       {Connector::kTotalRemainingFilterCpuTime,
         RuntimeMetric(
-            ioStats_->queryThreadIoLatency().sum() * 1000,
+            totalRemainingFilterCpuTime_.load(std::memory_order_relaxed),
             RuntimeCounter::Unit::kNanos)},
-       {"maxSingleIoWaitWallNanos",
+       {std::string(kOverreadBytes),
         RuntimeMetric(
-            ioStats_->queryThreadIoLatency().max() * 1000,
-            RuntimeCounter::Unit::kNanos)},
-       {"overreadBytes",
-        RuntimeMetric(
-            ioStats_->rawOverreadBytes(), RuntimeCounter::Unit::kBytes)}});
-  if (ioStats_->read().count() > 0) {
-    res.insert({"numStorageRead", RuntimeMetric(ioStats_->read().count())});
+            ioStatistics_->rawOverreadBytes(), RuntimeCounter::Unit::kBytes)}});
+  if (ioStatistics_->read().count() > 0) {
     res.insert(
-        {"storageReadBytes",
-         RuntimeMetric(ioStats_->read().sum(), RuntimeCounter::Unit::kBytes)});
-  }
-  if (ioStats_->ssdRead().count() > 0) {
-    res.insert({"numLocalRead", RuntimeMetric(ioStats_->ssdRead().count())});
-    res.insert(
-        {"localReadBytes",
+        {std::string(kStorageReadBytes),
          RuntimeMetric(
-             ioStats_->ssdRead().sum(), RuntimeCounter::Unit::kBytes)});
+             ioStatistics_->read().sum(),
+             ioStatistics_->read().count(),
+             ioStatistics_->read().min(),
+             ioStatistics_->read().max(),
+             RuntimeCounter::Unit::kBytes)});
   }
-  if (ioStats_->ramHit().count() > 0) {
-    res.insert({"numRamRead", RuntimeMetric(ioStats_->ramHit().count())});
+  if (ioStatistics_->ssdRead().count() > 0) {
     res.insert(
-        {"ramReadBytes",
+        {std::string(kNumLocalRead),
+         RuntimeMetric(ioStatistics_->ssdRead().count())});
+    res.insert(
+        {std::string(kLocalReadBytes),
          RuntimeMetric(
-             ioStats_->ramHit().sum(), RuntimeCounter::Unit::kBytes)});
+             ioStatistics_->ssdRead().sum(),
+             ioStatistics_->ssdRead().count(),
+             ioStatistics_->ssdRead().min(),
+             ioStatistics_->ssdRead().max(),
+             RuntimeCounter::Unit::kBytes)});
+  }
+  if (ioStatistics_->ramHit().count() > 0) {
+    res.insert(
+        {std::string(kNumRamRead),
+         RuntimeMetric(ioStatistics_->ramHit().count())});
+    res.insert(
+        {std::string(kRamReadBytes),
+         RuntimeMetric(
+             ioStatistics_->ramHit().sum(),
+             ioStatistics_->ramHit().count(),
+             ioStatistics_->ramHit().min(),
+             ioStatistics_->ramHit().max(),
+             RuntimeCounter::Unit::kBytes)});
   }
   if (numBucketConversion_ > 0) {
-    res.insert({"numBucketConversion", RuntimeMetric(numBucketConversion_)});
+    res.insert(
+        {std::string(kNumBucketConversion),
+         RuntimeMetric(numBucketConversion_)});
   }
 
-  const auto fsStats = fsStats_->stats();
-  for (const auto& storageStats : fsStats) {
+  for (const auto& [format, count] : numSplitsByFileFormat_) {
+    res.insert(
+        {fmt::format("{}{}", kFileFormat, dwio::common::toString(format)),
+         RuntimeMetric(count)});
+  }
+
+  const auto ioStatsMap = ioStats_->stats();
+  for (const auto& storageStats : ioStatsMap) {
     res.emplace(storageStats.first, storageStats.second);
   }
   return res;
@@ -486,23 +578,32 @@ void HiveDataSource::setFromDataSource(
   readerOutputType_ = std::move(source->readerOutputType_);
   source->scanSpec_->moveAdaptationFrom(*scanSpec_);
   scanSpec_ = std::move(source->scanSpec_);
+  metadataFilter_ = std::move(source->metadataFilter_);
   splitReader_ = std::move(source->splitReader_);
   splitReader_->setConnectorQueryCtx(connectorQueryCtx_);
   // New io will be accounted on the stats of 'source'. Add the existing
   // balance to that.
+  source->ioStatistics_->merge(*ioStatistics_);
+  ioStatistics_ = std::move(source->ioStatistics_);
   source->ioStats_->merge(*ioStats_);
   ioStats_ = std::move(source->ioStats_);
-  source->fsStats_->merge(*fsStats_);
-  fsStats_ = std::move(source->fsStats_);
 
   numBucketConversion_ += source->numBucketConversion_;
+
+  for (const auto& [format, count] : source->numSplitsByFileFormat_) {
+    numSplitsByFileFormat_[format] += count;
+  }
 }
 
 int64_t HiveDataSource::estimatedRowSize() {
-  if (!splitReader_) {
+  if (splitReader_ == nullptr) {
     return kUnknownRowSize;
   }
-  return splitReader_->estimatedRowSize();
+  auto rowSize = splitReader_->estimatedRowSize();
+  TestValue::adjust(
+      "facebook::velox::connector::hive::HiveDataSource::estimatedRowSize",
+      &rowSize);
+  return rowSize;
 }
 
 vector_size_t HiveDataSource::evaluateRemainingFilter(RowVectorPtr& rowVector) {
@@ -513,17 +614,19 @@ vector_size_t HiveDataSource::evaluateRemainingFilter(RowVectorPtr& rowVector) {
         filterLazyDecoded_,
         filterLazyBaseRows_);
   }
-  uint64_t filterTimeUs{0};
+  CpuWallTiming filterTiming;
   vector_size_t rowsRemaining{0};
   {
-    MicrosecondTimer timer(&filterTimeUs);
+    CpuWallTimer timer(filterTiming);
     expressionEvaluator_->evaluate(
         remainingFilterExprSet_.get(), filterRows_, *rowVector, filterResult_);
     rowsRemaining = exec::processFilterResults(
         filterResult_, filterRows_, filterEvalCtx_, pool_);
   }
   totalRemainingFilterTime_.fetch_add(
-      filterTimeUs * 1000, std::memory_order_relaxed);
+      filterTiming.wallNanos, std::memory_order_relaxed);
+  totalRemainingFilterCpuTime_.fetch_add(
+      filterTiming.cpuNanos, std::memory_order_relaxed);
   return rowsRemaining;
 }
 
@@ -547,7 +650,7 @@ std::shared_ptr<wave::WaveDataSource> HiveDataSource::toWaveDataSource() {
         ioExecutor_,
         connectorQueryCtx_,
         hiveConfig_,
-        ioStats_,
+        ioStatistics_,
         remainingFilterExprSet_.get(),
         metadataFilter_);
   }

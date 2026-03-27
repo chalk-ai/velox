@@ -107,21 +107,10 @@ class IPAddressCastOperator : public exec::CastOperator {
       BaseVector& result) {
     auto* flatResult = result.as<FlatVector<StringView>>();
     const auto* ipaddresses = input.as<SimpleVector<int128_t>>();
-    folly::ByteArray16 addrBytes;
 
     context.applyToSelectedNoThrow(rows, [&](auto row) {
-      const auto intAddr = ipaddresses->valueAt(row);
-      memcpy(&addrBytes, &intAddr, ipaddress::kIPAddressBytes);
-
-      std::reverse(addrBytes.begin(), addrBytes.end());
-      folly::IPAddressV6 v6Addr(addrBytes);
-
       exec::StringWriter result(flatResult, row);
-      if (v6Addr.isIPv4Mapped()) {
-        result.append(v6Addr.createIPv4().str());
-      } else {
-        result.append(v6Addr.str());
-      }
+      result.append(IPADDRESS()->valueToString(ipaddresses->valueAt(row)));
       result.finalize();
     });
   }
@@ -136,8 +125,9 @@ class IPAddressCastOperator : public exec::CastOperator {
 
     context.applyToSelectedNoThrow(rows, [&](auto row) {
       const auto ipAddressString = ipAddressStrings->valueAt(row);
-      auto maybeIpAsInt128 =
-          ipaddress::tryGetIPv6asInt128FromString(ipAddressString);
+      // TODO: Remove explicit std::string_view cast.
+      auto maybeIpAsInt128 = ipaddress::tryGetIPv6asInt128FromString(
+          std::string_view(ipAddressString));
 
       if (maybeIpAsInt128.hasError()) {
         if (threadSkipErrorDetails()) {

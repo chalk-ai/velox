@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+#include "velox/experimental/cudf/CudfNoDefaults.h"
 #include "velox/experimental/cudf/exec/CudfConversion.h"
+#include "velox/experimental/cudf/exec/GpuResources.h"
 #include "velox/experimental/cudf/exec/NvtxHelper.h"
-#include "velox/experimental/cudf/exec/ToCudf.h"
 #include "velox/experimental/cudf/exec/Utilities.h"
 #include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
 #include "velox/experimental/cudf/vector/CudfVector.h"
@@ -38,6 +39,9 @@ RowVectorPtr mergeRowVectors(
     const std::vector<RowVectorPtr>& results,
     velox::memory::MemoryPool* pool) {
   VELOX_NVTX_FUNC_RANGE();
+  if (results.size() == 1) {
+    return results[0];
+  }
   vector_size_t totalCount = 0;
   for (const auto& result : results) {
     totalCount += result->size();
@@ -140,8 +144,11 @@ RowVectorPtr CudfFromVelox::getOutput() {
   auto stream = cudfGlobalStreamPool().get_stream();
 
   // Convert RowVector to cudf table
-  auto tbl = with_arrow::toCudfTable(input, input->pool(), stream);
+  auto tbl =
+      with_arrow::toCudfTable(input, input->pool(), stream, get_output_mr());
 
+  // Synchronize to ensure toCudfTable finishes reading from input's CPU buffers
+  // before input goes out of scope
   stream.synchronize();
 
   VELOX_CHECK_NOT_NULL(tbl);
@@ -153,7 +160,8 @@ RowVectorPtr CudfFromVelox::getOutput() {
 }
 
 void CudfFromVelox::close() {
-  cudf::get_default_stream().synchronize();
+  // TODO(kn): Remove default stream after redesign of CudfFromVelox
+  cudf::get_default_stream(cudf::allow_default_stream).synchronize();
   exec::Operator::close();
   inputs_.clear();
 }
@@ -205,7 +213,6 @@ RowVectorPtr CudfToVelox::getOutput() {
 
   // Get the target batch size
   const auto targetBatchSize = outputBatchRows(averageRowSize());
-  auto stream = inputs_.front()->stream();
 
   // Process single input directly in these cases:
   // 1. In passthrough mode
@@ -213,19 +220,23 @@ RowVectorPtr CudfToVelox::getOutput() {
   // batch size
   if (isPassthroughMode() ||
       (inputs_.size() == 1 && inputs_.front()->size() <= targetBatchSize)) {
-    std::unique_ptr<cudf::table> tbl = inputs_.front()->release();
+    // Move the CudfVector out to keep it alive while we use the view.
+    // This avoids expensive materialization when constructed from packed_table.
+    auto cudfVector = std::move(inputs_.front());
     inputs_.pop_front();
 
-    VELOX_CHECK_NOT_NULL(tbl);
-    if (tbl->num_rows() == 0) {
+    auto tableView = cudfVector->getTableView();
+    auto stream = cudfVector->stream();
+    if (tableView.num_rows() == 0) {
       finished_ = noMoreInput_ && inputs_.empty();
       return nullptr;
     }
-    RowVectorPtr output =
-        with_arrow::toVeloxColumn(tbl->view(), pool(), "", stream);
+    RowVectorPtr output = with_arrow::toVeloxColumn(
+        tableView, pool(), outputType_, "", stream, get_temp_mr());
     stream.synchronize();
     finished_ = noMoreInput_ && inputs_.empty();
     output->setType(outputType_);
+    // cudfVector goes out of scope here, freeing the GPU memory
     return output;
   }
 
@@ -244,18 +255,21 @@ RowVectorPtr CudfToVelox::getOutput() {
       // If the next input would exceed targetBatchSize,
       // we need to split it and only take what we need
       auto cudfTableView = input->getTableView();
+      auto stream = input->stream();
       auto partitions = std::vector<cudf::size_type>{
           static_cast<cudf::size_type>(targetBatchSize - totalSize)};
-      auto tableSplits = cudf::split(cudfTableView, partitions);
+      auto tableSplits = cudf::split(cudfTableView, partitions, stream);
 
       // Create new CudfVector from the first part
-      auto firstPart = std::make_unique<cudf::table>(tableSplits[0], stream);
+      auto firstPart =
+          std::make_unique<cudf::table>(tableSplits[0], stream, get_temp_mr());
       auto firstPartSize = firstPart->num_rows();
       auto firstPartVector = std::make_shared<CudfVector>(
           pool(), input->type(), firstPartSize, std::move(firstPart), stream);
 
       // Create new CudfVector from the second part
-      auto secondPart = std::make_unique<cudf::table>(tableSplits[1], stream);
+      auto secondPart =
+          std::make_unique<cudf::table>(tableSplits[1], stream, get_temp_mr());
       auto secondPartSize = secondPart->num_rows();
       auto secondPartVector = std::make_shared<CudfVector>(
           pool(), input->type(), secondPartSize, std::move(secondPart), stream);
@@ -278,7 +292,9 @@ RowVectorPtr CudfToVelox::getOutput() {
   }
 
   // Concatenate the selected tables on the GPU
-  auto resultTable = getConcatenatedTable(selectedInputs, outputType_, stream);
+  auto stream = cudfGlobalStreamPool().get_stream();
+  auto resultTable = getConcatenatedTable(
+      std::move(selectedInputs), outputType_, stream, get_temp_mr());
 
   // Convert the concatenated table to a RowVector
   const auto size = resultTable->num_rows();
@@ -287,8 +303,8 @@ RowVectorPtr CudfToVelox::getOutput() {
     return nullptr;
   }
 
-  RowVectorPtr output =
-      with_arrow::toVeloxColumn(resultTable->view(), pool(), "", stream);
+  RowVectorPtr output = with_arrow::toVeloxColumn(
+      resultTable->view(), pool(), outputType_, "", stream, get_temp_mr());
   stream.synchronize();
   finished_ = noMoreInput_ && inputs_.empty();
   output->setType(outputType_);

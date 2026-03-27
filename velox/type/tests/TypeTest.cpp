@@ -18,6 +18,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/type/CppToType.h"
 #include "velox/type/SimpleFunctionApi.h"
+#include "velox/type/TimestampConversion.h"
 #include "velox/type/TypeEncodingUtil.h"
 #include "velox/type/tests/utils/CustomTypesForTesting.h"
 
@@ -335,6 +336,115 @@ TEST(TypeTest, dateToString) {
   EXPECT_EQ(DATE()->toString(-1855961014), "-5079479-05-03");
 }
 
+// Tests the generic Type::valueToString<T> template which routes to
+// type-specific formatting based on the type. Tests are grouped by physical
+// type and use the same raw values to illustrate the difference in output.
+TEST(TypeTest, genericValueToString) {
+  // int32_t types: INTEGER, DATE, INTERVAL YEAR TO MONTH.
+  // Same value 25 is formatted differently depending on the logical type.
+  {
+    const int32_t value = 25;
+
+    {
+      TypePtr type = INTEGER();
+      EXPECT_EQ(type->valueToString(value), "25");
+    }
+    {
+      TypePtr type = DATE();
+      EXPECT_EQ(type->valueToString(value), "1970-01-26");
+    }
+    {
+      TypePtr type = INTERVAL_YEAR_MONTH();
+      EXPECT_EQ(type->valueToString(value), "2-1");
+    }
+  }
+
+  // int64_t types: BIGINT, DECIMAL, TIME, TIME_MICRO_UTC, INTERVAL DAY TO
+  // SECOND. Same value 45'123 is formatted differently depending on the logical
+  // type.
+  {
+    const int64_t value = 45'123;
+
+    {
+      TypePtr type = BIGINT();
+      EXPECT_EQ(type->valueToString(value), "45123");
+    }
+    {
+      TypePtr type = DECIMAL(10, 2);
+      EXPECT_EQ(type->valueToString(value), "451.23");
+    }
+    {
+      // Milliseconds since midnight: 45.123 seconds.
+      TypePtr type = TIME();
+      EXPECT_EQ(type->valueToString(value), "00:00:45.123");
+    }
+    {
+      // Microseconds since midnight: 0.045123 seconds.
+      TypePtr type = TIME_MICRO_UTC();
+      EXPECT_EQ(type->valueToString(value), "00:00:00.045123");
+    }
+    {
+      TypePtr type = INTERVAL_DAY_TIME();
+      EXPECT_EQ(type->valueToString(value), "0 00:00:45.123");
+    }
+  }
+
+  // int128_t types: HUGEINT, DECIMAL.
+  {
+    const int128_t value = 45'123;
+
+    {
+      TypePtr type = HUGEINT();
+      EXPECT_EQ(type->valueToString(value), "45123");
+    }
+    {
+      TypePtr type = DECIMAL(38, 2);
+      EXPECT_EQ(type->valueToString(value), "451.23");
+    }
+  }
+
+  // StringView types: VARCHAR, VARBINARY.
+  {
+    StringView value("hello");
+
+    {
+      TypePtr type = VARCHAR();
+      EXPECT_EQ(type->valueToString(value), "hello");
+    }
+    {
+      TypePtr type = VARBINARY();
+      EXPECT_EQ(type->valueToString(value), "hello");
+    }
+  }
+
+  // Other scalar types.
+  {
+    EXPECT_EQ(BOOLEAN()->valueToString(true), "true");
+    EXPECT_EQ(BOOLEAN()->valueToString(false), "false");
+  }
+  {
+    TypePtr type = TINYINT();
+    EXPECT_EQ(type->valueToString(static_cast<int8_t>(42)), "42");
+  }
+  {
+    TypePtr type = SMALLINT();
+    EXPECT_EQ(type->valueToString(static_cast<int16_t>(42)), "42");
+  }
+  {
+    TypePtr type = REAL();
+    EXPECT_EQ(type->valueToString(1.5f), "1.5");
+  }
+  {
+    TypePtr type = DOUBLE();
+    EXPECT_EQ(type->valueToString(1.5), "1.5");
+  }
+  {
+    TypePtr type = TIMESTAMP();
+    EXPECT_EQ(
+        type->valueToString(Timestamp(0, 0)), "1970-01-01T00:00:00.000000000");
+  }
+}
+
 TEST(TypeTest, parseStringToDate) {
   auto parseDate = [](const std::string& dateStr) {
     return DATE()->toDays(dateStr);
@@ -577,20 +687,21 @@ TEST(TypeTest, rowParametersMultiThreaded) {
   }
   auto type = ROW(std::move(names), std::move(types));
   constexpr int kNumThreads = 72;
-  const std::vector<TypeParameter>* parameters[kNumThreads];
+  std::span<const TypeParameter> parameters[kNumThreads];
   std::vector<std::thread> threads;
   for (int i = 0; i < kNumThreads; ++i) {
-    threads.emplace_back([&, i] { parameters[i] = &type->parameters(); });
+    threads.emplace_back([&, i] { parameters[i] = type->parameters(); });
   }
   for (auto& thread : threads) {
     thread.join();
   }
   for (int i = 1; i < kNumThreads; ++i) {
-    ASSERT_TRUE(parameters[i] == parameters[0]);
+    ASSERT_TRUE(parameters[i].data() == parameters[0].data());
+    ASSERT_TRUE(parameters[i].size() == parameters[0].size());
   }
-  ASSERT_EQ(parameters[0]->size(), type->size());
-  for (int i = 0; i < parameters[0]->size(); ++i) {
-    ASSERT_TRUE((*parameters[0])[i].type.get() == type->childAt(i).get());
+  ASSERT_EQ(parameters[0].size(), type->size());
+  for (int i = 0; i < parameters[0].size(); ++i) {
+    ASSERT_TRUE(parameters[0][i].type.get() == type->childAt(i).get());
   }
 }
 
@@ -660,12 +771,24 @@ TEST(TypeTest, opaque) {
   auto foo3 = Type::create(foo->serialize());
   ASSERT_EQ(*foo, *foo3);
 
+  // Clearing the serialization registry when no serialization/deserialization
+  // functions have been provided, should return true, since the registry
+  // contained nullptr as serialization/deserialization functions.
+  EXPECT_TRUE(OpaqueType::unregisterSerialization(foo2, "id_of_foo"));
+  // Clearing the serialization registry a second time should return false.
+  EXPECT_FALSE(OpaqueType::unregisterSerialization(foo2, "id_of_foo"));
+
   OpaqueType::registerSerialization<Bar>(
       "id_of_bar",
       [](const std::shared_ptr<Bar>&) -> std::string { return ""; },
       [](const std::string&) -> std::shared_ptr<Bar> { return nullptr; });
   bar->getSerializeFunc();
   bar->getDeserializeFunc();
+
+  // Clearing the serialization registry should return true.
+  EXPECT_TRUE(
+      OpaqueType::unregisterSerialization(
+          OpaqueType::create<Bar>(), "id_of_bar"));
 }
 
 // Example of an opaque type that keeps some additional type-level metadata.
@@ -1155,8 +1278,9 @@ TEST(TypeTest, providesCustomComparison) {
 
   // This type claims it providesCustomComparison but does not implement the
   // compare and hash functions so invoking them should still fail.
-  EXPECT_TRUE(test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()
-                  ->providesCustomComparison());
+  EXPECT_TRUE(
+      test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()
+          ->providesCustomComparison());
   EXPECT_THROW(
       test::BIGINT_TYPE_WITH_INVALID_CUSTOM_COMPARISON()->compare(0, 0),
       VeloxRuntimeError);
@@ -1204,7 +1328,7 @@ TEST(TypeTest, toSummaryString) {
 
 TEST(TypeTest, time) {
   const auto timeType = TIME();
-  ASSERT_EQ(timeType->toString(), "TIME");
+
   ASSERT_EQ(timeType->size(), 0);
   VELOX_ASSERT_THROW(timeType->childAt(0), "scalar type has no children");
   ASSERT_EQ(timeType->kind(), TypeKind::BIGINT); // Physical type
@@ -1223,4 +1347,62 @@ TEST(TypeTest, time) {
   ASSERT_TRUE(timeType->isComparable());
 
   testTypeSerde(timeType);
+
+  ASSERT_EQ(timeType->toString(), "TIME");
+  ASSERT_EQ(timeType->getMin(), 0);
+  ASSERT_EQ(timeType->getMax(), 86'399'999);
+}
+
+TEST(TypeTest, timeMicroUtc) {
+  const auto timeType = TIME_MICRO_UTC();
+  ASSERT_EQ(timeType->size(), 0);
+  VELOX_ASSERT_THROW(timeType->childAt(0), "scalar type has no children");
+  ASSERT_EQ(timeType->kind(), TypeKind::BIGINT); // Physical type
+  EXPECT_STREQ(timeType->kindName(), "BIGINT"); // Physical kind name
+  ASSERT_EQ(timeType->begin(), timeType->end());
+  ASSERT_EQ(approximateTypeEncodingwidth(timeType), 1);
+
+  // Test logical vs physical type behavior (similar to DATE test)
+  ASSERT_TRUE(timeType->kindEquals(BIGINT())); // Same physical kind
+  ASSERT_NE(*timeType, *BIGINT()); // Different logical types
+  ASSERT_FALSE(timeType->equivalent(*BIGINT())); // Not equivalent
+  ASSERT_FALSE(BIGINT()->equivalent(*timeType)); // Not equivalent reverse
+
+  // Test orderability and comparability
+  ASSERT_TRUE(timeType->isOrderable());
+  ASSERT_TRUE(timeType->isComparable());
+
+  testTypeSerde(timeType);
+  ASSERT_EQ(timeType->toString(), "TIME MICRO UTC");
+  ASSERT_EQ(timeType->getMin(), 0);
+  ASSERT_EQ(timeType->getMax(), 86'399'999'999);
+}
+
+TEST(TypeTest, timeTypeComparison) {
+  EXPECT_TRUE(TIME()->equivalent(*TIME()));
+  EXPECT_TRUE(TIME_MICRO_UTC()->equivalent(*TIME_MICRO_UTC()));
+
+  EXPECT_FALSE(TIME()->equivalent(*TIME_MICRO_UTC()));
+  EXPECT_FALSE(TIME_MICRO_UTC()->equivalent(*TIME()));
+}
+
+TEST(TypeTest, timeToIso8601) {
+  const auto toIso8601 =
+      [](int64_t hours, int64_t minutes, int64_t seconds, int64_t micros) {
+        return TimeMicroPrecisionUtcType::toCompactIso8601(
+            hours * util::kMicrosPerHour + minutes * util::kMicrosPerMinute +
+            seconds * util::kMicrosPerSec + micros);
+      };
+
+  EXPECT_EQ("00:00", toIso8601(0, 0, 0, 0));
+  EXPECT_EQ("00:00:00.000001", toIso8601(0, 0, 0, 1));
+  EXPECT_EQ("00:00:00.100", toIso8601(0, 0, 0, 100'000));
+  EXPECT_EQ("00:00:01", toIso8601(0, 0, 1, 0));
+  EXPECT_EQ("00:00:00.001", toIso8601(0, 0, 0, 1'000));
+  EXPECT_EQ("00:00:00.038", toIso8601(0, 0, 0, 38'000));
+  EXPECT_EQ("00:00:00.038001", toIso8601(0, 0, 0, 38'001));
+  EXPECT_EQ("00:00:00.038100", toIso8601(0, 0, 0, 38'100));
+  EXPECT_EQ("08:08:08", toIso8601(8, 8, 8, 0));
+  EXPECT_EQ("10:12:55.038", toIso8601(10, 12, 55, 38'000));
+  EXPECT_EQ("23:59:59.999999", toIso8601(23, 59, 59, 999'999));
 }

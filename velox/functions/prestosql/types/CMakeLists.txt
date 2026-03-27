@@ -13,10 +13,12 @@
 # limitations under the License.
 
 add_subdirectory(parser)
+
 velox_add_library(
   velox_presto_types
   BigintEnumRegistration.cpp
   BigintEnumType.cpp
+  PrestoTypes.cpp
   BingTileRegistration.cpp
   BingTileType.cpp
   EnumTypeBase.cpp
@@ -25,17 +27,28 @@ velox_add_library(
   IPPrefixRegistration.cpp
   JsonCastOperator.cpp
   JsonRegistration.cpp
+  KHyperLogLogRegistration.cpp
   QDigestRegistration.cpp
   P4HyperLogLogRegistration.cpp
   SfmSketchRegistration.cpp
   TDigestRegistration.cpp
   TimestampWithTimeZoneRegistration.cpp
+  TimestampWithTimeZoneType.cpp
+  TimeWithTimezoneRegistration.cpp
+  TimeWithTimezoneType.cpp
+  IPAddressType.cpp
+  IPPrefixType.cpp
+  SetDigestRegistration.cpp
   UuidRegistration.cpp
+  UuidType.cpp
   VarcharEnumRegistration.cpp
   VarcharEnumType.cpp
 )
 if(VELOX_ENABLE_GEO)
-  velox_sources(velox_presto_types PRIVATE GeometryRegistration.cpp)
+  velox_sources(
+    velox_presto_types
+    PRIVATE GeometryRegistration.cpp SphericalGeographyRegistration.cpp
+  )
 endif()
 
 velox_link_libraries(
@@ -48,6 +61,7 @@ velox_link_libraries(
   velox_functions_lib_date_time_formatter
   velox_constrained_input_generators
   velox_presto_types_fuzzer_utils
+  velox_common_hyperloglog
 )
 
 if(${VELOX_BUILD_TESTING})

@@ -84,7 +84,7 @@ std::vector<AggregateInfo> toAggregateInfo(
     const auto& name = aggregate.call->name();
 
     info.intermediateType =
-        resolveAggregateFunction(name, aggregate.rawInputTypes).second;
+        resolveIntermediateType(name, aggregate.rawInputTypes);
 
     // Setup aggregation mask: convert the Variable Reference name to the
     // channel (projection) index, if there is a mask.
@@ -103,6 +103,12 @@ std::vector<AggregateInfo> toAggregateInfo(
         aggregate.rawInputTypes,
         aggResultType,
         operatorCtx.driverCtx()->queryConfig());
+
+    // Pass constant inputs to the aggregate so it can read constant arguments
+    // (e.g., flags) at initialization time.
+    if (!constants.empty()) {
+      info.function->setConstantInputs(constants);
+    }
 
     auto lambdas = extractLambdaInputs(aggregate);
     if (!lambdas.empty()) {

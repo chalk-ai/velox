@@ -19,6 +19,8 @@
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
+using namespace facebook::velox::common::testutil;
+
 namespace facebook::velox::exec::test {
 
 void TableScanTestBase::verifyCacheStats(
@@ -173,11 +175,6 @@ void TableScanTestBase::testPartitionedTableImpl(
   std::string partitionValueStr;
   partitionValueStr =
       partitionValue.has_value() ? "'" + *partitionValue + "'" : "null";
-  if (partitionValue.has_value() && partitionType->isDecimal()) {
-    auto [p, s] = getDecimalPrecisionScale(*partitionType);
-    partitionValueStr =
-        fmt::format("CAST({} AS DECIMAL({}, {}))", partitionValueStr, p, s);
-  }
   assertQuery(
       op, split, fmt::format("SELECT {}, * FROM tmp", partitionValueStr));
 
@@ -188,6 +185,9 @@ void TableScanTestBase::testPartitionedTableImpl(
            .assignments(assignments)
            .endTableScan()
            .planNode();
+  split = exec::test::HiveConnectorSplitBuilder(filePath)
+              .partitionKey("pkey", partitionValue)
+              .build();
   assertQuery(
       op, split, fmt::format("SELECT c0, {}, c1 FROM tmp", partitionValueStr));
   outputType = ROW({"c0", "c1", "pkey"}, {BIGINT(), DOUBLE(), partitionType});
@@ -197,6 +197,9 @@ void TableScanTestBase::testPartitionedTableImpl(
            .assignments(assignments)
            .endTableScan()
            .planNode();
+  split = exec::test::HiveConnectorSplitBuilder(filePath)
+              .partitionKey("pkey", partitionValue)
+              .build();
   assertQuery(
       op, split, fmt::format("SELECT c0, c1, {} FROM tmp", partitionValueStr));
 
@@ -209,6 +212,9 @@ void TableScanTestBase::testPartitionedTableImpl(
            .assignments(assignments)
            .endTableScan()
            .planNode();
+  split = exec::test::HiveConnectorSplitBuilder(filePath)
+              .partitionKey("pkey", partitionValue)
+              .build();
   assertQuery(op, split, fmt::format("SELECT {} FROM tmp", partitionValueStr));
 }
 

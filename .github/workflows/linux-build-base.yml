@@ -27,6 +27,57 @@ on:
         required: false
 
 jobs:
+
+  get-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run-clang-tidy: ${{ steps.changes.outputs.run_clang_tidy }}
+      changed-files: ${{ steps.changes.outputs.files}}
+      diff-range: ${{ steps.changes.outputs.range }}
+      merge-base-commit: ${{ steps.changes.outputs.merge_base_commit }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_TRIGGER: ${{ github.event_name }}
+        run: |
+          echo "JOB_TRIGGER: $JOB_TRIGGER"
+          if [[ "$JOB_TRIGGER" == "pull_request" ]]; then
+            merge_base_commit=$(gh api -q '.merge_base_commit.sha' \
+              /repos/facebookincubator/velox/compare/facebookincubator:$BASE_REF...$PR_OWNER:$HEAD_REF \
+            )
+
+            range="$merge_base_commit..$HEAD_SHA"
+            echo "range=$range" >> "$GITHUB_OUTPUT"
+            echo "merge_base_commit=$merge_base_commit" >> "$GITHUB_OUTPUT"
+
+            git diff --name-only $range > changed_files.txt
+
+            cpp_files='.+\.(cpp|h|hpp)$'
+
+            {
+              echo 'files<<EOF'
+              cat changed_files.txt
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+
+            if grep -qE $cpp_files changed_files.txt; then
+              echo "run_clang_tidy=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "run_clang_tidy=false" >> "$GITHUB_OUTPUT"
+          fi
+
   adapters:
     name: Linux release with adapters
     runs-on: google-c4d-standard-16
@@ -38,13 +89,14 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/ccache
       CACHE_HMAC_KEY: ${{ secrets.CHALK_PRIVATE_GITHUB_ACTIONS_HMAC_KEY }}
       VELOX_DEPENDENCY_SOURCE: SYSTEM
-      GTest_SOURCE: BUNDLED
       cudf_SOURCE: BUNDLED
-      CUDA_VERSION: '12.8'
+      CUDA_VERSION: '12.9'
       faiss_SOURCE: BUNDLED
       USE_CLANG: "${{ inputs.use-clang && 'true' || 'false' }}"
+    outputs:
+      cudf-changes: ${{ steps.changes.outputs.cudf }}
     steps:
-      - uses: actions/checkout@v5.0.0
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 2
           persist-credentials: false
@@ -60,6 +112,9 @@ jobs:
           VELOX_ARROW_CMAKE_PATCH: ${{ github.workspace }}/CMake/resolve_dependency_modules/arrow/cmake-compatibility.patch
         run: |
           if git diff --name-only HEAD^1 HEAD | grep -q "scripts/setup-"; then
+            echo "Removing previous AWS SDK and s2n installations to avoid conflicts..."
+            rm -rf /usr/local/include/s2n /usr/local/lib64/s2n
+            rm -rf /usr/local/include/aws
             # Overwrite old setup scripts with changed versions
             cp scripts/setup-* /
 
@@ -110,8 +165,8 @@ jobs:
           MAKEFLAGS: NUM_THREADS=16 MAX_HIGH_MEM_JOBS=8 MAX_LINK_JOBS=8
           CUDA_ARCHITECTURES: 70
           CUDA_COMPILER: /usr/local/cuda-${CUDA_VERSION}/bin/nvcc
-          # Set compiler to GCC 12
-          CUDA_FLAGS: -ccbin /opt/rh/gcc-toolset-12/root/usr/bin
+          # Set compiler to GCC 14
+          CUDA_FLAGS: -ccbin /opt/rh/gcc-toolset-14/root/usr/bin
         run: |
           EXTRA_CMAKE_FLAGS=(
             "-DVELOX_ENABLE_BENCHMARKS=ON"
@@ -126,7 +181,6 @@ jobs:
             "-DVELOX_ENABLE_ABFS=ON"
             "-DVELOX_ENABLE_WAVE=ON"
             "-DVELOX_MONO_LIBRARY=ON"
-            "-DVELOX_BUILD_SHARED=ON"
           )
           if [[ "${USE_CLANG}" = "true" ]]; then
              scripts/setup-centos9.sh install_clang15; export CC=/usr/bin/clang-15; export CXX=/usr/bin/clang++-15; CUDA_FLAGS="-ccbin /usr/lib64/llvm15/bin/clang++-15";
@@ -138,7 +192,11 @@ jobs:
             # Investigate issues with remote function service: Issue #13897
             EXTRA_CMAKE_FLAGS+=("-DVELOX_ENABLE_REMOTE_FUNCTIONS=ON")
           fi
-          make release EXTRA_CMAKE_FLAGS="${EXTRA_CMAKE_FLAGS[*]}"
+          source /opt/rh/gcc-toolset-14/enable
+          g++ --version
+          # CC/CXX are set to GCC12 in the adapters image build and it needs to be overridden
+          # after sourcing GCC14.
+          CC=gcc CXX=g++ make release EXTRA_CMAKE_FLAGS="${EXTRA_CMAKE_FLAGS[*]}"
 
       - name: Ccache after
         run: ccache -s
@@ -160,11 +218,9 @@ jobs:
           LIBHDFS3_CONF: ${{ github.workspace }}/scripts/ci/hdfs-client.xml
         working-directory: _build/release
         run: |
-          # Can be removed after images are rebuild
-          if [ -f "/opt/miniforge/etc/profile.d/conda.sh" ]; then
-            source "/opt/miniforge/etc/profile.d/conda.sh"
-            conda activate adapters
-          fi
+          source /setup-classpath.sh
+          ulimit -n 65536
+          ctest -j 24 --timeout 900 --label-exclude cuda_driver --output-on-failure --no-tests=error
 
           export CLASSPATH=`/usr/local/hadoop/bin/hdfs classpath --glob`
           ctest -j 16 --label-exclude cuda_driver --output-on-failure --no-tests=error
@@ -212,34 +268,31 @@ jobs:
         run: |
           mkdir -p "$CCACHE_DIR"
 
-      - uses: actions/checkout@v5.0.0
-        with:
-          path: velox
-          persist-credentials: false
-
-      - name: Install Dependencies
-        run: |
-          source scripts/setup-ubuntu.sh && install_apt_deps && install_faiss_deps
-
       - name: Clear CCache Statistics
         run: |
           ccache -sz
 
       - name: Make Debug Build
         env:
-          VELOX_DEPENDENCY_SOURCE: BUNDLED
+          VELOX_DEPENDENCY_SOURCE: SYSTEM
           ICU_SOURCE: SYSTEM
           MAKEFLAGS: NUM_THREADS=16 MAX_HIGH_MEM_JOBS=8 MAX_LINK_JOBS=8
-          EXTRA_CMAKE_FLAGS: >-
-            -DCMAKE_LINK_LIBRARIES_STRATEGY=REORDER_FREELY
-            -DVELOX_ENABLE_PARQUET=ON
-            -DVELOX_ENABLE_EXAMPLES=ON
         run: |
-          # Faiss (link issue when using Clang) is excluded for Clang compilation and needs to be added back when using GCC.
+          EXTRA_CMAKE_FLAGS=(
+            "-DCMAKE_LINK_LIBRARIES_STRATEGY=REORDER_FREELY"
+            "-DVELOX_BUILD_SHARED=ON"
+            "-DVELOX_ENABLE_BENCHMARKS=ON"
+            "-DVELOX_ENABLE_EXAMPLES=ON"
+            "-DVELOX_ENABLE_ARROW=ON"
+            "-DVELOX_ENABLE_GEO=ON"
+            "-DVELOX_ENABLE_PARQUET=ON"
+            "-DVELOX_MONO_LIBRARY=ON"
+          )
           if [[ "${USE_CLANG}" = "true" ]]; then
-            export CC=/usr/bin/clang-15; export CXX=/usr/bin/clang++-15;
+             export CC=/usr/bin/clang-15; export CXX=/usr/bin/clang++-15;
           else
-            export EXTRA_CMAKE_FLAGS="${EXTRA_CMAKE_FLAGS} -DVELOX_ENABLE_FAISS=ON"
+            EXTRA_CMAKE_FLAGS+=("-DVELOX_ENABLE_FAISS=ON")
+            EXTRA_CMAKE_FLAGS+=("-DVELOX_ENABLE_REMOTE_FUNCTIONS=ON")
           fi
           make debug
 

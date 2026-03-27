@@ -47,6 +47,36 @@ class MemoryPool;
 
 namespace facebook::velox::connector::hive {
 
+/// Creates a constant vector of size 1 from a string representation of a value.
+///
+/// Used to materialize partition column values and info columns (e.g., $path,
+/// $file_size) when reading Hive and Iceberg tables. Partition values are
+/// stored as strings in HiveConnectorSplit::partitionKeys and need to be
+/// converted to their appropriate types.
+///
+/// @param type The target Velox type for the constant vector. Supports all
+/// scalar types including primitives, dates, timestamps.
+/// @param value The string representation of the value to convert, formatted
+/// the same way as CAST(x as VARCHAR). Date values must be formatted using ISO
+/// 8601 as YYYY-MM-DD. If nullopt, creates a null constant vector.
+/// @param pool Memory pool for allocating the constant vector.
+/// @param isLocalTimestamp If true and type is TIMESTAMP, interprets the string
+/// value as local time and converts it to GMT. If false, treats the value
+/// as already in GMT.
+/// @param isDaysSinceEpoch If true and type is DATE, treats the string value as
+/// an integer representing days since epoch (used by Iceberg). If false, parses
+/// the string as a date string in ISO 8601 format (used by Hive).
+///
+/// @return A constant vector of size 1 containing the converted value, or a
+/// null constant if value is nullopt.
+/// @throws VeloxUserError if the string cannot be converted to the target type.
+VectorPtr newConstantFromString(
+    const TypePtr& type,
+    const std::optional<std::string>& value,
+    velox::memory::MemoryPool* pool,
+    bool isLocalTimestamp,
+    bool isDaysSinceEpoch);
+
 struct HiveConnectorSplit;
 class HiveTableHandle;
 class HiveColumnHandle;
@@ -63,11 +93,12 @@ class SplitReader {
       const ConnectorQueryCtx* connectorQueryCtx,
       const std::shared_ptr<const HiveConfig>& hiveConfig,
       const RowTypePtr& readerOutputType,
-      const std::shared_ptr<io::IoStatistics>& ioStats,
-      const std::shared_ptr<filesystems::File::IoStats>& fsStats,
+      const std::shared_ptr<io::IoStatistics>& ioStatistics,
+      const std::shared_ptr<IoStats>& ioStats,
       FileHandleFactory* fileHandleFactory,
       folly::Executor* ioExecutor,
-      const std::shared_ptr<common::ScanSpec>& scanSpec);
+      const std::shared_ptr<common::ScanSpec>& scanSpec,
+      const common::SubfieldFilters* subfieldFiltersForValidation = nullptr);
 
   virtual ~SplitReader() = default;
 
@@ -101,6 +132,16 @@ class SplitReader {
 
   void setBucketConversion(std::vector<column_index_t> bucketChannels);
 
+  /// Sets the info columns map for synthesized column filter validation.
+  /// Must be called before prepareSplit() if synthesized column filter
+  /// validation is needed.
+  void setInfoColumns(
+      const std::unordered_map<
+          std::string,
+          std::shared_ptr<const HiveColumnHandle>>* infoColumns) {
+    infoColumns_ = infoColumns;
+  }
+
   const RowTypePtr& readerOutputType() const {
     return readerOutputType_;
   }
@@ -117,13 +158,14 @@ class SplitReader {
       const ConnectorQueryCtx* connectorQueryCtx,
       const std::shared_ptr<const HiveConfig>& hiveConfig,
       const RowTypePtr& readerOutputType,
-      const std::shared_ptr<io::IoStatistics>& ioStats,
-      const std::shared_ptr<filesystems::File::IoStats>& fsStats,
+      const std::shared_ptr<io::IoStatistics>& ioStatistics,
+      const std::shared_ptr<IoStats>& ioStats,
       FileHandleFactory* fileHandleFactory,
       folly::Executor* executor,
-      const std::shared_ptr<common::ScanSpec>& scanSpec);
+      const std::shared_ptr<common::ScanSpec>& scanSpec,
+      const common::SubfieldFilters* subfieldFiltersForValidation = nullptr);
 
-  /// Create the dwio::common::Reader object baseReader_, which will be used to
+  /// Create the dwio::common::Reader object baseReader_
   /// read the data file's metadata and schema
   void createReader(
       const folly::F14FastMap<std::string, std::string>& fileReadOps = {});
@@ -163,17 +205,30 @@ class SplitReader {
       VectorPtr& output,
       const std::vector<BaseVector::CopyRange>& ranges);
 
- private:
-  /// Different table formats may have different meatadata columns.
-  /// This function will be used to update the scanSpec for these columns.
-  std::vector<TypePtr> adaptColumns(
-      const RowTypePtr& fileType,
-      const std::shared_ptr<const velox::RowType>& tableSchema) const;
-
+  /// Sets a constant partition value on the scanSpec for a partition column.
+  /// Converts the partition key string value to the appropriate type and sets
+  /// it as a constant value in the scanSpec, so the column will be filled
+  /// with this constant value.
+  ///
+  /// @param spec The scan spec to set the constant value on.
+  /// @param partitionKey The name of the partition column.
   void setPartitionValue(
       common::ScanSpec* spec,
       const std::string& partitionKey,
       const std::optional<std::string>& value) const;
+
+  /// Validates synthesized column filters against the split's info column
+  /// values. This handles filter-only synthesized columns that are not in the
+  /// scanSpec by checking them early before any file I/O.
+  /// Throws if any synthesized column filter fails validation.
+  void validateSynthesizedColumnFilters() const;
+
+ private:
+  /// Different table formats may have different meatadata columns.
+  /// This function will be used to update the scanSpec for these columns.
+  virtual std::vector<TypePtr> adaptColumns(
+      const RowTypePtr& fileType,
+      const RowTypePtr& tableSchema) const;
 
  protected:
   std::shared_ptr<const HiveConnectorSplit> hiveSplit_;
@@ -181,17 +236,26 @@ class SplitReader {
   const std::unordered_map<
       std::string,
       std::shared_ptr<const HiveColumnHandle>>* const partitionKeys_;
+  // Column handles for synthesized columns (e.g., $path, $file_size).
+  // Set via setInfoColumns() and used in validateSynthesizedColumnFilters().
+  const std::unordered_map<
+      std::string,
+      std::shared_ptr<const HiveColumnHandle>>* infoColumns_;
   const ConnectorQueryCtx* connectorQueryCtx_;
   const std::shared_ptr<const HiveConfig> hiveConfig_;
 
   RowTypePtr readerOutputType_;
-  const std::shared_ptr<io::IoStatistics> ioStats_;
-  const std::shared_ptr<filesystems::File::IoStats> fsStats_;
+  const std::shared_ptr<io::IoStatistics> ioStatistics_;
+  const std::shared_ptr<IoStats> ioStats_;
   FileHandleFactory* const fileHandleFactory_;
   folly::Executor* const ioExecutor_;
   memory::MemoryPool* const pool_;
 
   std::shared_ptr<common::ScanSpec> scanSpec_;
+  // Subfield filters from HiveDataSource, includes both original
+  // subfieldFilters and filters extracted from remainingFilter. Used to
+  // validate synthesized column filters in prepareSplit() and adaptColumns().
+  const common::SubfieldFilters* subfieldFiltersForValidation_;
   std::unique_ptr<dwio::common::Reader> baseReader_;
   std::unique_ptr<dwio::common::RowReader> baseRowReader_;
   dwio::common::ReaderOptions baseReaderOpts_;

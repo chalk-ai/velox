@@ -116,6 +116,7 @@ DECIMAL                 BIGINT if precision <= 18, HUGEINT if precision >= 19
 INTERVAL DAY TO SECOND  BIGINT
 INTERVAL YEAR TO MONTH  INTEGER
 TIME                    BIGINT
+TIME_MICRO_UTC          BIGINT
 ======================  ======================================================
 
 DECIMAL type carries additional `precision`,
@@ -131,8 +132,9 @@ upto 38 precision, with a range of :math:`[-10^{38} + 1, +10^{38} - 1]`.
 All the three values, precision, scale, unscaled value are required to represent a
 decimal value.
 
-TIME type represents time in milliseconds from midnight UTC. Thus min/max value can  range from UTC-14:00 at 00:00:00 to UTC+14:00 at 23:59:59.999 modulo 24 hours.
-TIME type is backed by BIGINT physical type.
+TIME type represents time in milliseconds of local timezone from midnight. Thus min/max value can range from 0 to 23:59:59.999.
+TIME_MICRO_UTC type represents time in microseconds from midnight, timezone unaware. Thus min/max value can range from 00:00:00.000000 to 23:59:59.999999.
+The TIME and TIME_MICRO_UTC types are backed by BIGINT physical type.
 
 Custom Types
 ~~~~~~~~~~~~
@@ -172,17 +174,34 @@ The table below shows the supported Presto types.
 Presto Type               Physical Type
 ========================  =====================
 HYPERLOGLOG               VARBINARY
+KHYPERLOGLOG              VARBINARY
+P4HYPERLOGLOG             VARBINARY
 JSON                      VARCHAR
 TIMESTAMP WITH TIME ZONE  BIGINT
 UUID                      HUGEINT
 IPADDRESS                 HUGEINT
 IPPREFIX                  ROW(HUGEINT,TINYINT)
+BINGTILE                  BIGINT
 GEOMETRY                  VARBINARY
+SPHERICALGEOGRAPHY        VARBINARY
+SETDIGEST                 VARBINARY
 TDIGEST                   VARBINARY
 QDIGEST                   VARBINARY
 BIGINT_ENUM               BIGINT
 VARCHAR_ENUM              VARCHAR
+TIME WITH TIME ZONE       BIGINT
 ========================  =====================
+
+KHYPERLOGLOG is a data sketch for estimating reidentifiability and joinability within a dataset.
+Based on the `KHyperLogLog paper <https://research.google/pubs/khyperloglog-estimating-reidentifiability-and-joinability-of-large-data-at-scale/>`_,
+it maintains a map of K number of HyperLogLog structures, where each entry corresponds to a unique key from one column,
+and the HLL estimates the cardinality of the associated unique identifiers from another column.
+For storage and retrieval it may be cast to/from VARBINARY.
+
+P4HYPERLOGLOG is a data sketch for cardinality estimation that uses only the dense HyperLogLog
+representation. Unlike standard HYPERLOGLOG which supports both sparse and dense formats,
+P4HYPERLOGLOG always uses dense format. It may be cast to/from HYPERLOGLOG and to/from VARBINARY
+for storage and retrieval.
 
 TIMESTAMP WITH TIME ZONE represents a time point in milliseconds precision
 from UNIX epoch with timezone information. Its physical type is BIGINT.
@@ -203,7 +222,10 @@ IPPREFIX networks.
 IPPREFIX represents an IPv6 or IPv4 formatted IPv6 address along with a one byte
 prefix length. Its physical type is ROW(HUGEINT, TINYINT). The IPADDRESS is stored in
 the HUGEINT and is in the form defined in `RFC 4291#section-2.5.5.2 <https://datatracker.ietf.org/doc/html/rfc4291.html#section-2.5.5.2>`_.
-The prefix length is stored in the TINYINT.
+The prefix length is stored in the TINYINT. Note that IPv6 prefix lengths go up
+to 128, which overflows TINYINT (int8_t, max 127). Prefix length 128 is stored
+as -128. Code that reads the prefix length must cast to uint8_t to recover the
+correct unsigned value.
 The IP address stored is the canonical(smallest) IP address in the
 subnet range. This type can be used in IP subnet functions.
 
@@ -216,6 +238,10 @@ As a result the IPPREFIX object stores *FFFF:FFFF::* and the length 32 for both 
 
    IPPREFIX 'FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/32' -- IPPREFIX 'FFFF:FFFF:0000:0000:0000:0000:0000:0000/32'
    IPPREFIX 'FFFF:FFFF:4455:6677:8899:AABB:CCDD:EEFF/32' -- IPPREFIX 'FFFF:FFFF:0000:0000:0000:0000:0000:0000/32'
+
+SETDIGEST is a data sketch for estimating set cardinality and performing set operations
+like intersection cardinality and Jaccard index. It combines HyperLogLog with MinHash.
+SetDigests may be merged, and for storage and retrieval they may be cast to/from VARBINARY.
 
 TDIGEST(DOUBLE) is a data sketch for estimating rank-based metrics.
 T-digests may be merged without losing precision, and for storage and retrieval
@@ -247,6 +273,23 @@ VarcharEnumParameter as the key.
 Casting is only permitted to and from VARCHAR type, and is case-sensitive. Casting between different enum types is not permitted.
 Comparison operations are only allowed between values of the same enum type.
 
+TIME WITH TIME ZONE represents time from midnight in milliseconds precision at a particular timezone.
+Its physical type is BIGINT. The high 52 bits of bigint store signed integer for milliseconds in UTC.
+The lower 12 bits store the time zone offsets minutes. This allows the time to be converted at any point of
+time without ambiguity of daylight savings time. Time zone offsets range from -14:00 hours to +14:00 hours.
+
+BINGTILE represents a `Bing tile <https://learn.microsoft.com/en-us/bingmaps/articles/bing-maps-tile-system>`_.
+It is a quadtree in the Web Mercator projection, where each tile is 256x256 pixels. Its physical type is BIGINT.
+
+GEOMETRY represents a geometry as defined in `Simple Feature Access <https://en.wikipedia.org/wiki/Simple_Features>`_.
+Subtypes include Point, MultiPoint, LineString, MultiLineString, Polygon, MultiPolygon, and GeometryCollection. They
+are often stored as `Well-Known Text <https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry>`_ or
+`Well-Known Binary <https://en.wikipedia.org/wiki/Well-known_binary>`_.
+
+SPHERICALGEOGRAPHY represents a geometry on a spherical model of the Earth. It is internally represented the same
+way as GEOMETRY, but only certain functions are supported.  Moreover, these functions will return values in meters
+as opposed to the units of the coordinate space.
+
 Spark Types
 ~~~~~~~~~~~~
 The `data types <https://spark.apache.org/docs/latest/sql-ref-datatypes.html>`_ in Spark have some semantic differences compared to those in
@@ -265,6 +308,12 @@ key differences are listed below.
               (cast('2014-03-08 09:00:00.012345678' as timestamp))
       ) AS t(ts);
       -- 2014-03-08 09:00:00.012345
+
+* Spark operates on the TIME_MICRO_UTC type for "microsecond" precision and timezone unawareness,
+  while Presto uses the standard TIME type.
+  Example::
+
+      SELECT cast('12:30:45.123456' as time)  -- 12:30:45.123456
 
 * In function comparisons, nested null values are handled as values.
   Example::

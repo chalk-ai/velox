@@ -79,6 +79,10 @@ class FieldAccessExpr : public IExpr {
         name_, alias(), std::move(newInputs));
   }
 
+  ExprPtr withAlias(const std::string& alias) const override {
+    return std::make_shared<FieldAccessExpr>(name_, alias, inputs());
+  }
+
   ExprPtr dropAlias() const override {
     return std::make_shared<FieldAccessExpr>(name_, std::nullopt, inputs());
   }
@@ -116,6 +120,10 @@ class CallExpr : public IExpr {
         folly::copy(name()), std::move(newInputs), alias());
   }
 
+  ExprPtr withAlias(const std::string& alias) const override {
+    return std::make_shared<CallExpr>(name(), inputs(), alias);
+  }
+
   ExprPtr dropAlias() const override {
     return std::make_shared<CallExpr>(name(), inputs(), std::nullopt);
   }
@@ -151,6 +159,10 @@ class ConstantExpr : public IExpr,
   ExprPtr replaceInputs(std::vector<ExprPtr> newInputs) const override {
     VELOX_CHECK_EQ(newInputs.size(), 0);
     return std::make_shared<ConstantExpr>(type(), value(), alias());
+  }
+
+  ExprPtr withAlias(const std::string& alias) const override {
+    return std::make_shared<ConstantExpr>(type(), value(), alias);
   }
 
   ExprPtr dropAlias() const override {
@@ -193,6 +205,10 @@ class CastExpr : public IExpr, public std::enable_shared_from_this<CastExpr> {
     VELOX_CHECK_EQ(newInputs.size(), 1);
     return std::make_shared<CastExpr>(
         type(), newInputs[0], isTryCast_, alias());
+  }
+
+  ExprPtr withAlias(const std::string& alias) const override {
+    return std::make_shared<CastExpr>(type(), input(), isTryCast_, alias);
   }
 
   ExprPtr dropAlias() const override {
@@ -254,4 +270,37 @@ class LambdaExpr : public IExpr,
   const std::vector<std::string> arguments_;
   const ExprPtr body_;
 };
+
+/// Named ROW constructor. Carries field names alongside child expressions
+/// through the unresolved expression tree.
+class ConcatExpr : public IExpr {
+ public:
+  ConcatExpr(std::vector<std::string> fieldNames, std::vector<ExprPtr> inputs)
+      : IExpr(IExpr::Kind::kConcat, std::move(inputs)),
+        fieldNames_(std::move(fieldNames)) {
+    VELOX_CHECK_EQ(fieldNames_.size(), this->inputs().size());
+  }
+
+  const std::vector<std::string>& fieldNames() const {
+    return fieldNames_;
+  }
+
+  std::string toString() const override;
+
+  ExprPtr replaceInputs(std::vector<ExprPtr> newInputs) const override {
+    return std::make_shared<ConcatExpr>(fieldNames_, std::move(newInputs));
+  }
+
+  ExprPtr dropAlias() const override {
+    return std::make_shared<ConcatExpr>(fieldNames_, inputs());
+  }
+
+  bool operator==(const IExpr& other) const override;
+
+  size_t localHash() const override;
+
+ private:
+  const std::vector<std::string> fieldNames_;
+};
+
 } // namespace facebook::velox::core

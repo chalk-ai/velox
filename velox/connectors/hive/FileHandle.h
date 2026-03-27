@@ -25,6 +25,8 @@
 
 #pragma once
 
+#include <string_view>
+
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/caching/CachedFactory.h"
 #include "velox/common/caching/FileIds.h"
@@ -34,6 +36,12 @@
 #include "velox/connectors/hive/FileProperties.h"
 
 namespace facebook::velox {
+
+/// fileReadOps keys for passing table identity (db and table name)
+/// through the file handle layer. Written by the connector (SplitReader) and
+/// read by storage implementations to build per-table access token keys.
+constexpr std::string_view kDbNameKey = "dbName";
+constexpr std::string_view kTableNameKey = "tableName";
 
 // See the file comment.
 struct FileHandle {
@@ -109,7 +117,7 @@ class FileHandleGenerator {
   std::unique_ptr<FileHandle> operator()(
       const FileHandleKey& filename,
       const FileProperties* properties,
-      filesystems::File::IoStats* stats);
+      IoStats* stats);
 
  private:
   const std::shared_ptr<const config::ConfigBase> properties_;
@@ -120,7 +128,7 @@ using FileHandleFactory = CachedFactory<
     FileHandle,
     FileHandleGenerator,
     FileProperties,
-    filesystems::File::IoStats,
+    IoStats,
     FileHandleSizer>;
 
 using FileHandleCachedPtr = CachedPtr<FileHandleKey, FileHandle>;

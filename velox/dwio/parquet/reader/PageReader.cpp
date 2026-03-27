@@ -17,11 +17,11 @@
 #include "velox/dwio/parquet/reader/PageReader.h"
 
 #include "velox/common/testutil/TestValue.h"
+#include "velox/common/time/Timer.h"
 #include "velox/dwio/common/BufferUtil.h"
 #include "velox/dwio/common/ColumnVisitors.h"
 #include "velox/dwio/parquet/common/LevelConversion.h"
 #include "velox/dwio/parquet/thrift/ThriftTransport.h"
-
 #include "velox/vector/FlatVector.h"
 
 #include <thrift/protocol/TCompactProtocol.h> // @manual
@@ -87,7 +87,12 @@ PageHeader PageReader::readPageHeader() {
   if (bufferEnd_ == bufferStart_) {
     const void* buffer;
     int32_t size;
-    inputStream_->Next(&buffer, &size);
+    uint64_t readUs{0};
+    {
+      MicrosecondTimer timer(&readUs);
+      inputStream_->Next(&buffer, &size);
+    }
+    stats_.pageLoadTimeNs.increment(readUs * 1'000);
     bufferStart_ = reinterpret_cast<const char*>(buffer);
     bufferEnd_ = bufferStart_ + size;
   }
@@ -106,26 +111,31 @@ PageHeader PageReader::readPageHeader() {
 }
 
 const char* PageReader::readBytes(int32_t size, BufferPtr& copy) {
-  if (bufferEnd_ == bufferStart_) {
-    const void* buffer = nullptr;
-    int32_t bufferSize = 0;
-    if (!inputStream_->Next(&buffer, &bufferSize)) {
-      VELOX_FAIL("Read past end");
+  uint64_t readUs{0};
+  {
+    MicrosecondTimer timer(&readUs);
+    if (bufferEnd_ == bufferStart_) {
+      const void* buffer = nullptr;
+      int32_t bufferSize = 0;
+      if (!inputStream_->Next(&buffer, &bufferSize)) {
+        VELOX_FAIL("Read past end");
+      }
+      bufferStart_ = reinterpret_cast<const char*>(buffer);
+      bufferEnd_ = bufferStart_ + bufferSize;
     }
-    bufferStart_ = reinterpret_cast<const char*>(buffer);
-    bufferEnd_ = bufferStart_ + bufferSize;
+    if (bufferEnd_ - bufferStart_ >= size) {
+      bufferStart_ += size;
+      return bufferStart_ - size;
+    }
+    dwio::common::ensureCapacity<char>(copy, size, &pool_);
+    dwio::common::readBytes(
+        size,
+        inputStream_.get(),
+        copy->asMutable<char>(),
+        bufferStart_,
+        bufferEnd_);
   }
-  if (bufferEnd_ - bufferStart_ >= size) {
-    bufferStart_ += size;
-    return bufferStart_ - size;
-  }
-  dwio::common::ensureCapacity<char>(copy, size, &pool_);
-  dwio::common::readBytes(
-      size,
-      inputStream_.get(),
-      copy->asMutable<char>(),
-      bufferStart_,
-      bufferEnd_);
+  stats_.pageLoadTimeNs.increment(readUs * 1'000);
   return copy->as<char>();
 }
 
@@ -222,18 +232,42 @@ void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
       pageHeader.compressed_page_size,
       pageHeader.uncompressed_page_size);
   auto pageEnd = pageData_ + pageHeader.uncompressed_page_size;
+  auto remainingBytes = pageHeader.uncompressed_page_size;
   if (maxRepeat_ > 0) {
+    VELOX_CHECK_GE(
+        remainingBytes,
+        sizeof(int32_t),
+        "Insufficient bytes for repetition level length (corrupt data page?)");
     uint32_t repeatLength = readField<int32_t>(pageData_);
+    remainingBytes -= sizeof(int32_t);
+    VELOX_CHECK_LE(
+        repeatLength,
+        remainingBytes,
+        "Repetition level length {} exceeds remaining page size {} (corrupt data page?)",
+        repeatLength,
+        remainingBytes);
     repeatDecoder_ = std::make_unique<RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         repeatLength,
         ::arrow::bit_util::NumRequiredBits(maxRepeat_));
 
     pageData_ += repeatLength;
+    remainingBytes -= repeatLength;
   }
 
   if (maxDefine_ > 0) {
+    VELOX_CHECK_GE(
+        remainingBytes,
+        sizeof(uint32_t),
+        "Insufficient bytes for definition level length (corrupt data page?)");
     auto defineLength = readField<uint32_t>(pageData_);
+    remainingBytes -= sizeof(uint32_t);
+    VELOX_CHECK_LE(
+        defineLength,
+        remainingBytes,
+        "Definition level length {} exceeds remaining page size {} (corrupt data page?)",
+        defineLength,
+        remainingBytes);
     if (maxDefine_ == 1) {
       defineDecoder_ = std::make_unique<RleBpDecoder>(
           pageData_,
@@ -278,6 +312,13 @@ void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
       pageHeader.data_page_header_v2.repetition_levels_byte_length;
 
   auto bytes = pageHeader.compressed_page_size;
+  VELOX_CHECK_LE(
+      static_cast<uint64_t>(repeatLength) + defineLength,
+      bytes,
+      "Repetition and definition level lengths ({} + {}) exceed compressed page size {} (corrupt data page?)",
+      repeatLength,
+      defineLength,
+      bytes);
   pageData_ = readBytes(bytes, pageBuffer_);
 
   if (repeatLength) {
@@ -368,12 +409,17 @@ void PageReader::prepareDictionary(const PageHeader& pageHeader) {
       if (pageData_) {
         memcpy(dictionary_.values->asMutable<char>(), pageData_, numBytes);
       } else {
-        dwio::common::readBytes(
-            numBytes,
-            inputStream_.get(),
-            dictionary_.values->asMutable<char>(),
-            bufferStart_,
-            bufferEnd_);
+        uint64_t readUs{0};
+        {
+          MicrosecondTimer timer(&readUs);
+          dwio::common::readBytes(
+              numBytes,
+              inputStream_.get(),
+              dictionary_.values->asMutable<char>(),
+              bufferStart_,
+              bufferEnd_);
+        }
+        stats_.pageLoadTimeNs.increment(readUs * 1'000);
       }
       if (type_->type()->isShortDecimal() &&
           parquetType == thrift::Type::INT32) {
@@ -403,12 +449,17 @@ void PageReader::prepareDictionary(const PageHeader& pageHeader) {
       if (pageData_) {
         memcpy(dictionary_.values->asMutable<char>(), pageData_, numBytes);
       } else {
-        dwio::common::readBytes(
-            numBytes,
-            inputStream_.get(),
-            dictionary_.values->asMutable<char>(),
-            bufferStart_,
-            bufferEnd_);
+        uint64_t readUs{0};
+        {
+          MicrosecondTimer timer(&readUs);
+          dwio::common::readBytes(
+              numBytes,
+              inputStream_.get(),
+              dictionary_.values->asMutable<char>(),
+              bufferStart_,
+              bufferEnd_);
+        }
+        stats_.pageLoadTimeNs.increment(readUs * 1'000);
       }
       // Expand the Parquet type length values to Velox type length.
       // We start from the end to allow in-place expansion.
@@ -435,8 +486,13 @@ void PageReader::prepareDictionary(const PageHeader& pageHeader) {
       if (pageData_) {
         memcpy(strings, pageData_, numBytes);
       } else {
-        dwio::common::readBytes(
-            numBytes, inputStream_.get(), strings, bufferStart_, bufferEnd_);
+        uint64_t readUs{0};
+        {
+          MicrosecondTimer timer(&readUs);
+          dwio::common::readBytes(
+              numBytes, inputStream_.get(), strings, bufferStart_, bufferEnd_);
+        }
+        stats_.pageLoadTimeNs.increment(readUs * 1'000);
       }
       auto header = strings;
       for (auto i = 0; i < dictionary_.numValues; ++i) {
@@ -452,18 +508,24 @@ void PageReader::prepareDictionary(const PageHeader& pageHeader) {
       auto numParquetBytes = dictionary_.numValues * parquetTypeLength;
       auto veloxTypeLength = type_->type()->cppSizeInBytes();
       auto numVeloxBytes = dictionary_.numValues * veloxTypeLength;
+      VELOX_CHECK_LE(numParquetBytes, numVeloxBytes);
       dictionary_.values = AlignedBuffer::allocate<char>(numVeloxBytes, &pool_);
       auto data = dictionary_.values->asMutable<char>();
       // Read the data bytes.
       if (pageData_) {
         memcpy(data, pageData_, numParquetBytes);
       } else {
-        dwio::common::readBytes(
-            numParquetBytes,
-            inputStream_.get(),
-            data,
-            bufferStart_,
-            bufferEnd_);
+        uint64_t readUs{0};
+        {
+          MicrosecondTimer timer(&readUs);
+          dwio::common::readBytes(
+              numParquetBytes,
+              inputStream_.get(),
+              data,
+              bufferStart_,
+              bufferEnd_);
+        }
+        stats_.pageLoadTimeNs.increment(readUs * 1'000);
       }
       if (type_->type()->isShortDecimal()) {
         // Parquet decimal values have a fixed typeLength_ and are in big-endian

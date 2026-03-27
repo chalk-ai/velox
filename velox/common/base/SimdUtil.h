@@ -16,7 +16,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <type_traits>
+
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/Exceptions.h"
 
@@ -420,6 +423,7 @@ xsimd::batch<To, A> getHalf(xsimd::batch<From, A> data, const A& arch = {}) {
 template <typename T, typename A = xsimd::default_arch>
 xsimd::batch<T, A> iota(const A& = {});
 
+#ifdef VELOX_ENABLE_LOAD_SIMD_VALUE_BUFFER
 // Returns a batch with all elements set to value.  For batch<bool> we
 // use one bit to represent one element.
 template <typename T, typename A = xsimd::default_arch>
@@ -435,6 +439,7 @@ xsimd::batch<T, A> setAll(T value, const A& = {}) {
     return xsimd::broadcast<T, A>(value);
   }
 }
+#endif
 
 // Stores 'data' into 'destination' for the lanes in 'mask'. 'mask' is expected
 // to specify contiguous lower lanes of 'batch'. For non-SIMD cases, 'mask' is
@@ -518,6 +523,43 @@ inline void memcpy(void* to, const void* from, int64_t bytes, const A& = {});
 // constant values of 'bytes'.
 template <typename A = xsimd::default_arch>
 void memset(void* to, char data, int32_t bytes, const A& = {});
+
+// Fills 'count' elements of 'output' with 'value' using SIMD broadcast+store
+// for types that support it (int32_t, uint32_t, int64_t, uint64_t, float,
+// double), and falls back to std::fill for other types.
+//
+// Uses a simpler structure than std::fill's auto-vectorized code — broadcast +
+// tight store loop + overlapping tail — that performs better for repeated calls
+// with small variable-length fills.
+template <typename T>
+inline void simdFill(T* output, T value, uint32_t count) {
+  if constexpr (
+      std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t> ||
+      std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t> ||
+      std::is_same_v<T, float> || std::is_same_v<T, double>) {
+    constexpr auto kBatchSize = xsimd::batch<T>::size;
+    if (count >= kBatchSize) {
+      auto batch = xsimd::broadcast<T>(value);
+      uint32_t i = 0;
+      for (; i + kBatchSize <= count; i += kBatchSize) {
+        batch.store_unaligned(output + i);
+      }
+      // Handle tail with an overlapping store. Safe because we're filling
+      // with a constant value, so re-writing already-written positions is
+      // harmless. The outer 'count >= kBatchSize' guard ensures
+      // 'count - kBatchSize' never underflows.
+      if (i < count) {
+        batch.store_unaligned(output + count - kBatchSize);
+      }
+    } else {
+      for (uint32_t i = 0; i < count; ++i) {
+        output[i] = value;
+      }
+    }
+  } else {
+    std::fill(output, output + count, value);
+  }
+}
 
 // Calls a different instantiation of a template function according to
 // 'numBytes'.

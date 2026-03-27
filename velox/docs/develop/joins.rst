@@ -24,11 +24,20 @@ values need to match, and an optional filter to apply to join results.
     :align: center
 
 The join type can be one of kInner, kLeft, kRight, kFull, kLeftSemiFilter,
-kLeftSemiProject, kRightSemiFilter, kRightSemiProject, or kAnti.
+kCountingLeftSemiFilter, kLeftSemiProject, kRightSemiFilter, kRightSemiProject,
+kAnti, or kCountingAnti.
 
 kLeftSemiProject, kRightSemiProject and kAnti joins support an additional
 nullAware flag to distinguish between IN (null aware) and EXISTS (regular)
 semantics.
+
+kCountingAnti and kCountingLeftSemiFilter are multiset variants of kAnti and
+kLeftSemiFilter. The build side deduplicates keys and stores a per-key count.
+On probe, each match decrements the count. kCountingAnti emits a probe row when
+the count reaches zero or no match is found (EXCEPT ALL semantics).
+kCountingLeftSemiFilter emits a probe row while the count is greater than zero
+(INTERSECT ALL semantics). Counting joins do not support extra filter or
+null-aware mode. Spilling is not yet supported.
 
 Filter is optional. If specified it can be any expression over the results of
 the join. This expression will be evaluated using the same expression
@@ -197,6 +206,11 @@ arrange for all rows with the same keys to appear on the same machine. Whether
 the join is executed using broadcast or partitioned strategy has no effect on
 the join execution itself. The only difference is that broadcast execution
 allows for dynamic filter pushdown while partitioned execution does not.
+
+HashJoinNode supports a ``useHashTableCache`` flag (used only by Presto-on-Spark)
+that enables caching of the hash table built for broadcast joins. When enabled,
+the first task to build the hash table stores it in a global cache, and subsequent
+tasks from same query reuse the cached table instead of rebuilding it.
 
 PartitionedOutput operator and OutputBufferManager support
 broadcasting the results of the plan evaluation. This functionality is enabled

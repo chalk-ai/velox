@@ -17,7 +17,8 @@
 #pragma once
 
 #include <limits>
-#include <unordered_set>
+#include <string>
+#include <unordered_map>
 
 #include <folly/Executor.h>
 #include "velox/common/base/RandomUtil.h"
@@ -51,6 +52,7 @@ enum class FileFormat {
   NIMBLE = 8,
   ORC = 9,
   SST = 10, // rocksdb sst format
+  FLUX = 11,
 };
 
 FileFormat toFileFormat(std::string_view s);
@@ -312,8 +314,8 @@ class RowReaderOptions {
           flatmapNodeIdsAsStruct) {
     VELOX_CHECK(
         std::all_of(
-            flatmapNodeIdsAsStruct.begin(),
-            flatmapNodeIdsAsStruct.end(),
+            flatmapNodeIdsAsStruct.cbegin(),
+            flatmapNodeIdsAsStruct.cend(),
             [](const auto& kv) { return !kv.second.empty(); }),
         "To use struct encoding for flatmap, keys to project must be specified");
     flatmapNodeIdAsStruct_ = std::move(flatmapNodeIdsAsStruct);
@@ -448,8 +450,38 @@ class RowReaderOptions {
     return trackRowSize_;
   }
 
-  void setTrackRowSize(bool value) {
-    trackRowSize_ = value;
+  void setTrackRowSize(bool trackRowSize) {
+    trackRowSize_ = trackRowSize;
+  }
+
+  bool indexEnabled() const {
+    return indexEnabled_;
+  }
+
+  /// Sets whether to use the cluster index for filter-based row pruning.
+  /// When enabled, filters from ScanSpec are converted to index bounds for
+  /// efficient row skipping based on the file's cluster index.
+  ///
+  /// NOTE: currently only supported by Nimble format.
+  void setIndexEnabled(bool enabled) {
+    indexEnabled_ = enabled;
+  }
+
+  bool passStringBuffersFromDecoder() const {
+    return passStringBuffersFromDecoder_;
+  }
+
+  void setPassStringBuffersFromDecoder(bool passStringBuffersFromDecoder) {
+    passStringBuffersFromDecoder_ = passStringBuffersFromDecoder;
+  }
+
+  bool collectColumnStats() const {
+    return collectColumnStats_;
+  }
+
+  RowReaderOptions& setCollectColumnStats(bool collect) {
+    collectColumnStats_ = collect;
+    return *this;
   }
 
  private:
@@ -472,7 +504,7 @@ class RowReaderOptions {
   // default, converts flat maps in the file to MapVectors.
   bool preserveFlatMapsInMemory_ = false;
   // Optional io executor to enable parallel unit loader.
-  folly::Executor* ioExecutor_;
+  folly::Executor* ioExecutor_{nullptr};
   // Optional executors to enable internal reader parallelism.
   // 'decodingExecutor' allow parallelising the vector decoding process.
   // 'ioExecutor' enables parallelism when performing file system read
@@ -512,12 +544,18 @@ class RowReaderOptions {
 
   std::shared_ptr<FormatSpecificOptions> formatSpecificOptions_;
   bool trackRowSize_{false};
+  bool indexEnabled_{false};
+  // NOTE: we will control this option with a session property
+  // for prod. Tests are parameterized on both branches.
+  bool passStringBuffersFromDecoder_{false};
+  bool collectColumnStats_{false};
 };
 
 /// Options for creating a Reader.
 class ReaderOptions : public io::ReaderOptions {
  public:
-  static constexpr uint64_t kDefaultFooterEstimatedSize = 1024 * 1024; // 1MB
+  static constexpr uint64_t kDefaultFooterSpeculativeIoSize =
+      1024 * 1024; // 1MB
   static constexpr uint64_t kDefaultFilePreloadThreshold =
       1024 * 1024 * 8; // 8MB
 
@@ -531,6 +569,13 @@ class ReaderOptions : public io::ReaderOptions {
   /// "dwrf".
   ReaderOptions& setFileFormat(FileFormat format) {
     fileFormat_ = format;
+    return *this;
+  }
+
+  /// Sets the property bag.
+  ReaderOptions& setProperties(
+      std::unordered_map<std::string, std::string> properties) {
+    properties_ = std::move(properties);
     return *this;
   }
 
@@ -562,8 +607,8 @@ class ReaderOptions : public io::ReaderOptions {
     return *this;
   }
 
-  ReaderOptions& setFooterEstimatedSize(uint64_t size) {
-    footerEstimatedSize_ = size;
+  ReaderOptions& setFooterSpeculativeIoSize(uint64_t size) {
+    footerSpeculativeIoSize_ = size;
     return *this;
   }
 
@@ -607,6 +652,11 @@ class ReaderOptions : public io::ReaderOptions {
     return fileFormat_;
   }
 
+  /// Gets the property bag.
+  const std::unordered_map<std::string, std::string>& properties() const {
+    return properties_;
+  }
+
   /// Gets the file schema.
   const std::shared_ptr<const velox::RowType>& fileSchema() const {
     return fileSchema_;
@@ -624,8 +674,8 @@ class ReaderOptions : public io::ReaderOptions {
     return decrypterFactory_;
   }
 
-  uint64_t footerEstimatedSize() const {
-    return footerEstimatedSize_;
+  uint64_t footerSpeculativeIoSize() const {
+    return footerSpeculativeIoSize_;
   }
 
   uint64_t filePreloadThreshold() const {
@@ -660,12 +710,12 @@ class ReaderOptions : public io::ReaderOptions {
     randomSkip_ = std::move(randomSkip);
   }
 
-  bool noCacheRetention() const {
-    return noCacheRetention_;
+  bool cacheable() const {
+    return cacheable_;
   }
 
-  void setNoCacheRetention(bool noCacheRetention) {
-    noCacheRetention_ = noCacheRetention;
+  void setCacheable(bool cacheable) {
+    cacheable_ = cacheable;
   }
 
   const std::shared_ptr<velox::common::ScanSpec>& scanSpec() const {
@@ -684,6 +734,40 @@ class ReaderOptions : public io::ReaderOptions {
     selectiveNimbleReaderEnabled_ = value;
   }
 
+  /// Whether to cache file metadata (footer, stripes, index) in the
+  /// process-wide AsyncDataCache. When enabled, the first reader performs a
+  /// speculative tail read and populates the cache; subsequent readers on the
+  /// same file initialize from the cache with zero additional IO.
+  bool fileMetadataCacheEnabled() const {
+    return fileMetadataCacheEnabled_;
+  }
+
+  void setFileMetadataCacheEnabled(bool value) {
+    fileMetadataCacheEnabled_ = value;
+  }
+
+  /// Whether to load and initialize the cluster index during file open.
+  /// When true, the cluster index section is preloaded and the structured
+  /// ClusterIndex object is created. Default true.
+  bool loadClusterIndex() const {
+    return loadClusterIndex_;
+  }
+
+  void setLoadClusterIndex(bool value) {
+    loadClusterIndex_ = value;
+  }
+
+  /// Whether to load and initialize the chunk index during file open.
+  /// When true, the chunk index section is preloaded and the structured
+  /// ChunkIndex object is created. Default true.
+  bool loadChunkIndex() const {
+    return loadChunkIndex_;
+  }
+
+  void setLoadChunkIndex(bool value) {
+    loadChunkIndex_ = value;
+  }
+
   bool allowEmptyFile() const {
     return allowEmptyFile_;
   }
@@ -697,8 +781,9 @@ class ReaderOptions : public io::ReaderOptions {
   FileFormat fileFormat_;
   RowTypePtr fileSchema_;
   SerDeOptions serDeOptions_;
+  std::unordered_map<std::string, std::string> properties_{};
   std::shared_ptr<encryption::DecrypterFactory> decrypterFactory_;
-  uint64_t footerEstimatedSize_{kDefaultFooterEstimatedSize};
+  uint64_t footerSpeculativeIoSize_{kDefaultFooterSpeculativeIoSize};
   uint64_t filePreloadThreshold_{kDefaultFilePreloadThreshold};
   bool fileColumnNamesReadAsLowerCase_{false};
   bool useColumnNamesForColumnMapping_{false};
@@ -708,6 +793,9 @@ class ReaderOptions : public io::ReaderOptions {
   const tz::TimeZone* sessionTimezone_{nullptr};
   bool adjustTimestampToTimezone_{false};
   bool selectiveNimbleReaderEnabled_{false};
+  bool fileMetadataCacheEnabled_{false};
+  bool loadClusterIndex_{true};
+  bool loadChunkIndex_{true};
   bool allowEmptyFile_{false};
 };
 

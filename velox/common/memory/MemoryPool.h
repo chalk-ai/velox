@@ -29,7 +29,6 @@
 #include "velox/common/memory/MemoryArbitrator.h"
 
 DECLARE_bool(velox_memory_leak_check_enabled);
-DECLARE_bool(velox_memory_pool_debug_enabled);
 DECLARE_bool(velox_memory_pool_capacity_transfer_across_tasks);
 
 namespace facebook::velox::exec {
@@ -784,8 +783,7 @@ class MemoryPoolImpl final : public MemoryPool {
   }
 
   FOLLY_ALWAYS_INLINE int64_t sizeAlign(int64_t size) const {
-    const auto remainder = size & (alignment_ - 1);
-    return (remainder == 0) ? size : (size + alignment_ - remainder);
+    return (size + alignment_ - 1) & ~(alignment_ - 1);
   }
 
   // Returns a rounded up delta based on adding 'delta' to 'size'. Adding the
@@ -1008,6 +1006,24 @@ class MemoryPoolImpl final : public MemoryPool {
   // pool is enabled.
   void leakCheckDbg();
 
+  // Holds formatted string of dumped allocation records for a leaf memory pool,
+  // along with the total pool size in bytes.
+  struct MemoryPoolDump {
+    std::string dumpedRecords;
+    int64_t bytes;
+  };
+
+  // Recursively collects 'MemoryPoolDump' records for this memory pool and
+  // all its descendants in the tree. Called during memory capacity-exceeded
+  // exceptions to extend the error message with additional debug information.
+  void treeAllocationRecordsDbg(std::vector<MemoryPoolDump>& poolDumps) const;
+
+  // Wraps the message of a memory capacity exceeded exception with debug
+  // allocation records from all memory pools in the subtree. This function is
+  // called from the root memory pool.
+  std::exception_ptr wrapExceptionDbg(
+      const VeloxRuntimeError& veloxError) const;
+
   // Dump the recorded call sites of the memory allocations in
   // 'debugAllocRecords_' to the string.
   std::string dumpRecordsDbgLocked() const;
@@ -1094,27 +1110,29 @@ template <typename T>
 class StlAllocator {
  public:
   typedef T value_type;
-  MemoryPool& pool;
+  MemoryPool* pool;
 
-  /* implicit */ StlAllocator(MemoryPool& pool) : pool{pool} {}
+  /* implicit */ StlAllocator(MemoryPool& pool) : pool{&pool} {}
 
-  explicit StlAllocator(MemoryPool* pool) : pool{*pool} {}
+  explicit StlAllocator(MemoryPool* pool) : pool{pool} {
+    VELOX_CHECK_NOT_NULL(pool);
+  }
 
   template <typename U>
   /* implicit */ StlAllocator(const StlAllocator<U>& a) : pool{a.pool} {}
 
   T* allocate(size_t n) {
-    return static_cast<T*>(pool.allocate(checkedMultiply(n, sizeof(T))));
+    return static_cast<T*>(pool->allocate(checkedMultiply(n, sizeof(T))));
   }
 
   void deallocate(T* p, size_t n) {
-    pool.free(p, checkedMultiply(n, sizeof(T)));
+    pool->free(p, checkedMultiply(n, sizeof(T)));
   }
 
   template <typename T1>
   bool operator==(const StlAllocator<T1>& rhs) const {
     if constexpr (std::is_same_v<T, T1>) {
-      return &this->pool == &rhs.pool;
+      return this->pool == rhs.pool;
     }
     return false;
   }

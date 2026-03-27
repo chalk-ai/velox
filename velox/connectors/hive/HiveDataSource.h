@@ -34,12 +34,25 @@ class HiveConfig;
 
 class HiveDataSource : public DataSource {
  public:
+  /// Runtime stat keys for Hive data source.
+  static constexpr std::string_view kNumPrefetch{"numPrefetch"};
+  static constexpr std::string_view kPrefetchBytes{"prefetchBytes"};
+  static constexpr std::string_view kTotalScanTime{"totalScanTime"};
+  static constexpr std::string_view kOverreadBytes{"overreadBytes"};
+  static constexpr std::string_view kStorageReadBytes{"storageReadBytes"};
+  static constexpr std::string_view kNumLocalRead{"numLocalRead"};
+  static constexpr std::string_view kLocalReadBytes{"localReadBytes"};
+  static constexpr std::string_view kNumRamRead{"numRamRead"};
+  static constexpr std::string_view kRamReadBytes{"ramReadBytes"};
+  static constexpr std::string_view kNumBucketConversion{"numBucketConversion"};
+  static constexpr std::string_view kFileFormat{"fileFormat."};
+
   HiveDataSource(
       const RowTypePtr& outputType,
       const connector::ConnectorTableHandlePtr& tableHandle,
-      const connector::ColumnHandleMap& columnHandles,
+      const connector::ColumnHandleMap& assignments,
       FileHandleFactory* fileHandleFactory,
-      folly::Executor* executor,
+      folly::Executor* ioExecutor,
       const ConnectorQueryCtx* connectorQueryCtx,
       const std::shared_ptr<HiveConfig>& hiveConfig);
 
@@ -53,7 +66,7 @@ class HiveDataSource : public DataSource {
       const std::shared_ptr<common::Filter>& filter) override;
 
   uint64_t getCompletedBytes() override {
-    return ioStats_->rawBytesRead();
+    return ioStatistics_->rawBytesRead();
   }
 
   uint64_t getCompletedRows() override {
@@ -86,7 +99,7 @@ class HiveDataSource : public DataSource {
           folly::Executor* executor,
           const ConnectorQueryCtx* connectorQueryCtx,
           const std::shared_ptr<HiveConfig>& hiveConfig,
-          const std::shared_ptr<io::IoStatistics>& ioStats,
+          const std::shared_ptr<io::IoStatistics>& ioStatistics,
           const exec::ExprSet* remainingFilter,
           std::shared_ptr<common::MetadataFilter> metadataFilter)>;
 
@@ -122,8 +135,8 @@ class HiveDataSource : public DataSource {
   // name.
   std::unordered_map<std::string, HiveColumnHandlePtr> partitionKeys_;
 
-  std::shared_ptr<io::IoStatistics> ioStats_;
-  std::shared_ptr<filesystems::File::IoStats> fsStats_;
+  std::shared_ptr<io::IoStatistics> ioStatistics_;
+  std::shared_ptr<IoStats> ioStats_;
 
  private:
   std::vector<column_index_t> setupBucketConversion();
@@ -147,6 +160,10 @@ class HiveDataSource : public DataSource {
     return emptyOutput_;
   }
 
+  // Add the information from column handle to the corresponding fields in this
+  // object.
+  void processColumnHandle(const HiveColumnHandlePtr& handle);
+
   // The row type for the data source output, not including filter-only columns
   const RowTypePtr outputType_;
   core::ExpressionEvaluator* const expressionEvaluator_;
@@ -157,12 +174,17 @@ class HiveDataSource : public DataSource {
   std::vector<common::Subfield> remainingFilterSubfields_;
   folly::F14FastMap<std::string, std::vector<const common::Subfield*>>
       subfields_;
+  // Optional post-processors for each output column, collected from
+  // HiveColumnHandle::postProcessor(). Applied after reading and filtering to
+  // transform column values. Indexed by output column position.
+  std::vector<std::function<void(VectorPtr&)>> columnPostProcessors_;
   common::SubfieldFilters filters_;
   std::shared_ptr<common::MetadataFilter> metadataFilter_;
   std::unique_ptr<exec::ExprSet> remainingFilterExprSet_;
   RowVectorPtr emptyOutput_;
   dwio::common::RuntimeStatistics runtimeStats_;
-  std::atomic<uint64_t> totalRemainingFilterTime_{0};
+  std::atomic_uint64_t totalRemainingFilterTime_{0};
+  std::atomic_uint64_t totalRemainingFilterCpuTime_{0};
   uint64_t completedRows_ = 0;
 
   // Field indices referenced in both remaining filter and output type. These
@@ -172,6 +194,9 @@ class HiveDataSource : public DataSource {
   std::shared_ptr<random::RandomSkipTracker> randomSkip_;
 
   int64_t numBucketConversion_ = 0;
+
+  // Tracks the number of splits read per file format.
+  std::unordered_map<dwio::common::FileFormat, int64_t> numSplitsByFileFormat_;
 
   // Reusable memory for remaining filter evaluation.
   VectorPtr filterResult_;

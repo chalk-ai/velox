@@ -15,7 +15,7 @@
  */
 
 #include "velox/exec/HashTable.h"
-#include "folly/experimental/EventCount.h"
+#include "folly/synchronization/EventCount.h"
 #include "velox/common/base/SelectivityInfo.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/testutil/TestValue.h"
@@ -132,11 +132,18 @@ class HashTableTest : public testing::TestWithParam<bool>,
       std::vector<RowVectorPtr> batches;
       std::vector<std::unique_ptr<VectorHasher>> keyHashers;
       for (auto channel = 0; channel < numKeys; ++channel) {
-        keyHashers.emplace_back(std::make_unique<VectorHasher>(
-            buildType->childAt(channel), channel));
+        keyHashers.emplace_back(
+            std::make_unique<VectorHasher>(
+                buildType->childAt(channel), channel));
       }
       auto table = HashTable<true>::createForJoin(
-          std::move(keyHashers), dependentTypes, true, false, 1'000, pool());
+          std::move(keyHashers),
+          dependentTypes,
+          true,
+          false,
+          false,
+          1'000,
+          pool());
 
       makeRows(size, 1, sequence, buildType, batches);
       copyVectorsToTable(batches, startOffset, table.get());
@@ -158,6 +165,8 @@ class HashTableTest : public testing::TestWithParam<bool>,
     topTable_->prepareJoinTable(
         std::move(otherTables),
         BaseHashTable::kNoSpillInputStartPartitionBit,
+        1'000'000,
+        false,
         executor_.get());
     ASSERT_GE(
         estimatedTableSize,
@@ -431,8 +440,9 @@ class HashTableTest : public testing::TestWithParam<bool>,
       TypePtr buildType,
       std::vector<RowVectorPtr>& batches) {
     for (auto i = 0; i < numBatches; ++i) {
-      batches.push_back(std::static_pointer_cast<RowVector>(
-          makeVector(buildType, batchSize, sequence)));
+      batches.push_back(
+          std::static_pointer_cast<RowVector>(
+              makeVector(buildType, batchSize, sequence)));
       sequence += batchSize;
     }
   }
@@ -539,10 +549,14 @@ class HashTableTest : public testing::TestWithParam<bool>,
     std::vector<std::unique_ptr<VectorHasher>> hashers;
     hashers.push_back(std::make_unique<VectorHasher>(keys->type(), 0));
     auto table = HashTable<false>::createForJoin(
-        std::move(hashers), {BIGINT()}, true, false, 1'000, pool());
+        std::move(hashers), {BIGINT()}, true, false, false, 1'000, pool());
     copyVectorsToTable({batch}, 0, table.get());
     table->prepareJoinTable(
-        {}, BaseHashTable::kNoSpillInputStartPartitionBit, executor_.get());
+        {},
+        BaseHashTable::kNoSpillInputStartPartitionBit,
+        1'000'000,
+        false,
+        executor_.get());
     ASSERT_EQ(table->hashMode(), mode);
     std::vector<char*> rows(nullValues.size());
     BaseHashTable::NullKeyRowsIterator iter;
@@ -835,12 +849,16 @@ TEST_P(HashTableTest, regularHashingTableSize) {
           std::make_unique<VectorHasher>(type->childAt(channel), channel));
     }
     auto table = HashTable<true>::createForJoin(
-        std::move(keyHashers), {}, true, false, 1'000, pool());
+        std::move(keyHashers), {}, true, false, false, 1'000, pool());
     std::vector<RowVectorPtr> batches;
     makeRows(1 << 12, 1, 0, type, batches);
     copyVectorsToTable(batches, 0, table.get());
     table->prepareJoinTable(
-        {}, BaseHashTable::kNoSpillInputStartPartitionBit, executor_.get());
+        {},
+        BaseHashTable::kNoSpillInputStartPartitionBit,
+        1'000'000,
+        false,
+        executor_.get());
     ASSERT_EQ(table->hashMode(), mode);
     EXPECT_GE(table->testingRehashSize(), table->numDistinct());
   };
@@ -871,6 +889,7 @@ TEST_P(HashTableTest, listJoinResultsSize) {
       std::move(keyHashers),
       {BIGINT(), VARCHAR()},
       true,
+      false,
       false,
       kNumRows,
       pool());
@@ -1026,7 +1045,7 @@ DEBUG_ONLY_TEST_P(HashTableTest, nextBucketOffset) {
           std::make_unique<VectorHasher>(type->childAt(channel), channel));
     }
     auto table = HashTable<true>::createForJoin(
-        std::move(keyHashers), {}, true, false, 1'000, pool());
+        std::move(keyHashers), {}, true, false, false, 1'000, pool());
     auto testHelper = HashTableTestHelper<true>::create(table.get());
     const uint64_t numDistincts = bits::nextPowerOfTwo(
         2UL * std::numeric_limits<int32_t>::max() / testHelper.tableSlotSize());
@@ -1133,7 +1152,7 @@ DEBUG_ONLY_TEST_P(HashTableTest, failureInCreateRowPartitions) {
     // Set minTableSizeForParallelJoinBuild to be really small so we can trigger
     // a parallel join build without needing a lot of data.
     auto table = HashTable<false>::createForJoin(
-        std::move(hashers), {BIGINT()}, true, false, 1, pool());
+        std::move(hashers), {BIGINT()}, true, false, false, 1, pool());
     copyVectorsToTable({batch}, 0, table.get());
 
     if (topTable == nullptr) {
@@ -1146,6 +1165,8 @@ DEBUG_ONLY_TEST_P(HashTableTest, failureInCreateRowPartitions) {
   topTable->prepareJoinTable(
       std::move(otherTables),
       BaseHashTable::kNoSpillInputStartPartitionBit,
+      1'000'000,
+      false,
       executor_.get());
   auto topTabletestHelper = HashTableTestHelper<false>::create(topTable.get());
 
@@ -1225,6 +1246,7 @@ TEST_P(HashTableTest, toStringSingleKey) {
       {}, /*dependentTypes*/
       true /*allowDuplicates*/,
       false /*hasProbedFlag*/,
+      false /*hasCountFlag*/,
       1 /*minTableSizeForParallelJoinBuild*/,
       pool());
 
@@ -1234,7 +1256,8 @@ TEST_P(HashTableTest, toStringSingleKey) {
 
   store(*table->rows(), data);
 
-  table->prepareJoinTable({}, BaseHashTable::kNoSpillInputStartPartitionBit);
+  table->prepareJoinTable(
+      {}, BaseHashTable::kNoSpillInputStartPartitionBit, 1'000'000);
 
   ASSERT_NO_THROW(table->toString());
   ASSERT_NO_THROW(table->toString(0));
@@ -1253,6 +1276,7 @@ TEST_P(HashTableTest, toStringMultipleKeys) {
       {}, /*dependentTypes*/
       true /*allowDuplicates*/,
       false /*hasProbedFlag*/,
+      false /*hasCountFlag*/,
       1 /*minTableSizeForParallelJoinBuild*/,
       pool());
 
@@ -1265,7 +1289,8 @@ TEST_P(HashTableTest, toStringMultipleKeys) {
 
   store(*table->rows(), data);
 
-  table->prepareJoinTable({}, BaseHashTable::kNoSpillInputStartPartitionBit);
+  table->prepareJoinTable(
+      {}, BaseHashTable::kNoSpillInputStartPartitionBit, 1'000'000);
 
   ASSERT_NO_THROW(table->toString());
 }

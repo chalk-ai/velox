@@ -307,6 +307,33 @@ Map Aggregate Functions
     Returns the union of all the input maps summing the values of matching keys in all
     the maps. All null values in the original maps are coalesced to 0.
 
+Array Aggregate Functions
+-------------------------
+
+.. function:: vector_sum(array(T)) -> array(T)
+
+    Returns the element-wise sum of all input arrays. Equivalent to
+    ``ARRAY[SUM(a[1]), SUM(a[2]), ...]``, with the same null-handling
+    semantics as :func:`sum`: null elements are skipped, and positions
+    where all input values are null produce null in the output.
+    All input arrays must have the same length; an error is raised if
+    arrays of different lengths are encountered.
+    Supported types for T are: TINYINT, SMALLINT, INTEGER, BIGINT, REAL
+    and DOUBLE.
+    For integer types, arithmetic overflow results in an error,
+    consistent with the behavior of :func:`sum`. For floating-point
+    types (REAL, DOUBLE), NaN values propagate through the sum and
+    overflow produces Infinity, following standard IEEE 754 semantics.
+
+    This is useful when rows contain fixed-dimension vectors (e.g.
+    embedding vectors or feature arrays) and you need to compute a
+    component-wise sum across all rows::
+
+        SELECT vector_sum(embedding) FROM item_embeddings;
+
+        -- With 3 rows: [1, 2, 3], [10, 20, 30], [100, 200, 300]
+        -- Returns:     [111, 222, 333]
+
 Approximate Aggregate Functions
 -------------------------------
 
@@ -419,6 +446,40 @@ __ https://www.cse.ust.hk/~raywong/comp5331/References/EfficientComputationOfFre
 
     As ``approx_percentile(x, w, percentages)``, but with a maximum rank error
     of ``accuracy``.
+
+.. function:: numeric_histogram(buckets, value, weight) -> map<double, double>
+
+    Computes an approximate histogram with up to ``buckets`` number of buckets
+    for all ``value``\ s with a per-item weight of ``weight``.  The keys of the
+    returned map are roughly the center of the bin, and the entry is the total
+    weight of the bin.  The algorithm is based loosely on [BenHaimTomTov2010]_.
+
+    ``buckets`` must be a ``bigint``. ``value`` and ``weight`` must be numeric.
+    ::
+
+        SELECT numeric_histogram(3, v, 1.0)
+        FROM (
+         VALUES (10),
+                (15),
+                (20),
+                (25),
+                (30)
+        ) AS t(v);
+        --{30.0->1.0, 22.5->2.0, 12.5->2.0}
+
+.. function:: numeric_histogram(buckets, value) -> map<double, double>
+
+    Computes an approximate histogram with up to ``buckets`` number of buckets
+    for all ``value``\ s. This function is equivalent to the variant of
+    :func:`!numeric_histogram` that takes a ``weight``, with a per-item weight of ``1``.
+    In this case, the total weight in the returned map is the count of items in the bin.
+    ::
+
+        SELECT numeric_histogram(3, v)
+        FROM (
+        VALUES (10.0), (15.0), (20.0), (25.0), (30.0)
+        ) AS t(v);
+        --{30.0->1.0, 22.5->2.0, 12.5->2.0}
 
 Classification Metrics Aggregate Functions
 ------------------------------------------

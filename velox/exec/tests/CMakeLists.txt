@@ -36,8 +36,9 @@ target_link_libraries(
   GTest::gtest_main
 )
 
-add_executable(
-  velox_exec_test
+# Split velox_exec_test into individual test binaries for parallel execution.
+set(
+  VELOX_EXEC_TEST_SOURCES
   AddressableNonNullValueListTest.cpp
   AggregationTest.cpp
   AggregateFunctionRegistryTest.cpp
@@ -55,6 +56,7 @@ add_executable(
   FilterToExpressionTest.cpp
   FunctionResolutionTest.cpp
   HashBitRangeTest.cpp
+  CountingJoinTest.cpp
   HashJoinBridgeTest.cpp
   HashJoinTest.cpp
   HashPartitionFunctionTest.cpp
@@ -62,12 +64,15 @@ add_executable(
   IndexLookupJoinTest.cpp
   LimitTest.cpp
   LocalPartitionTest.cpp
-  Main.cpp
   MarkDistinctTest.cpp
+  MarkSortedTest.cpp
+  EnforceDistinctTest.cpp
   MemoryReclaimerTest.cpp
   MergeJoinTest.cpp
   MergeTest.cpp
   MergerTest.cpp
+  MixedUnionTest.cpp
+  MixedUnionWithTableScanTest.cpp
   MultiFragmentTest.cpp
   NestedLoopJoinTest.cpp
   OrderByTest.cpp
@@ -76,6 +81,7 @@ add_executable(
   ParallelProjectTest.cpp
   PartitionedOutputTest.cpp
   PlanNodeSerdeTest.cpp
+  PlanNodeStatsTest.cpp
   PlanNodeToStringTest.cpp
   PlanNodeToSummaryStringTest.cpp
   PrefixSortTest.cpp
@@ -88,12 +94,16 @@ add_executable(
   ScaledScanControllerTest.cpp
   ScaleWriterLocalPartitionTest.cpp
   SortBufferTest.cpp
+  SpatialIndexTest.cpp
+  HilbertIndexTest.cpp
+  SpillStatsTest.cpp
   SpillerTest.cpp
   SpillTest.cpp
   SplitListenerTest.cpp
   SplitTest.cpp
   SqlTest.cpp
   StreamingAggregationTest.cpp
+  StreamingEnforceDistinctTest.cpp
   TableScanTest.cpp
   TableWriterTest.cpp
   TaskListenerTest.cpp
@@ -109,8 +119,65 @@ add_executable(
   WriterFuzzerUtilTest.cpp
 )
 
+set(
+  VELOX_EXEC_TEST_DEPS
+  velox_aggregates
+  velox_dwio_common
+  velox_dwio_common_exception
+  velox_dwio_common_test_utils
+  velox_dwio_orc_reader
+  velox_dwio_parquet_reader
+  velox_dwio_parquet_writer
+  velox_exec
+  velox_exec_test_lib
+  velox_file_test_utils
+  velox_functions_json
+  velox_functions_lib
+  velox_functions_prestosql
+  velox_functions_test_lib
+  velox_hive_connector
+  velox_memory
+  velox_serialization
+  velox_test_util
+  velox_type
+  velox_type_test_lib
+  velox_trace
+  velox_vector
+  velox_vector_fuzzer
+  velox_writer_fuzzer
+  velox_window
+  Boost::atomic
+  Boost::context
+  Boost::date_time
+  Boost::filesystem
+  Boost::program_options
+  Boost::thread
+  Boost::system
+  GTest::gtest
+  GTest::gtest_main
+  GTest::gmock
+  Folly::folly
+  gflags::gflags
+  glog::glog
+  fmt::fmt
+)
+
+velox_add_grouped_tests(
+  PREFIX velox_exec_test
+  SOURCES ${VELOX_EXEC_TEST_SOURCES}
+  DEPS ${VELOX_EXEC_TEST_DEPS}
+  EXTRA_SOURCES Main.cpp
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 if(VELOX_ENABLE_GEO)
-  target_sources(velox_exec_test PRIVATE SpatialJoinTest.cpp)
+  add_executable(velox_exec_SpatialJoinTest SpatialJoinTest.cpp Main.cpp)
+  add_test(
+    NAME velox_exec_SpatialJoinTest
+    COMMAND velox_exec_SpatialJoinTest
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(velox_exec_SpatialJoinTest ${VELOX_EXEC_TEST_DEPS})
 endif()
 
 add_executable(
@@ -128,58 +195,10 @@ add_executable(
   TreeOfLosersTest.cpp
 )
 
-add_test(NAME velox_exec_test COMMAND velox_exec_test WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-# TODO: Revert back to 3000 once is fixed.
-# https://github.com/facebookincubator/velox/issues/13879
-set_tests_properties(velox_exec_test PROPERTIES TIMEOUT 6000)
-
 add_test(
   NAME velox_exec_infra_test
   COMMAND velox_exec_infra_test
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-target_link_libraries(
-  velox_exec_test
-  velox_aggregates
-  velox_dwio_common
-  velox_dwio_common_exception
-  velox_dwio_common_test_utils
-  velox_dwio_parquet_reader
-  velox_dwio_parquet_writer
-  velox_exec
-  velox_exec_test_lib
-  velox_file_test_utils
-  velox_functions_json
-  velox_functions_lib
-  velox_functions_prestosql
-  velox_functions_test_lib
-  velox_hive_connector
-  velox_memory
-  velox_serialization
-  velox_test_util
-  velox_type
-  velox_type_test_lib
-  velox_vector
-  velox_vector_fuzzer
-  velox_writer_fuzzer
-  velox_window
-  Boost::atomic
-  Boost::context
-  Boost::date_time
-  Boost::filesystem
-  Boost::program_options
-  Boost::regex
-  Boost::thread
-  Boost::system
-  GTest::gtest
-  GTest::gtest_main
-  GTest::gmock
-  Folly::folly
-  gflags::gflags
-  glog::glog
-  fmt::fmt
 )
 
 target_link_libraries(
@@ -208,7 +227,6 @@ target_link_libraries(
   Boost::date_time
   Boost::filesystem
   Boost::program_options
-  Boost::regex
   Boost::thread
   Boost::system
   GTest::gtest
@@ -220,22 +238,23 @@ target_link_libraries(
   fmt::fmt
 )
 
-add_executable(
-  velox_exec_util_test
-  Main.cpp
+# Split velox_exec_util_test into individual test binaries for parallel execution.
+# Each test depends on the shared base class PrestoQueryRunnerIntermediateTypeTransformTestBase.cpp.
+set(
+  VELOX_EXEC_UTIL_TEST_SOURCES
   PrestoQueryRunnerHyperLogLogTransformTest.cpp
-  PrestoQueryRunnerIntermediateTypeTransformTestBase.cpp
   PrestoQueryRunnerTDigestTransformTest.cpp
   PrestoQueryRunnerQDigestTransformTest.cpp
+  PrestoQueryRunnerKHyperLogLogTransformTest.cpp
+  PrestoQueryRunnerSetDigestTransformTest.cpp
   PrestoQueryRunnerJsonTransformTest.cpp
   PrestoQueryRunnerIntervalTransformTest.cpp
+  PrestoQueryRunnerTimeTransformTest.cpp
   PrestoQueryRunnerTimestampWithTimeZoneTransformTest.cpp
 )
 
-add_test(velox_exec_util_test velox_exec_util_test)
-
-target_link_libraries(
-  velox_exec_util_test
+set(
+  VELOX_EXEC_UTIL_TEST_DEPS
   velox_fuzzer_util
   velox_exec_test_lib
   velox_functions_test_lib
@@ -243,6 +262,13 @@ target_link_libraries(
   velox_presto_types_fuzzer_utils
   GTest::gtest
   GTest::gtest_main
+)
+
+velox_add_grouped_tests(
+  PREFIX velox_exec_util_test
+  SOURCES ${VELOX_EXEC_UTIL_TEST_SOURCES}
+  DEPS ${VELOX_EXEC_UTIL_TEST_DEPS}
+  EXTRA_SOURCES PrestoQueryRunnerIntermediateTypeTransformTestBase.cpp Main.cpp
 )
 
 add_executable(velox_in_10_min_demo VeloxIn10MinDemo.cpp)
@@ -273,7 +299,7 @@ target_link_libraries(
   velox_fuzzer_util
   velox_functions_prestosql
   velox_exec_test_lib
-  velox_temp_path
+  velox_test_util
   velox_vector_fuzzer
   GTest::gtest
   GTest::gtest_main
@@ -297,7 +323,13 @@ target_link_libraries(
   GTest::gtest_main
 )
 
-add_library(velox_simple_aggregate SimpleAverageAggregate.cpp SimpleArrayAggAggregate.cpp)
+add_library(
+  velox_simple_aggregate
+  SimpleAverageAggregate.cpp
+  SimpleArrayAggAggregate.cpp
+  SimpleVariadicArrayAggAggregate.cpp
+  SimpleVariadicSumAggregate.cpp
+)
 
 target_link_libraries(
   velox_simple_aggregate
@@ -370,14 +402,6 @@ if(VELOX_ENABLE_BENCHMARKS)
     velox_spiller_aggregate_benchmark_base
   )
 endif()
-
-add_executable(cpr_http_client_test CprHttpClientTest.cpp)
-add_test(
-  NAME cpr_http_client_test
-  COMMAND cpr_http_client_test
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-target_link_libraries(cpr_http_client_test cpr::cpr GTest::gtest GTest::gtest_main)
 
 add_executable(velox_driver_test OperatorReplacementTest.cpp Main.cpp)
 add_test(

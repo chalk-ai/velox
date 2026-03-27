@@ -17,7 +17,6 @@
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/functions/lib/TDigest.h"
-#include "velox/functions/prestosql/aggregates/AggregateNames.h"
 #include "velox/vector/FlatVector.h"
 
 using namespace facebook::velox::exec;
@@ -290,8 +289,7 @@ class TDigestAggregate : public exec::Aggregate {
 } // namespace
 
 void registerTDigestAggregate(
-    const std::string& prefix,
-    bool withCompanionFunctions,
+    const std::vector<std::string>& names,
     bool overwrite) {
   std::vector<std::shared_ptr<AggregateFunctionSignature>> signatures;
   for (const auto& signature :
@@ -315,16 +313,16 @@ void registerTDigestAggregate(
             .build()}) {
     signatures.push_back(signature);
   }
-  auto name = prefix + kTDigestAgg;
   exec::registerAggregateFunction(
-      name,
+      names,
       signatures,
-      [name](
+      [names](
           core::AggregationNode::Step /*step*/,
           const std::vector<TypePtr>& argTypes,
           const TypePtr& resultTypes,
           const core::QueryConfig& /*config*/)
           -> std::unique_ptr<exec::Aggregate> {
+        const std::string& name = names.front();
         if (argTypes.empty() || argTypes[0]->kind() != TypeKind::DOUBLE) {
           VELOX_USER_FAIL(
               "The first argument of {} must be of type DOUBLE", name);
@@ -356,7 +354,7 @@ void registerTDigestAggregate(
             hasWeight, hasCompression, resultTypes);
       },
       {},
-      withCompanionFunctions,
+      false /*registerCompanionFunctions*/,
       overwrite);
 }
 } // namespace facebook::velox::aggregate::prestosql

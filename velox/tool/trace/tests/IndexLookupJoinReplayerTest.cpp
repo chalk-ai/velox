@@ -19,17 +19,17 @@
 
 #include <string>
 
-#include <folly/experimental/EventCount.h>
+#include <folly/synchronization/EventCount.h>
 
 #include "velox/common/file/tests/FaultyFileSystem.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/PartitionFunction.h"
-#include "velox/exec/TraceUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
-#include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/TestIndexStorageConnector.h"
+#include "velox/exec/trace/TraceUtil.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/tool/trace/IndexLookupJoinReplayer.h"
 
@@ -117,6 +117,7 @@ class IndexLookupJoinReplayerTest : public HiveConnectorTestBase {
         /*dependentTypes=*/dependentTypes,
         /*allowDuplicates=*/true,
         /*hasProbedFlag=*/false,
+        /*hasCountFlag=*/false,
         /*minTableSizeForParallelJoinBuild=*/1,
         pool_.get());
 
@@ -139,7 +140,8 @@ class IndexLookupJoinReplayerTest : public HiveConnectorTestBase {
     }
 
     // Build the table index.
-    table->prepareJoinTable({}, BaseHashTable::kNoSpillInputStartPartitionBit);
+    table->prepareJoinTable(
+        {}, BaseHashTable::kNoSpillInputStartPartitionBit, 1'000'000);
     return std::make_shared<TestIndexTable>(
         keyType, std::move(valueType), std::move(table));
   }

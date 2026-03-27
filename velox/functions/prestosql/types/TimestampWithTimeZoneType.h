@@ -88,14 +88,12 @@ class TimestampWithTimeZoneType final : public BigintType {
     return "TIMESTAMP WITH TIME ZONE";
   }
 
-  const std::vector<TypeParameter>& parameters() const override {
-    static const std::vector<TypeParameter> kEmpty = {};
-    return kEmpty;
-  }
-
   std::string toString() const override {
     return name();
   }
+
+  /// Formats a packed value as "YYYY-MM-DD HH:MM:SS.mmm <timezone>".
+  std::string valueToString(int64_t value) const;
 
   folly::dynamic serialize() const override {
     folly::dynamic obj = folly::dynamic::object;

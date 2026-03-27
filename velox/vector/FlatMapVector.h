@@ -204,6 +204,15 @@ class FlatMapVector : public BaseVector {
     return nullptr;
   }
 
+  /// Same as above but allows for `keysVector` at index `index` (similar
+  /// distinction between getKeyChannel we see above).
+  VectorPtr projectKey(const VectorPtr& keysVector, vector_size_t index) const {
+    if (auto channel = getKeyChannel(keysVector, index)) {
+      return mapValues_[channel.value()];
+    }
+    return nullptr;
+  }
+
   /// Returns the size for the map at position `index`. Size means the number of
   /// logical key value pairs in the map. Note that this is not a particularly
   /// efficient operation in flat maps as it requires accessing the inMap bitmap
@@ -267,12 +276,17 @@ class FlatMapVector : public BaseVector {
   }
 
   const uint64_t* rawInMapsAt(column_index_t index) const {
-    return inMaps_.size() > index ? inMaps_[index]->as<uint64_t>() : nullptr;
+    if (inMaps_.size() > index && inMaps_[index]) {
+      return inMaps_[index]->as<uint64_t>();
+    }
+    return nullptr;
   }
 
   uint64_t* mutableRawInMapsAt(column_index_t index) {
-    return inMaps_.size() > index ? inMaps_[index]->asMutable<uint64_t>()
-                                  : nullptr;
+    if (inMaps_.size() > index && inMaps_[index]) {
+      return inMaps_[index]->asMutable<uint64_t>();
+    }
+    return nullptr;
   }
 
   using BaseVector::toString;
@@ -328,7 +342,12 @@ class FlatMapVector : public BaseVector {
   /// testing/validation purposes, and not for performance critical paths.
   MapVectorPtr toMapVector() const;
 
-  void transferOrCopyTo(velox::memory::MemoryPool* pool) override;
+  void transferOrCopyTo(velox::memory::MemoryPool* /*pool*/) override {
+    // TODO: enable this after
+    // https://github.com/facebookincubator/velox/issues/15485 is resolved to
+    // allow proper testing.
+    VELOX_NYI("{} unsupported", __FUNCTION__);
+  }
 
  private:
   void setDistinctKeysImpl(VectorPtr distinctKeys) {
@@ -392,6 +411,15 @@ class FlatMapVector : public BaseVector {
       // from the other Vector here.
       vector_size_t wrappedOtherIndex,
       CompareFlags flags) const;
+
+  uint64_t retainedSizeImpl(
+      uint64_t& /*totalStringBufferSize*/) const override {
+    // TODO: since FlatMapVector didn't override BaseVector::retainedSize(),
+    // this override of retainedSizeImpl keeps the original behavior of
+    // FlatMapVector::retainedSize(). We should update this method to reflect
+    // the actual memory usage of FlatMapVector.
+    return BaseVector::retainedSizeImpl();
+  }
 
   // Vector containing the distinct map keys.
   VectorPtr distinctKeys_;

@@ -133,6 +133,16 @@ std::shared_ptr<const core::CallExpr> callExpr(
     std::vector<core::ExprPtr> params,
     std::optional<std::string> alias,
     const ParseOptions& options) {
+  // DuckDB parser requires IF to have 3 arguments: condition, then-clause, and
+  // else-clause. For example, `IF(a > b, 10)` doesn't parse correctly and must
+  // be written as `IF(a > b, 10, null)`. Remove the redundant else-clause.
+  if (name == "if") {
+    if (params.back()->is(core::IExpr::Kind::kConstant) &&
+        params.back()->as<core::ConstantExpr>()->type()->isUnknown()) {
+      params.pop_back();
+    }
+  }
+
   return std::make_shared<const core::CallExpr>(
       toFullFunctionName(name, options.functionPrefix),
       std::move(params),
@@ -327,10 +337,11 @@ core::ExprPtr parseConjunctionExpr(
       StringUtil::Lower(ExpressionTypeToOperator(expr.GetExpressionType()));
 
   if (conjExpr.children.size() < 2) {
-    throw std::invalid_argument(folly::sformat(
-        "Malformed conjunction expression "
-        "(expected at least 2 input columns, got {}).",
-        conjExpr.children.size()));
+    throw std::invalid_argument(
+        folly::sformat(
+            "Malformed conjunction expression "
+            "(expected at least 2 input columns, got {}).",
+            conjExpr.children.size()));
   }
 
   // DuckDB's parser returns conjunction involving multiple input in a flat
@@ -463,8 +474,9 @@ core::ExprPtr parseOperatorExpr(
     }
 
     if (options.parseInListAsArray) {
-      params.emplace_back(std::make_shared<const core::ConstantExpr>(
-          ARRAY(valueType), Variant::array(values), std::nullopt));
+      params.emplace_back(
+          std::make_shared<const core::ConstantExpr>(
+              ARRAY(valueType), Variant::array(values), std::nullopt));
     }
     auto inExpr = callExpr("in", std::move(params), getAlias(expr), options);
     // Translate COMPARE_NOT_IN into NOT(IN()).
@@ -753,7 +765,7 @@ bool isNullsFirst(
 }
 } // namespace
 
-OrderByClause parseOrderByExpr(const std::string& exprString) {
+parse::OrderByClause parseOrderByExpr(const std::string& exprString) {
   ParserOptions options;
   ParseOptions parseOptions;
   options.preserve_identifier_case = false;
@@ -775,14 +787,14 @@ OrderByClause parseOrderByExpr(const std::string& exprString) {
       .nullsFirst = nullsFirst};
 }
 
-AggregateExpr parseAggregateExpr(
+parse::AggregateExpr parseAggregateExpr(
     const std::string& exprString,
     const ParseOptions& options) {
   auto parsedExpr = parseSingleExpression(exprString);
 
   auto& functionExpr = dynamic_cast<FunctionExpression&>(*parsedExpr);
 
-  AggregateExpr aggregateExpr;
+  parse::AggregateExpr aggregateExpr;
   aggregateExpr.expr = parseExpr(*parsedExpr, options);
   aggregateExpr.distinct = functionExpr.distinct;
 
@@ -790,70 +802,66 @@ AggregateExpr parseAggregateExpr(
     for (const auto& orderByNode : functionExpr.order_bys->orders) {
       const bool ascending = isAscending(orderByNode.type, exprString);
       const bool nullsFirst = isNullsFirst(orderByNode.null_order, exprString);
-      aggregateExpr.orderBy.emplace_back(OrderByClause{
-          parseExpr(*orderByNode.expression, options), ascending, nullsFirst});
+      aggregateExpr.orderBy.emplace_back(
+          parse::OrderByClause{
+              parseExpr(*orderByNode.expression, options),
+              ascending,
+              nullsFirst});
     }
   }
 
   if (functionExpr.filter) {
-    aggregateExpr.maskExpr = parseExpr(*functionExpr.filter, options);
+    aggregateExpr.filter = parseExpr(*functionExpr.filter, options);
   }
 
   return aggregateExpr;
 }
 
 namespace {
-WindowType parseWindowType(const WindowExpression& expr) {
-  auto windowType = [&](const WindowBoundary& boundary) -> WindowType {
+parse::WindowType parseWindowType(const WindowExpression& expr) {
+  auto windowType = [&](const WindowBoundary& boundary) -> parse::WindowType {
     if (boundary == WindowBoundary::CURRENT_ROW_ROWS ||
         boundary == WindowBoundary::EXPR_FOLLOWING_ROWS ||
         boundary == WindowBoundary::EXPR_PRECEDING_ROWS) {
-      return WindowType::kRows;
+      return parse::WindowType::kRows;
     }
-    return WindowType::kRange;
+    return parse::WindowType::kRange;
   };
 
   auto startType = windowType(expr.start);
-  if (startType == WindowType::kRows) {
+  if (startType == parse::WindowType::kRows) {
     return startType;
   }
   return windowType(expr.end);
 }
 
-BoundType parseBoundType(WindowBoundary boundary) {
+parse::BoundType parseBoundType(WindowBoundary boundary) {
   switch (boundary) {
     case WindowBoundary::CURRENT_ROW_RANGE:
     case WindowBoundary::CURRENT_ROW_ROWS:
-      return BoundType::kCurrentRow;
+      return parse::BoundType::kCurrentRow;
     case WindowBoundary::EXPR_PRECEDING_ROWS:
     case WindowBoundary::EXPR_PRECEDING_RANGE:
-      return BoundType::kPreceding;
+      return parse::BoundType::kPreceding;
     case WindowBoundary::EXPR_FOLLOWING_ROWS:
     case WindowBoundary::EXPR_FOLLOWING_RANGE:
-      return BoundType::kFollowing;
+      return parse::BoundType::kFollowing;
     case WindowBoundary::UNBOUNDED_FOLLOWING:
-      return BoundType::kUnboundedFollowing;
+      return parse::BoundType::kUnboundedFollowing;
     case WindowBoundary::UNBOUNDED_PRECEDING:
-      return BoundType::kUnboundedPreceding;
+      return parse::BoundType::kUnboundedPreceding;
     case WindowBoundary::INVALID:
       VELOX_UNREACHABLE();
   }
   VELOX_UNREACHABLE();
 }
 
-} // namespace
-
-IExprWindowFunction parseWindowExpr(
+parse::WindowExpr buildWindowExpr(
+    ParsedExpression& parsedExpr,
     const std::string& windowString,
     const ParseOptions& options) {
-  auto parsedExpr = parseSingleExpression(windowString);
-  VELOX_CHECK(
-      parsedExpr->IsWindow(),
-      "Invalid window function expression: {}",
-      windowString);
-
-  IExprWindowFunction windowIExpr;
-  auto& windowExpr = dynamic_cast<WindowExpression&>(*parsedExpr);
+  parse::WindowExpr windowIExpr;
+  auto& windowExpr = dynamic_cast<WindowExpression&>(parsedExpr);
   for (int i = 0; i < windowExpr.partitions.size(); i++) {
     windowIExpr.partitionBy.push_back(
         parseExpr(*(windowExpr.partitions[i].get()), options));
@@ -862,8 +870,11 @@ IExprWindowFunction parseWindowExpr(
   for (const auto& orderByNode : windowExpr.orders) {
     const bool ascending = isAscending(orderByNode.type, windowString);
     const bool nullsFirst = isNullsFirst(orderByNode.null_order, windowString);
-    windowIExpr.orderBy.emplace_back(OrderByClause{
-        parseExpr(*orderByNode.expression, options), ascending, nullsFirst});
+    windowIExpr.orderBy.emplace_back(
+        parse::OrderByClause{
+            parseExpr(*orderByNode.expression, options),
+            ascending,
+            nullsFirst});
   }
 
   std::vector<core::ExprPtr> params;
@@ -900,12 +911,28 @@ IExprWindowFunction parseWindowExpr(
   return windowIExpr;
 }
 
-std::string OrderByClause::toString() const {
-  return fmt::format(
-      "{} {} NULLS {}",
-      expr->toString(),
-      (ascending ? "ASC" : "DESC"),
-      (nullsFirst ? "FIRST" : "LAST"));
+} // namespace
+
+parse::WindowExpr parseWindowExpr(
+    const std::string& windowString,
+    const ParseOptions& options) {
+  auto parsedExpr = parseSingleExpression(windowString);
+  VELOX_CHECK(
+      parsedExpr->IsWindow(),
+      "Invalid window function expression: {}",
+      windowString);
+
+  return buildWindowExpr(*parsedExpr, windowString, options);
+}
+
+std::variant<core::ExprPtr, parse::WindowExpr> parseScalarOrWindowExpr(
+    const std::string& exprString,
+    const ParseOptions& options) {
+  auto parsedExpr = parseSingleExpression(exprString);
+  if (parsedExpr->IsWindow()) {
+    return buildWindowExpr(*parsedExpr, exprString, options);
+  }
+  return parseExpr(*parsedExpr, options);
 }
 
 } // namespace facebook::velox::duckdb

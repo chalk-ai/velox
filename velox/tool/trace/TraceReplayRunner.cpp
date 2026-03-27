@@ -15,16 +15,17 @@
  */
 
 #include "velox/tool/trace/TraceReplayRunner.h"
+#include <folly/system/HardwareConcurrency.h>
 
 #include <gflags/gflags.h>
 
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/common/memory/SharedArbitrator.h"
+#include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveDataSink.h"
-#include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/gcs/RegisterGcsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/hdfs/RegisterHdfsFileSystem.h"
@@ -35,7 +36,7 @@
 #include "velox/exec/OperatorTraceReader.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/TaskTraceReader.h"
-#include "velox/exec/TraceUtil.h"
+#include "velox/exec/trace/TraceUtil.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/parse/TypeResolver.h"
@@ -45,10 +46,14 @@
 #include "velox/tool/trace/FilterProjectReplayer.h"
 #include "velox/tool/trace/HashJoinReplayer.h"
 #include "velox/tool/trace/IndexLookupJoinReplayer.h"
+#include "velox/tool/trace/MergeJoinReplayer.h"
 #include "velox/tool/trace/OperatorReplayerBase.h"
+#include "velox/tool/trace/OrderByReplayer.h"
 #include "velox/tool/trace/PartitionedOutputReplayer.h"
 #include "velox/tool/trace/TableScanReplayer.h"
 #include "velox/tool/trace/TableWriterReplayer.h"
+#include "velox/tool/trace/TopNRowNumberReplayer.h"
+#include "velox/tool/trace/TraceReplayerConfigPrompt.h"
 #include "velox/tool/trace/UnnestReplayer.h"
 #include "velox/type/Type.h"
 
@@ -102,21 +107,31 @@ DEFINE_uint64(
     0,
     "Specify the query memory capacity limit in GB. If it is zero, then there is no limit.");
 DEFINE_bool(copy_results, false, "Copy the replaying results.");
+DEFINE_bool(
+    cursor_copy_result,
+    false,
+    "Enable per-batch copying in TaskCursor. When false (default), avoids "
+    "expensive deep copies of complex nested types during output consumption. "
+    "Only enable for debugging or when output vectors need to be retained.");
 DEFINE_string(
     function_prefix,
     "",
     "Prefix for the scalar and aggregate functions.");
+DEFINE_string(
+    spill_directory,
+    "",
+    "Base directory for spilling. If not specified, a local temporary directory will be used.");
 
 namespace facebook::velox::tool::trace {
 namespace {
-VectorSerde::Kind getVectorSerdeKind() {
+std::string getVectorSerdeKind() {
   switch (FLAGS_shuffle_serialization_format) {
     case 0:
-      return VectorSerde::Kind::kPresto;
+      return "Presto";
     case 1:
-      return VectorSerde::Kind::kCompactRow;
+      return "CompactRow";
     case 2:
-      return VectorSerde::Kind::kUnsafeRow;
+      return "UnsafeRow";
     default:
       VELOX_UNSUPPORTED(
           "Unsupported shuffle serialization format: {}",
@@ -233,18 +248,35 @@ void printSummary(
 } // namespace
 
 TraceReplayRunner::TraceReplayRunner()
-    : cpuExecutor_(std::make_unique<folly::CPUThreadPoolExecutor>(
-          std::thread::hardware_concurrency() *
-              FLAGS_driver_cpu_executor_hw_multiplier,
-          std::make_shared<folly::NamedThreadFactory>(
-              "TraceReplayCpuConnector"))),
-      ioExecutor_(std::make_unique<folly::IOThreadPoolExecutor>(
-          std::thread::hardware_concurrency() *
-              FLAGS_hive_connector_executor_hw_multiplier,
-          std::make_shared<folly::NamedThreadFactory>(
-              "TraceReplayIoConnector"))) {}
+    : cpuExecutor_(
+          std::make_unique<folly::CPUThreadPoolExecutor>(
+              folly::available_concurrency() *
+                  FLAGS_driver_cpu_executor_hw_multiplier,
+              std::make_shared<folly::NamedThreadFactory>(
+                  "TraceReplayCpuConnector"))),
+      ioExecutor_(
+          std::make_unique<folly::IOThreadPoolExecutor>(
+              folly::available_concurrency() *
+                  FLAGS_hive_connector_executor_hw_multiplier,
+              std::make_shared<folly::NamedThreadFactory>(
+                  "TraceReplayIoConnector"))) {}
+
+TraceReplayRunner::~TraceReplayRunner() {
+  // Explicitly unregister all connectors before the runner is destroyed.
+  // This ensures file handles are closed while folly::RequestContext is still
+  // valid, preventing use-after-free during program shutdown when the static
+  // connector map is destroyed after RequestContext.
+  const auto connectorsCopy = connector::getAllConnectors();
+  for (const auto& [connectorId, connector] : connectorsCopy) {
+    connector::unregisterConnector(connectorId);
+  }
+}
 
 void TraceReplayRunner::init() {
+  // Prompt user for configs interactively (unless --fast is set)
+  TraceReplayerConfigPrompt prompt;
+  prompt.run();
+
   VELOX_USER_CHECK(!FLAGS_root_dir.empty(), "--root_dir must be provided");
   VELOX_USER_CHECK(!FLAGS_node_id.empty(), "--node_id must be provided");
 
@@ -279,13 +311,13 @@ void TraceReplayRunner::init() {
   if (!isRegisteredVectorSerde()) {
     serializer::presto::PrestoVectorSerde::registerVectorSerde();
   }
-  if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kPresto)) {
+  if (!isRegisteredNamedVectorSerde("Presto")) {
     serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
   }
-  if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kCompactRow)) {
+  if (!isRegisteredNamedVectorSerde("CompactRow")) {
     serializer::CompactRowVectorSerde::registerNamedVectorSerde();
   }
-  if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kUnsafeRow)) {
+  if (!isRegisteredNamedVectorSerde("UnsafeRow")) {
     serializer::spark::UnsafeRowVectorSerde::registerNamedVectorSerde();
   }
 
@@ -331,6 +363,7 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_task_id,
         FLAGS_node_id,
         traceNodeName,
+        FLAGS_spill_directory,
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());
@@ -385,6 +418,7 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_task_id,
         FLAGS_node_id,
         traceNodeName,
+        FLAGS_spill_directory,
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());
@@ -398,6 +432,17 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());
+  } else if (traceNodeName == "MergeJoin") {
+    replayer = std::make_unique<tool::trace::MergeJoinReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
   } else if (traceNodeName == "Unnest") {
     replayer = std::make_unique<tool::trace::UnnestReplayer>(
         FLAGS_root_dir,
@@ -405,6 +450,28 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_task_id,
         FLAGS_node_id,
         traceNodeName,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "OrderBy") {
+    replayer = std::make_unique<tool::trace::OrderByReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "TopNRowNumber") {
+    replayer = std::make_unique<tool::trace::TopNRowNumberReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());
@@ -427,6 +494,6 @@ void TraceReplayRunner::run() {
     return;
   }
   VELOX_USER_CHECK(!FLAGS_task_id.empty(), "--task_id must be provided");
-  createReplayer()->run(FLAGS_copy_results);
+  createReplayer()->run(FLAGS_copy_results, FLAGS_cursor_copy_result);
 }
 } // namespace facebook::velox::tool::trace

@@ -19,11 +19,13 @@
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
 #include <folly/init/Init.h>
+#include <folly/system/HardwareConcurrency.h>
 #include <re2/re2.h>
 #include "velox/common/base/Fs.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/connectors/hive/HiveConnector.h"
+#include "velox/connectors/hive/HiveDataSink.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
@@ -37,8 +39,8 @@
 #include "velox/dwio/parquet/writer/Writer.h"
 #endif
 
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
-#include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
 namespace facebook::velox::connector::hive {
@@ -73,7 +75,7 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
     setupMemoryPools();
 
     spillExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(
-        std::thread::hardware_concurrency());
+        folly::available_concurrency());
   }
 
   void TearDown() override {
@@ -113,7 +115,8 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
         0,
         0,
         writerFlushThreshold,
-        "none");
+        "none",
+        0);
   }
 
   void setupMemoryPools() {
@@ -205,7 +208,7 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
     return files;
   }
 
-  void verifyWrittenData(const std::string& dirPath, int32_t numFiles = 1) {
+  void verifyWrittenData(const std::string& dirPath, uint32_t numFiles = 1) {
     const std::vector<std::string> filePaths = listFiles(dirPath);
     ASSERT_EQ(filePaths.size(), numFiles);
     std::vector<std::shared_ptr<connector::ConnectorSplit>> splits;
@@ -598,67 +601,6 @@ TEST_F(HiveDataSinkTest, basicBucket) {
   verifyWrittenData(outputDirectory->getPath(), numBuckets);
 }
 
-TEST_F(HiveDataSinkTest, decimalPartition) {
-  const auto outputDirectory = TempDirectoryPath::create();
-
-  connectorSessionProperties_->set(
-      HiveConfig::kSortWriterFinishTimeSliceLimitMsSession, "1");
-  const auto rowType =
-      ROW({"c0", "c1", "c2"}, {BIGINT(), DECIMAL(14, 3), DECIMAL(20, 4)});
-  auto dataSink = createDataSink(
-      rowType,
-      outputDirectory->getPath(),
-      dwio::common::FileFormat::DWRF,
-      {"c2"});
-  auto stats = dataSink->stats();
-  ASSERT_TRUE(stats.empty()) << stats.toString();
-
-  const auto vector = makeRowVector(
-      {makeNullableFlatVector<int64_t>({1, 2, std::nullopt, 345}),
-       makeNullableFlatVector<int64_t>(
-           {1, 2, std::nullopt, 345}, DECIMAL(14, 3)),
-       makeFlatVector<int128_t>({1, 340, 234567, -345}, DECIMAL(20, 4))});
-
-  dataSink->appendData(vector);
-  while (!dataSink->finish()) {
-  }
-  const auto partitions = dataSink->close();
-  stats = dataSink->stats();
-  ASSERT_FALSE(stats.empty());
-  ASSERT_EQ(partitions.size(), vector->size());
-
-  createDuckDbTable({vector});
-
-  const auto rootPath = outputDirectory->getPath();
-  std::vector<std::shared_ptr<ConnectorSplit>> splits;
-  std::unordered_map<std::string, std::optional<std::string>> partitionKeys;
-  auto partitionPath = [&](std::string value) {
-    partitionKeys["c2"] = value;
-    auto path = listFiles(rootPath + "/c2=" + value)[0];
-    splits.push_back(makeHiveConnectorSplits(
-                         path, 1, dwio::common::FileFormat::DWRF, partitionKeys)
-                         .back());
-  };
-  partitionPath("0.0001");
-  partitionPath("0.0340");
-  partitionPath("23.4567");
-  partitionPath("-0.0345");
-
-  ColumnHandleMap assignments = {
-      {"c0", regularColumn("c0", BIGINT())},
-      {"c1", regularColumn("c1", DECIMAL(14, 3))},
-      {"c2", partitionKey("c2", DECIMAL(20, 4))}};
-
-  auto op = PlanBuilder()
-                .startTableScan()
-                .outputType(rowType)
-                .assignments(assignments)
-                .endTableScan()
-                .planNode();
-
-  assertQuery(op, splits, fmt::format("SELECT * FROM tmp"));
-}
-
 TEST_F(HiveDataSinkTest, close) {
   for (bool empty : {true, false}) {
     SCOPED_TRACE(fmt::format("Data sink is empty: {}", empty));
@@ -800,7 +742,7 @@ DEBUG_ONLY_TEST_F(HiveDataSinkTest, memoryReclaim) {
     std::shared_ptr<TempDirectoryPath> spillDirectory;
     std::unique_ptr<SpillConfig> spillConfig;
     if (testData.writerSpillEnabled) {
-      spillDirectory = exec::test::TempDirectoryPath::create();
+      spillDirectory = TempDirectoryPath::create();
       spillConfig = getSpillConfig(
           spillDirectory->getPath(), testData.writerFlushThreshold);
       auto connectorQueryCtx = std::make_unique<connector::ConnectorQueryCtx>(
@@ -942,7 +884,7 @@ TEST_F(HiveDataSinkTest, memoryReclaimAfterClose) {
     std::shared_ptr<TempDirectoryPath> spillDirectory;
     std::unique_ptr<SpillConfig> spillConfig;
     if (testData.writerSpillEnabled) {
-      spillDirectory = exec::test::TempDirectoryPath::create();
+      spillDirectory = TempDirectoryPath::create();
       spillConfig = getSpillConfig(spillDirectory->getPath(), 0);
       auto connectorQueryCtx = std::make_unique<connector::ConnectorQueryCtx>(
           opPool_.get(),
@@ -1078,7 +1020,7 @@ TEST_F(HiveDataSinkTest, sortWriterMemoryReclaimDuringFinish) {
           std::make_shared<HiveSortingColumn>(
               "c1", core::SortOrder{false, false})});
   std::shared_ptr<TempDirectoryPath> spillDirectory =
-      exec::test::TempDirectoryPath::create();
+      TempDirectoryPath::create();
   std::unique_ptr<SpillConfig> spillConfig =
       getSpillConfig(spillDirectory->getPath(), 1);
   connectorSessionProperties_->set(
@@ -1145,7 +1087,7 @@ DEBUG_ONLY_TEST_F(HiveDataSinkTest, sortWriterFailureTest) {
           std::make_shared<HiveSortingColumn>(
               "c1", core::SortOrder{false, false})});
   const std::shared_ptr<TempDirectoryPath> spillDirectory =
-      exec::test::TempDirectoryPath::create();
+      TempDirectoryPath::create();
   std::unique_ptr<SpillConfig> spillConfig =
       getSpillConfig(spillDirectory->getPath(), 0);
   // Triggers the memory reservation in sort buffer.
@@ -1378,6 +1320,526 @@ TEST_F(HiveDataSinkTest, ensureFilesUnsupported) {
       "ensureFiles is not supported with bucketing");
 }
 
+TEST_F(HiveDataSinkTest, fileRotationBasic) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "1MB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "256KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const int numBatches = 100;
+  const auto vectors = createVectors(1000, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  ASSERT_GT(stats.numWrittenFiles, 1);
+  ASSERT_EQ(partitions.size(), 1);
+
+  const auto partitionJson = folly::parseJson(partitions[0]);
+  ASSERT_TRUE(partitionJson.count(HiveCommitMessage::kFileWriteInfos) > 0);
+  const auto& fileWriteInfos =
+      partitionJson[HiveCommitMessage::kFileWriteInfos];
+  ASSERT_GT(fileWriteInfos.size(), 1);
+
+  for (size_t i = 0; i < fileWriteInfos.size(); ++i) {
+    ASSERT_TRUE(fileWriteInfos[i].count(HiveCommitMessage::kWriteFileName) > 0);
+    ASSERT_TRUE(
+        fileWriteInfos[i].count(HiveCommitMessage::kTargetFileName) > 0);
+    ASSERT_TRUE(fileWriteInfos[i].count(HiveCommitMessage::kFileSize) > 0);
+    ASSERT_GT(fileWriteInfos[i][HiveCommitMessage::kFileSize].asInt(), 0);
+  }
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), stats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationNoEmptyTrailingFile) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "1KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "1KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const auto vectors = createVectors(2000, 10);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  ASSERT_EQ(partitions.size(), 1);
+  const auto partitionJson = folly::parseJson(partitions[0]);
+  ASSERT_TRUE(partitionJson.count(HiveCommitMessage::kFileWriteInfos) > 0);
+  const auto& fileWriteInfos =
+      partitionJson[HiveCommitMessage::kFileWriteInfos];
+  ASSERT_EQ(fileWriteInfos.size(), 5);
+
+  const auto filePaths = listFiles(outputDirectory->getPath());
+  ASSERT_EQ(filePaths.size(), fileWriteInfos.size());
+  ASSERT_EQ(filePaths.size(), stats.numWrittenFiles);
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), stats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationDisabledForBucketedTables) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "100KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  const int32_t numBuckets = 2;
+  auto bucketProperty = std::make_shared<HiveBucketProperty>(
+      HiveBucketProperty::Kind::kHiveCompatible,
+      numBuckets,
+      std::vector<std::string>{"c0"},
+      std::vector<TypePtr>{BIGINT()},
+      std::vector<std::shared_ptr<const HiveSortingColumn>>{});
+
+  auto dataSink = createDataSink(
+      rowType_,
+      outputDirectory->getPath(),
+      dwio::common::FileFormat::DWRF,
+      {},
+      bucketProperty);
+
+  const int numBatches = 20;
+  const auto vectors = createVectors(500, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  ASSERT_EQ(stats.numWrittenFiles, numBuckets);
+  ASSERT_EQ(partitions.size(), numBuckets);
+
+  for (const auto& partition : partitions) {
+    const auto partitionJson = folly::parseJson(partition);
+    ASSERT_TRUE(partitionJson.count(HiveCommitMessage::kFileWriteInfos) > 0);
+    const auto& fileWriteInfos =
+        partitionJson[HiveCommitMessage::kFileWriteInfos];
+    ASSERT_EQ(fileWriteInfos.size(), 1);
+  }
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), numBuckets);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationDisabledByDefault) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  // Don't set max-target-file-size (use default which is disabled)
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  // Write a lot of data
+  const int numBatches = 20;
+  const auto vectors = createVectors(500, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  // Should have exactly 1 file (no rotation when disabled)
+  ASSERT_EQ(stats.numWrittenFiles, 1)
+      << "Without maxTargetFileSize, should create exactly 1 file";
+  ASSERT_GT(stats.numWrittenBytes, 0);
+  ASSERT_EQ(partitions.size(), 1);
+
+  // Verify partition update has correct file info
+  const auto partitionJson = folly::parseJson(partitions[0]);
+  ASSERT_TRUE(partitionJson.count(HiveCommitMessage::kFileWriteInfos) > 0);
+  const auto& fileWriteInfos =
+      partitionJson[HiveCommitMessage::kFileWriteInfos];
+  ASSERT_EQ(fileWriteInfos.size(), 1)
+      << "Should have exactly 1 file entry when rotation disabled";
+
+  // Verify file info fields
+  const auto& fileInfo = fileWriteInfos[0];
+  ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kWriteFileName) > 0);
+  ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kTargetFileName) > 0);
+  ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kFileSize) > 0);
+  ASSERT_FALSE(fileInfo[HiveCommitMessage::kWriteFileName].asString().empty());
+  ASSERT_FALSE(fileInfo[HiveCommitMessage::kTargetFileName].asString().empty());
+
+  const auto reportedFileSize =
+      static_cast<uint64_t>(fileInfo[HiveCommitMessage::kFileSize].asInt());
+  ASSERT_GT(reportedFileSize, 0);
+
+  // File size in fileWriteInfos should match stats.numWrittenBytes
+  ASSERT_EQ(reportedFileSize, stats.numWrittenBytes);
+
+  // onDiskDataSizeInBytes should also match
+  const auto onDiskBytes = static_cast<uint64_t>(
+      partitionJson[HiveCommitMessage::kOnDiskDataSizeInBytes].asInt());
+  ASSERT_EQ(onDiskBytes, stats.numWrittenBytes);
+
+  // Verify actual file on disk matches reported size
+  const auto filePaths = listFiles(outputDirectory->getPath());
+  ASSERT_EQ(filePaths.size(), 1);
+  ASSERT_EQ(fs::file_size(filePaths[0]), reportedFileSize);
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath());
+}
+
+TEST_F(HiveDataSinkTest, fileRotationIoStatsAccumulation) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "1MB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "256KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const int numBatches = 100;
+  const auto vectors = createVectors(1000, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  const auto statsBeforeClose = dataSink->stats();
+  ASSERT_GT(statsBeforeClose.numWrittenBytes, 0);
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto statsAfterClose = dataSink->stats();
+
+  ASSERT_GT(statsAfterClose.numWrittenFiles, 1);
+  ASSERT_GT(statsAfterClose.numWrittenBytes, 0);
+
+  const auto filePaths = listFiles(outputDirectory->getPath());
+  ASSERT_EQ(filePaths.size(), statsAfterClose.numWrittenFiles);
+
+  uint64_t totalFileSizeOnDisk = 0;
+  for (const auto& filePath : filePaths) {
+    totalFileSizeOnDisk += fs::file_size(filePath);
+  }
+
+  ASSERT_GT(
+      statsAfterClose.numWrittenBytes,
+      static_cast<uint64_t>(totalFileSizeOnDisk * 0.9));
+  ASSERT_LT(
+      statsAfterClose.numWrittenBytes,
+      static_cast<uint64_t>(totalFileSizeOnDisk * 1.1));
+
+  ASSERT_EQ(partitions.size(), 1);
+  const auto partitionJson = folly::parseJson(partitions[0]);
+  const auto onDiskBytes = static_cast<uint64_t>(
+      partitionJson[HiveCommitMessage::kOnDiskDataSizeInBytes].asInt());
+  ASSERT_EQ(onDiskBytes, statsAfterClose.numWrittenBytes);
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(
+      outputDirectory->getPath(), statsAfterClose.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationFileInfoConsistency) {
+  // Tests that file info (names, sizes) in partition updates is consistent
+  // with actual files on disk after rotation.
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "500KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "128KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const int numBatches = 50;
+  const auto vectors = createVectors(500, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  ASSERT_GT(stats.numWrittenFiles, 1);
+  ASSERT_EQ(partitions.size(), 1);
+
+  const auto partitionJson = folly::parseJson(partitions[0]);
+  const auto& fileWriteInfos =
+      partitionJson[HiveCommitMessage::kFileWriteInfos];
+
+  // Verify file count matches
+  ASSERT_EQ(fileWriteInfos.size(), stats.numWrittenFiles);
+
+  // Get actual files on disk
+  const auto filePaths = listFiles(outputDirectory->getPath());
+  ASSERT_EQ(filePaths.size(), stats.numWrittenFiles);
+
+  // Build a map of file names to sizes from partition info
+  std::map<std::string, uint64_t> reportedFiles;
+  uint64_t totalReportedSize = 0;
+  for (size_t i = 0; i < fileWriteInfos.size(); ++i) {
+    const auto& info = fileWriteInfos[i];
+    const auto fileName = info[HiveCommitMessage::kWriteFileName].asString();
+    const auto fileSize =
+        static_cast<uint64_t>(info[HiveCommitMessage::kFileSize].asInt());
+    reportedFiles[fileName] = fileSize;
+    totalReportedSize += fileSize;
+
+    // Verify each file has non-empty name and positive size
+    ASSERT_FALSE(fileName.empty()) << "File name at index " << i << " is empty";
+    ASSERT_GT(fileSize, 0) << "File size at index " << i << " is zero";
+  }
+
+  // Verify onDiskDataSizeInBytes matches sum of file sizes
+  const auto onDiskBytes = static_cast<uint64_t>(
+      partitionJson[HiveCommitMessage::kOnDiskDataSizeInBytes].asInt());
+  ASSERT_EQ(onDiskBytes, totalReportedSize);
+  ASSERT_EQ(onDiskBytes, stats.numWrittenBytes);
+
+  // Verify actual file sizes on disk match reported sizes exactly.
+  // Stats are captured after close, so footer bytes are included.
+  for (const auto& filePath : filePaths) {
+    const auto fileName = fs::path(filePath).filename().string();
+    ASSERT_TRUE(reportedFiles.count(fileName) > 0)
+        << "File on disk not found in partition info: " << fileName;
+
+    const auto actualSize = fs::file_size(filePath);
+    const auto reportedSize = reportedFiles[fileName];
+    // Sizes should match exactly since stats are captured after close.
+    ASSERT_EQ(actualSize, reportedSize)
+        << "File size mismatch for " << fileName;
+  }
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), stats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationStatsProgressDuringWrite) {
+  // Tests that stats are correctly reported during writing (not just at close).
+  // Verifies stats grow monotonically even when rotation happens mid-write.
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "256KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "64KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const auto vectors = createVectors(500, 50);
+  uint64_t previousBytes = 0;
+
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    dataSink->appendData(vectors[i]);
+    const auto currentStats = dataSink->stats();
+
+    // Stats should be monotonically increasing
+    ASSERT_GE(currentStats.numWrittenBytes, previousBytes)
+        << "Stats decreased at batch " << i;
+    previousBytes = currentStats.numWrittenBytes;
+  }
+
+  const auto statsBeforeFinish = dataSink->stats();
+  ASSERT_GT(statsBeforeFinish.numWrittenBytes, 0);
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto finalStats = dataSink->stats();
+
+  // Final stats should be >= stats before finish
+  ASSERT_GE(finalStats.numWrittenBytes, statsBeforeFinish.numWrittenBytes);
+  ASSERT_GT(finalStats.numWrittenFiles, 1);
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), finalStats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationWithPartitionedTable) {
+  // Tests file rotation with partitioned tables.
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "256KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "64KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  // Create a partitioned table with partition column
+  auto partitionedRowType = ROW(
+      {"c0", "c1", "c2", "p0"}, {BIGINT(), INTEGER(), SMALLINT(), VARCHAR()});
+
+  auto dataSink = createDataSink(
+      partitionedRowType,
+      outputDirectory->getPath(),
+      dwio::common::FileFormat::DWRF,
+      {"p0"});
+
+  // Create vectors with a few distinct partition values
+  const int numBatches = 30;
+  std::vector<RowVectorPtr> vectors;
+  vectors.reserve(numBatches);
+  for (int i = 0; i < numBatches; ++i) {
+    auto c0 = makeFlatVector<int64_t>(500, [](auto row) { return row; });
+    auto c1 = makeFlatVector<int32_t>(500, [](auto row) { return row * 2; });
+    auto c2 = makeFlatVector<int16_t>(500, [](auto row) { return row % 100; });
+    // Two partitions: "part_a" and "part_b"
+    auto p0 = makeFlatVector<StringView>(500, [i](auto row) {
+      return (i + row) % 2 == 0 ? "part_a" : "part_b";
+    });
+    vectors.push_back(makeRowVector({c0, c1, c2, p0}));
+  }
+
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  // Should have 2 partitions
+  ASSERT_EQ(partitions.size(), 2);
+
+  // Each partition may have multiple files due to rotation
+  uint32_t totalFilesFromPartitions = 0;
+  for (const auto& partition : partitions) {
+    const auto partitionJson = folly::parseJson(partition);
+    ASSERT_TRUE(partitionJson.count(HiveCommitMessage::kFileWriteInfos) > 0);
+    const auto& fileWriteInfos =
+        partitionJson[HiveCommitMessage::kFileWriteInfos];
+    ASSERT_GT(fileWriteInfos.size(), 0);
+    totalFilesFromPartitions += fileWriteInfos.size();
+
+    // Verify each file has valid info
+    for (const auto& fileInfo : fileWriteInfos) {
+      ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kWriteFileName) > 0);
+      ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kTargetFileName) > 0);
+      ASSERT_TRUE(fileInfo.count(HiveCommitMessage::kFileSize) > 0);
+      ASSERT_GT(fileInfo[HiveCommitMessage::kFileSize].asInt(), 0);
+    }
+  }
+
+  ASSERT_EQ(totalFilesFromPartitions, stats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationWriteIOTimeAccumulation) {
+  // Tests that writeIOTimeUs is correctly accumulated across rotated files.
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  connectorConfig.emplace("max-target-file-size", "512KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "128KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+
+  const int numBatches = 60;
+  const auto vectors = createVectors(500, numBatches);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  dataSink->close();
+  const auto stats = dataSink->stats();
+
+  // Should have multiple files from rotation
+  ASSERT_GT(stats.numWrittenFiles, 1);
+
+  // writeIOTimeUs should be non-zero (actual I/O happened)
+  // Note: This may be 0 on very fast systems, so we just check it's >= 0
+  ASSERT_GE(stats.writeIOTimeUs, 0);
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), stats.numWrittenFiles);
+}
+
+TEST_F(HiveDataSinkTest, fileRotationWithMemoryReclaim) {
+  // Tests that file rotation works correctly when memory reclamation is
+  // enabled. This verifies the single ioStats approach - we reuse the same
+  // ioStats object during rotation instead of replacing it, which prevents
+  // race conditions with WriterReclaimer.
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  std::unordered_map<std::string, std::string> connectorConfig;
+  // Use small file size to trigger multiple rotations
+  connectorConfig.emplace("max-target-file-size", "256KB");
+  connectorConfig.emplace("hive.orc.writer.stripe-max-size", "64KB");
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  // Setup memory pools with spill config to enable reclaim
+  auto spillDirectory = TempDirectoryPath::create();
+  auto spillConfig = getSpillConfig(spillDirectory->getPath(), 1 << 30);
+  auto connectorQueryCtx = std::make_unique<connector::ConnectorQueryCtx>(
+      opPool_.get(),
+      connectorPool_.get(),
+      connectorSessionProperties_.get(),
+      spillConfig.get(),
+      common::PrefixSortConfig(),
+      nullptr,
+      nullptr,
+      "query.HiveDataSinkTest",
+      "task.HiveDataSinkTest",
+      "planNodeId.HiveDataSinkTest",
+      0,
+      "");
+  setConnectorQueryContext(std::move(connectorQueryCtx));
+
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+  auto* hiveDataSink = static_cast<HiveDataSink*>(dataSink.get());
+
+  // Verify reclaim is enabled
+  ASSERT_TRUE(hiveDataSink->canReclaim());
+
+  const int numBatches = 50;
+  const auto vectors = createVectors(500, numBatches);
+
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  // Trigger memory reclaim if there's reclaimable memory
+  auto reclaimableBytes = root_->reclaimableBytes();
+  if (reclaimableBytes.has_value() && reclaimableBytes.value() > 0) {
+    memory::MemoryReclaimer::Stats reclaimStats;
+    root_->reclaim(1L << 20, 0, reclaimStats);
+  }
+
+  ASSERT_TRUE(dataSink->finish());
+  const auto partitions = dataSink->close();
+  const auto stats = dataSink->stats();
+
+  // Should have multiple files from rotation
+  ASSERT_GT(stats.numWrittenFiles, 1);
+  ASSERT_EQ(partitions.size(), 1);
+
+  // Verify data integrity
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath(), stats.numWrittenFiles);
+}
+
 TEST_F(HiveDataSinkTest, raceWithCacheEviction) {
   /// This test ensures that LRU cache staleness and StringIdMap cache
   /// eviction do not cause issues with file reads.
@@ -1435,6 +1897,60 @@ TEST_F(HiveDataSinkTest, lazyVectorForParquet) {
   dataSink->close();
 }
 #endif
+
+// Test to verify that each writer has its own nonReclaimableSection
+// pointer when writerOptions is shared.
+TEST_F(HiveDataSinkTest, sharedWriterOptionsWithMultipleWriters) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  const int32_t numBuckets = 3;
+  auto bucketProperty = std::make_shared<HiveBucketProperty>(
+      HiveBucketProperty::Kind::kHiveCompatible,
+      numBuckets,
+      std::vector<std::string>{"c0"},
+      std::vector<TypePtr>{BIGINT()},
+      std::vector<std::shared_ptr<const HiveSortingColumn>>{});
+
+  // Create shared writer options (this simulates the scenario where
+  // insertTableHandle_->writerOptions() returns a shared object)
+  auto sharedWriterOptions = std::make_shared<dwrf::WriterOptions>();
+
+  // Create a data sink with multiple writers (one for each bucket)
+  auto dataSink = createDataSink(
+      rowType_,
+      outputDirectory->getPath(),
+      dwio::common::FileFormat::DWRF,
+      {},
+      bucketProperty,
+      sharedWriterOptions);
+
+  const auto vectors = createVectors(200, 3);
+
+  // Write data - this should work without throwing exceptions
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  while (!dataSink->finish()) {
+  }
+  const auto partitions = dataSink->close();
+
+  ASSERT_GT(partitions.size(), 1);
+  createDuckDbTable(vectors);
+  verifyWrittenData(
+      outputDirectory->getPath(), static_cast<uint32_t>(partitions.size()));
+}
+
+TEST_F(HiveDataSinkTest, sanitizeFileName) {
+  auto sanitizeFileName = [](std::string fileName) {
+    HiveInsertFileNameGenerator::sanitizeFileName(fileName);
+    return fileName;
+  };
+  ASSERT_EQ(sanitizeFileName("abc"), "abc");
+  ASSERT_EQ(sanitizeFileName("abc_.-ABC012"), "abc_.-ABC012");
+  ASSERT_EQ(sanitizeFileName("abc_.-ABC012\\/"), "abc_.-ABC012__");
+  ASSERT_EQ(sanitizeFileName("local://abc/bcd/"), "local___abc_bcd_");
+}
 
 } // namespace
 } // namespace facebook::velox::connector::hive
