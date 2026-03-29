@@ -327,3 +327,9 @@ scripts/bm-report/report.html
 scripts/bm-report/result
 dist/
 wheelhouse/
+
+# direnv
+.direnv/
+
+# flake results
+result

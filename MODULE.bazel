@@ -1,0 +1,55 @@
+module(
+    name = "velox",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
+
+bazel_dep(name = "xsimd", version = "8.1.0")
+archive_override(
+    module_name = "xsimd",
+    url = "https://github.com/xtensor-stack/xsimd/archive/refs/tags/14.1.0.tar.gz",
+    strip_prefix = "xsimd-14.1.0",
+    integrity = "sha256-jad7ZiFOc1ZfYRG6SUMiyFNVK3tAz/aXebQuIQDu0W8=",
+    patch_cmds = [
+        """
+printf 'module(name = "xsimd", version = "14.1.0", compatibility_level = 0)\\n' > MODULE.bazel
+printf 'bazel_dep(name = "rules_cc", version = "0.2.17")\\n' >> MODULE.bazel
+""",
+    ],
+    build_file_content = '''
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])  # BSD 3-Clause
+
+exports_files(["LICENSE"])
+
+cc_library(
+    name = "xsimd",
+    srcs = [],
+    hdrs = glob(
+        [
+            "include/xsimd/*.hpp",
+            "include/xsimd/arch/*.hpp",
+            "include/xsimd/config/*.hpp",
+            "include/xsimd/math/*.hpp",
+            "include/xsimd/memory/*.hpp",
+            "include/xsimd/types/*.hpp",
+            "include/xsimd/utils/*.hpp",
+        ],
+        exclude = [
+        ],
+    ),
+    copts = [],
+    defines = [],
+    includes = [
+        "include",
+    ],
+    linkopts = [],
+    visibility = ["//visibility:public"],
+)
+    ''',
+)
+
+bazel_dep(name = "folly", version = "2025.01.13.00.bcr.6")
+bazel_dep(name = "re2", version = "2025-11-05.bcr.1")

@@ -1,0 +1,17 @@
+load("@rules_cc//cc:cc_import.bzl", "cc_import")
+
+cc_import(
+    name = "velox",
+    static_library = "result/lib/velox/libvelox.a",
+    hdrs = glob(["result/include/velox/**/*.h"]),
+    strip_include_prefix = "result/include",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@folly//folly/compression",
+        "@folly//folly/hash:checksum",
+        "@folly//folly:dynamic",
+        "@folly//folly:fixed_string",
+        "@re2",
+        "@xsimd",
+    ],
+)
