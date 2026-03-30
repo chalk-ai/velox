@@ -1,6 +1,5 @@
 { lib
 , stdenv
-, fetchFromGitHub
 , cmake
 , ninja
 , pkg-config
@@ -49,7 +48,7 @@
 # Cloud storage
 , aws-sdk-cpp
 , google-cloud-cpp
-, azure-sdk-for-cpp # azure-storage-cpp  # or azure-sdk-for-cpp depending on nixpkgs
+, azure-sdk-for-cpp
 
 # HTTP
 , curl
@@ -59,8 +58,7 @@
 , pybind11 ? null
 , doctest ? null
 
-# Your project-specific flags
-, libchalkGlobalFlags ? ""
+, libchalkGlobalFlags ? "-mavx2 -mfma -mavx -mf16c -mlzcnt -mbmi2"
 }:
 
 stdenv.mkDerivation rec {
@@ -137,89 +135,70 @@ stdenv.mkDerivation rec {
   ++ lib.optional (doctest != null) doctest;
 
   cmakeFlags = [
-    # "-DBoost_DEBUG=ON"
-    # "-DBoost_NO_SYSTEM_PATHS=ON"
-
-    # "-DCMAKE_POLICY_DEFAULT_CMP0167=OLD"  # Use FindBoost from CMake, not the removed one
-    # "-Dboost_system_DIR=${boost.dev}/lib/cmake/boost_system-1.89.0"
-    # "-Dboost_context_DIR=${boost.dev}/lib/cmake/boost_context-1.89.0"
-    # "-Dboost_filesystem_DIR=${boost.dev}/lib/cmake/boost_filesystem-1.89.0"
-    # "-Dboost_program_options_DIR=${boost.dev}/lib/cmake/boost_program_options-1.89.0"
-    # "-Dboost_regex_DIR=${boost.dev}/lib/cmake/boost_regex-1.89.0"
-    # "-Dboost_thread_DIR=${boost.dev}/lib/cmake/boost_thread-1.89.0"
-    # "-Dboost_atomic_DIR=${boost.dev}/lib/cmake/boost_atomic-1.89.0"
-    # "-Dboost_date_time_DIR=${boost.dev}/lib/cmake/boost_date_time-1.89.0"
-    # "-Dboost_chrono_DIR=${boost.dev}/lib/cmake/boost_chrono-1.89.0"
-    # "-Dboost_headers_DIR=${boost.dev}/lib/cmake/boost_headers-1.89.0"
-
-    # --- Your project-specific flags ---
-    "-DCMAKE_C_FLAGS=${libchalkGlobalFlags}"
-    "-DCMAKE_CXX_FLAGS=${libchalkGlobalFlags}"
-
-    # --- Dependency resolution ---
+    # Dependency resolution
     "-DVELOX_DEPENDENCY_SOURCE=SYSTEM"
 
-    # --- Testing / codegen / coverage ---
+    # Testing / codegen / coverage
     "-DVELOX_BUILD_TESTING=OFF"
     "-DVELOX_CODEGEN_SUPPORT=OFF"
     "-DENABLE_TESTS=OFF"
     "-DENABLE_COVERAGE=OFF"
     "-DVELOX_ENABLE_EXAMPLES=OFF"
 
-    # --- Core engine ---
+    # Core engine
     "-DVELOX_ENABLE_EXPRESSION=ON"
     "-DVELOX_ENABLE_EXEC=ON"
     "-DVELOX_ENABLE_AGGREGATES=ON"
     "-DVELOX_ENABLE_PARSE=ON"
 
-    # --- Function sets ---
+    # Function sets
     "-DVELOX_ENABLE_PRESTO_FUNCTIONS=ON"
     "-DVELOX_ENABLE_SPARK_FUNCTIONS=ON"
 
-    # --- File formats ---
+    # File formats
     "-DVELOX_ENABLE_PARQUET=ON"
     "-DVELOX_ENABLE_ARROW=ON"
 
-    # --- Connectors ---
+    # Connectors
     "-DVELOX_ENABLE_HIVE_CONNECTOR=ON"
     "-DVELOX_ENABLE_S3=ON"
     "-DVELOX_ENABLE_GCS=ON"
     "-DVELOX_ENABLE_ABFS=ON"
     "-DVELOX_ENABLE_HTTP=ON"
 
-    # --- Explicitly disabled ---
+    # Explicitly disabled
     "-DVELOX_ENABLE_DUCKDB=OFF"
     "-DVELOX_ENABLE_SUBSTRAIT=OFF"
     "-DVELOX_ENABLE_TPCH_CONNECTOR=OFF"
     "-DVELOX_ENABLE_TPCDS_CONNECTOR=OFF"
 
-    # --- Linkage / misc ---
+    # Linkage / misc
     "-DVELOX_GFLAGS_TYPE=static"
     "-DWITH_ABSEIL=ON"
     "-DDOCTEST_WITH_MAIN_IN_STATIC_LIB=ON"
     "-DTARGET_SUPPORTS_SHARED_LIBS=ON"
 
-    # --- Python / pybind ---
+    # Python / pybind
     "-DPYBIND11_FINDPYTHON=ON"
     "-DPython_VIRTUALENV=FIRST"
   ];
 
   preConfigure = ''
-    export NIX_CFLAGS_COMPILE="$NIX_CFLAGS_COMPILE -DGLOG_USE_GLOG_EXPORT"
+    export NIX_CFLAGS_COMPILE="$NIX_CFLAGS_COMPILE -DGLOG_USE_GLOG_EXPORT ${libchalkGlobalFlags}"
 
     # for dir in ${boost.dev}/lib/cmake/boost_*; do
     #   export CMAKE_PREFIX_PATH="$dir:$CMAKE_PREFIX_PATH"
     # done
   '';
 
-  # Velox's CMake runs a shell script to detect CPU flags.
-  # Set CPU_TARGET to control this, or let it auto-detect.
+  # TODO(aaronmondal): Might want this instead of the libchalkGlobalFlags in preConfigure.
+  #
   # preBuild = ''
   #   export CPU_TARGET="avx2"
   # '';
 
   postPatch = ''
-    substituteInPlace ./CMakeLists.txt \
+  substituteInPlace ./CMakeLists.txt \
       --replace-fail \
         "set(
     BOOST_INCLUDE_LIBRARIES
@@ -250,10 +229,6 @@ stdenv.mkDerivation rec {
   sed -i 's/fmt 9.0.0/fmt/' CMakeLists.txt
   sed -i 's/pybind11 2.10.0/pybind11/' CMakeLists.txt
 
-  # Use system backward-cpp instead of FetchContent
-  # substituteInPlace velox/common/process/CMakeLists.txt \
-  #   --replace-fail "FetchContent_MakeAvailable(backward)" ""
-
   substituteInPlace velox/common/process/CMakeLists.txt \
     --replace-fail \
       "# BEGIN CHALK MODIFICATION
@@ -278,7 +253,14 @@ stdenv.mkDerivation rec {
   velox_link_libraries(velox_parse_parser velox_parse_expression velox_type velox_duckdb_parser)" \
       "velox_add_library(velox_parse_parser ExpressionsParser.cpp)
   velox_link_libraries(velox_parse_parser velox_parse_expression velox_type)"
-'';
+  '';
+
+  postInstall = ''
+    # xxhash is vendored in-tree and not part of any CMake target,
+    # so it has no install rules. Install it manually.
+    mkdir -p $out/include/velox/external/xxhash
+    cp $src/velox/external/xxhash/*.h $out/include/velox/external/xxhash/
+  '';
 
   meta = with lib; {
     description = "A composable and fully extensible C++ execution engine library";

@@ -85,8 +85,7 @@
           };
 
       packages.${system} = {
-        # TODO
-        velox = pkgs.callPackage ./default.nix { };
+        default = pkgs.callPackage ./default.nix { };
       };
     };
 }
