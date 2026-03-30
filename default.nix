@@ -260,6 +260,10 @@ stdenv.mkDerivation rec {
     # so it has no install rules. Install it manually.
     mkdir -p $out/include/velox/external/xxhash
     cp $src/velox/external/xxhash/*.h $out/include/velox/external/xxhash/
+
+    # Same for utf8proc
+    mkdir -p $out/include/velox/external/utf8proc
+    cp $src/velox/external/utf8proc/*.h $out/include/velox/external/utf8proc/
   '';
 
   meta = with lib; {
