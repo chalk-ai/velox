@@ -17,3 +17,10 @@ add_subdirectory(hdfs)
 add_subdirectory(http)
 add_subdirectory(gcs)
 add_subdirectory(abfs)
+
+velox_add_library(
+  velox_hive_storage_adapters_test_common
+  INTERFACE
+  HEADERS
+  test_common/InsertTest.h
+)
