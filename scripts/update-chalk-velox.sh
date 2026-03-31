@@ -72,7 +72,7 @@ if git rev-parse --verify "${UPDATE_BRANCH}" &>/dev/null; then
   exit 1
 fi
 
-git checkout -b "${UPDATE_BRANCH}" origin/chalk-main
+git checkout --no-track -b "${UPDATE_BRANCH}" origin/chalk-main
 green "  Created '${UPDATE_BRANCH}' at $(git log --oneline -1)"
 
 # ── Step 4: Merge main into the update branch ───────────────────────────────
