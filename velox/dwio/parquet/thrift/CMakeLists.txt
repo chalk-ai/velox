@@ -13,5 +13,11 @@
 # limitations under the License.
 
 find_package(Thrift CONFIG REQUIRED)
-velox_add_library(velox_dwio_parquet_thrift ParquetThriftTypes.cpp)
+velox_add_library(
+  velox_dwio_parquet_thrift
+  ParquetThriftTypes.cpp
+  HEADERS
+  ParquetThriftTypes.h
+  ThriftTransport.h
+)
 velox_link_libraries(velox_dwio_parquet_thrift arrow thrift::thrift Boost::headers fmt::fmt)
