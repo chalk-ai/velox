@@ -542,6 +542,10 @@ class Driver : public std::enable_shared_from_this<Driver> {
 
   static std::shared_ptr<Driver> testingCreate(std::unique_ptr<DriverCtx> ctx = nullptr);
 
+  size_t chalkGetBlockedOperatorId() {
+    return blockedOperatorId_;
+  };
+
  private:
   // Ensures that the thread is removed from its Task's thread count on exit.
   class CancelGuard {
@@ -702,7 +706,7 @@ class Driver : public std::enable_shared_from_this<Driver> {
   // Stores the operator where the driver was last blocked. Note that the driver
   // always resumes at the leaf (consumer) to prioritize getting data out of the
   // task. The only exception is when resuming from a trace.
-  size_t blockedOperatorId_{0};
+  std::atomic_size_t blockedOperatorId_{0};
 
   // If this driver is being traced, store a pointer to the current data. Once
   // the trace client unblocks the driver, we will feed this vector to the next
