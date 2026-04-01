@@ -1979,7 +1979,7 @@ ExprSet::ExprSet(
           execCtx->queryCtx()
               ->queryConfig()
               .exprAdaptiveCpuSamplingMaxOverheadPct()) {
-  exprs_ = compileExpressions(sources, execCtx, this, enableConstantFolding);
+  exprs_ = compileExpressions(sources, execCtx_, this, enableConstantFolding);
   if (lazyDereference_) {
     validateLazyDereference(exprs_);
   }
