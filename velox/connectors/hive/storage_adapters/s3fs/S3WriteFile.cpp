@@ -64,17 +64,24 @@ class S3WriteFile::Impl {
           key_);
     }
 
-    // Create bucket if not present.
+    // Create the bucket only when S3 confirms it does not exist.
+    // Other HeadBucket failures usually mean region or permission issues and
+    // should surface directly instead of being masked by a CreateBucket call.
     {
       Aws::S3::Model::HeadBucketRequest request;
       request.SetBucket(awsString(bucket_));
       auto bucketMetadata = client_->HeadBucket(request);
-      if (!bucketMetadata.IsSuccess()) {
+      if (!bucketMetadata.IsSuccess() &&
+          bucketMetadata.GetError().GetResponseCode() ==
+              Aws::Http::HttpResponseCode::NOT_FOUND) {
         Aws::S3::Model::CreateBucketRequest request;
         request.SetBucket(bucket_);
         auto outcome = client_->CreateBucket(request);
         VELOX_CHECK_AWS_OUTCOME(
             outcome, "Failed to create S3 bucket", bucket_, "");
+      } else {
+        VELOX_CHECK_AWS_OUTCOME(
+            bucketMetadata, "Failed to access S3 bucket", bucket_, "");
       }
     }
 
