@@ -16,8 +16,11 @@
 
 #include "velox/exec/Driver.h"
 
+#include <perfetto.h>
+#include <array>
 #include <atomic>
-
+#include <iostream>
+#include <string>
 #include "velox/common/process/TraceContext.h"
 #include "velox/exec/Operator.h"
 #include "velox/exec/OperatorType.h"
@@ -25,6 +28,62 @@
 #include "velox/vector/LazyVector.h"
 
 using facebook::velox::common::testutil::TestValue;
+
+extern void libchalk_perfetto_trace_event_begin(
+    const char* name,
+    int driverId,
+    int pipelineId);
+extern void libchalk_perfetto_trace_event_end(
+    const char* name,
+    int driverId,
+    int pipelineId);
+extern void declare_velox_perfetto_track(int driverId, int pipelineId);
+
+struct LibchalkTraceEvent {
+  const char* _event_name;
+  int _driverId;
+  int _pipelineId;
+  LibchalkTraceEvent(const char* event_name, int driverId, int pipelineId)
+      : _event_name(event_name), _driverId(driverId), _pipelineId(pipelineId) {
+    libchalk_perfetto_trace_event_begin(event_name, driverId, pipelineId);
+  }
+  void finish() {
+    if (_event_name) {
+      libchalk_perfetto_trace_event_end(
+          this->_event_name, this->_driverId, this->_pipelineId);
+      this->_event_name = nullptr;
+    }
+  }
+  ~LibchalkTraceEvent() {
+    this->finish();
+  }
+};
+
+// This ensures that templates are expanded by value (instead of the arbitrary
+// address of the original string literal).
+template <size_t N>
+struct fixed_string {
+  char data[N];
+
+  constexpr fixed_string(const char (&s)[N]) {
+    for (size_t i = 0; i < N; ++i)
+      data[i] = s[i];
+  }
+};
+
+template <fixed_string Prefix>
+const char* indexed_name(int i) {
+  static std::array<std::string, 128> cached_names = []() {
+    std::array<std::string, 128> result;
+    for (size_t j = 0; j < 128; ++j) {
+      result[j] = Prefix.data;
+      result[j] += std::to_string(j);
+    }
+    return result;
+  }();
+
+  return cached_names[i % 128].c_str();
+}
 
 namespace facebook::velox::exec {
 
@@ -97,7 +156,9 @@ DriverCtx::DriverCtx(
       splitGroupId(_splitGroupId),
       partitionId(_partitionId),
       task(std::move(_task)),
-      threadDebugInfo({task->queryCtx()->queryId(), task->taskId(), nullptr}) {}
+      threadDebugInfo({task->queryCtx()->queryId(), task->taskId(), nullptr}) {
+  declare_velox_perfetto_track(_driverId, _pipelineId);
+}
 
 const core::QueryConfig& DriverCtx::queryConfig() const {
   return task->queryCtx()->queryConfig();
@@ -318,6 +379,11 @@ void Driver::initializeOperators() {
   if (operatorsInitialized_) {
     return;
   }
+  LibchalkTraceEvent trace_init{
+      "initializing_operators",
+      this->ctx_->driverId,
+      this->ctx_->pipelineId,
+  };
   operatorsInitialized_ = true;
   for (auto& op : operators_) {
     op->initialize();
@@ -513,13 +579,31 @@ StopReason Driver::runInternal(
     std::shared_ptr<Driver>& self,
     std::shared_ptr<BlockingState>& blockingState,
     RowVectorPtr& result) {
+  // TRACE_EVENT("libchalk.compute", "VELOX_RUN_DRIVER");
+  LibchalkTraceEvent trace_event{
+      "VELOX_RUN_DRIVER",
+      this->ctx_->driverId,
+      this->ctx_->pipelineId,
+  };
   const auto now = getCurrentTimeMicro();
   const auto queuedTimeUs = now - queueTimeStartUs_;
 
   // Update the next operator's queueTime.
-  StopReason stop =
-      closed_ ? StopReason::kTerminate : task()->enter(state_, now);
+  StopReason stop;
+  {
+    LibchalkTraceEvent trace_event{
+        "initial_stop_check",
+        this->ctx_->driverId,
+        this->ctx_->pipelineId,
+    };
+    stop = closed_ ? StopReason::kTerminate : task()->enter(state_, now);
+  }
   if (stop != StopReason::kNone) {
+    LibchalkTraceEvent trace_event{
+        "has_stop_reason",
+        this->ctx_->driverId,
+        this->ctx_->pipelineId,
+    };
     if (stop == StopReason::kTerminate) {
       // ctx_ still has a reference to the Task. 'this' is not on
       // thread from the Task's viewpoint, hence no need to call
@@ -541,6 +625,11 @@ StopReason Driver::runInternal(
   }
 
   CancelGuard guard(self, task().get(), &state_, [&](StopReason reason) {
+    LibchalkTraceEvent func_event{
+        "closing",
+        this->ctx_->driverId,
+        this->ctx_->pipelineId,
+    };
     // This is run on error or cancel exit.
     if (reason == StopReason::kTerminate) {
       ctx_->task->setError(
@@ -552,7 +641,15 @@ StopReason Driver::runInternal(
   try {
     // Invoked to initialize the operators once before driver starts execution.
     initializeOperators();
-    int32_t startingOperator = getStartingOperator();
+    int32_t startingOperator;
+    {
+      LibchalkTraceEvent func_event{
+          "get_resume_starting_op",
+          this->ctx_->driverId,
+          this->ctx_->pipelineId,
+      };
+      startingOperator = getStartingOperator();
+    }
 
     TestValue::adjust("facebook::velox::exec::Driver::runInternal", this);
 
@@ -560,6 +657,11 @@ StopReason Driver::runInternal(
     // intermediate result into the next operator, then resume execution at the
     // exact operator where the trace was interrupted.
     if (traceInput_ != nullptr) {
+      LibchalkTraceEvent func_event{
+          indexed_name<"add_input_to_">(startingOperator),
+          this->ctx_->driverId,
+          this->ctx_->pipelineId,
+      };
       Operator* tracedOp = operators_[startingOperator].get();
       CALL_OPERATOR(
           addInput(tracedOp, traceInput_),
@@ -571,8 +673,20 @@ StopReason Driver::runInternal(
 
     ContinueFuture future = ContinueFuture::makeEmpty();
 
+    int outer_spin_iter = 0;
     for (;;) {
+      LibchalkTraceEvent func_event{
+          indexed_name<"operator_loop_">(outer_spin_iter),
+          this->ctx_->driverId,
+          this->ctx_->pipelineId,
+      };
+      outer_spin_iter += 1;
       for (int32_t i = startingOperator; i >= 0; --i) {
+        LibchalkTraceEvent func_event{
+            indexed_name<"operator_index_">(i),
+            this->ctx_->driverId,
+            this->ctx_->pipelineId,
+        };
         stop = task()->shouldStop();
         if (stop != StopReason::kNone) {
           guard.notThrown();
@@ -605,6 +719,11 @@ StopReason Driver::runInternal(
         }
 
         withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+          LibchalkTraceEvent func_event{
+              indexed_name<"is_blocked">(i),
+              this->ctx_->driverId,
+              this->ctx_->pipelineId,
+          };
           TestValue::adjust(
               "facebook::velox::exec::Driver::runInternal::isBlocked", op);
           CALL_OPERATOR(
@@ -633,17 +752,30 @@ StopReason Driver::runInternal(
           }
 
           bool needsInput;
-          CALL_OPERATOR(
-              needsInput = nextOp->needsInput(),
-              nextOp,
-              curOperatorId_ + 1,
-              kOpMethodNeedsInput);
+          {
+            LibchalkTraceEvent func_event{
+                indexed_name<"needs_input">(i + 1),
+                this->ctx_->driverId,
+                this->ctx_->pipelineId,
+            };
+            CALL_OPERATOR(
+                needsInput = nextOp->needsInput(),
+                nextOp,
+                curOperatorId_ + 1,
+                kOpMethodNeedsInput);
+          }
 
           if (needsInput) {
             uint64_t resultBytes = 0;
             RowVectorPtr intermediateResult;
 
             withDeltaCpuWallTimer(op, &OperatorStats::getOutputTiming, [&]() {
+              LibchalkTraceEvent func_event{
+                  indexed_name<"get_output">(i),
+                  this->ctx_->driverId,
+                  this->ctx_->pipelineId,
+              };
+
               TestValue::adjust(
                   "facebook::velox::exec::Driver::runInternal::getOutput", op);
               CALL_OPERATOR(
@@ -680,6 +812,11 @@ StopReason Driver::runInternal(
                           resultBytes, intermediateResult->size());
                     }
 
+                    LibchalkTraceEvent func_event{
+                        indexed_name<"add_input_to_">(i + 1),
+                        this->ctx_->driverId,
+                        this->ctx_->pipelineId,
+                    };
                     TestValue::adjust(
                         "facebook::velox::exec::Driver::runInternal::addInput",
                         nextOp);
@@ -707,6 +844,12 @@ StopReason Driver::runInternal(
               // not the source, just try to get output from the one
               // before.
               withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+                LibchalkTraceEvent func_event{
+                    indexed_name<"check_blocked">(i),
+                    this->ctx_->driverId,
+                    this->ctx_->pipelineId,
+                };
+
                 CALL_OPERATOR(
                     blockingReason_ = op->isBlocked(&future),
                     op,
@@ -720,6 +863,11 @@ StopReason Driver::runInternal(
 
               bool finished{false};
               withDeltaCpuWallTimer(op, &OperatorStats::finishTiming, [&]() {
+                LibchalkTraceEvent func_event{
+                    indexed_name<"check_finished">(curOperatorId_),
+                    this->ctx_->driverId,
+                    this->ctx_->pipelineId,
+                };
                 CALL_OPERATOR(
                     finished = op->isFinished(),
                     op,
@@ -729,6 +877,12 @@ StopReason Driver::runInternal(
               if (finished) {
                 withDeltaCpuWallTimer(
                     nextOp, &OperatorStats::finishTiming, [this, &nextOp]() {
+                      LibchalkTraceEvent func_event{
+                          indexed_name<"tell_no_more_input">(
+                              curOperatorId_ + 1),
+                          this->ctx_->driverId,
+                          this->ctx_->pipelineId,
+                      };
                       TestValue::adjust(
                           "facebook::velox::exec::Driver::runInternal::noMoreInput",
                           nextOp);
@@ -757,6 +911,11 @@ StopReason Driver::runInternal(
           // this will be detected when trying to add input, and we
           // will come back here after this is again on thread.
           withDeltaCpuWallTimer(op, &OperatorStats::getOutputTiming, [&]() {
+            LibchalkTraceEvent func_event{
+                indexed_name<"get_sink_output">(i),
+                this->ctx_->driverId,
+                this->ctx_->pipelineId,
+            };
             CALL_OPERATOR(
                 getOutput(op, result), op, curOperatorId_, kOpMethodGetOutput);
             if (result) {
@@ -779,6 +938,11 @@ StopReason Driver::runInternal(
 
           bool finished{false};
           withDeltaCpuWallTimer(op, &OperatorStats::finishTiming, [&]() {
+            LibchalkTraceEvent func_event{
+                indexed_name<"sink_is_finished">(i),
+                this->ctx_->driverId,
+                this->ctx_->pipelineId,
+            };
             CALL_OPERATOR(
                 finished = op->isFinished(),
                 op,
@@ -786,6 +950,11 @@ StopReason Driver::runInternal(
                 kOpMethodIsFinished);
           });
           if (finished) {
+            LibchalkTraceEvent func_event{
+                "close_driver",
+                this->ctx_->driverId,
+                this->ctx_->pipelineId,
+            };
             guard.notThrown();
             close();
             return StopReason::kAtEnd;
