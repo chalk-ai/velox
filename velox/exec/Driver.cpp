@@ -305,8 +305,7 @@ void Driver::init(
   trackOperatorCpuUsage_ = ctx_->queryConfig().operatorTrackCpuUsage();
 }
 
-std::shared_ptr<Driver> Driver::testingCreate(
-    std::unique_ptr<DriverCtx> ctx) {
+std::shared_ptr<Driver> Driver::testingCreate(std::unique_ptr<DriverCtx> ctx) {
   auto driver = new Driver();
   if (ctx != nullptr) {
     ctx->driver = driver;
@@ -314,7 +313,6 @@ std::shared_ptr<Driver> Driver::testingCreate(
   }
   return std::shared_ptr<Driver>(driver);
 }
-
 
 void Driver::initializeOperators() {
   if (operatorsInitialized_) {
@@ -740,7 +738,16 @@ StopReason Driver::runInternal(
                           curOperatorId_ + 1,
                           kOpMethodNoMoreInput);
                     });
-                break;
+
+                // [Chalk Fork Edit]
+                // Instead of `break` - treat this like the `addInput` case and
+                // back up to the previous operator.
+                //
+                // This changes shutdown from quadratic to linear, by allowing
+                // operators to propagate `noMoreInput()` upwards in a single
+                // pass if they are all finished.
+                i += 2;
+                continue;
               }
             }
           }
