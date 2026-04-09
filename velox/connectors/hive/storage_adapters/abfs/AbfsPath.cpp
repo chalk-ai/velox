@@ -26,7 +26,9 @@ AbfsPath::AbfsPath(std::string_view path) {
     file = path.substr(kAbfssScheme.size());
   } else if (path.find(kAbfsScheme) == 0) {
     file = path.substr(kAbfsScheme.size());
-    isHttps_ = false;
+    // Always use HTTPS regardless of scheme — abfs:// and abfss:// are treated
+    // identically at the transport level. This matches the Hadoop ABFS driver
+    // behavior where abfs:// + OAuth still connects via TLS.
   } else {
     VELOX_FAIL("Invalid ABFS Path {}", path);
   }
