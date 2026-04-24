@@ -101,10 +101,10 @@ void registerAzureClientProvider(const config::ConfigBase& config) {
 #endif
 }
 
-void registerAzureDefaultCredentialProvider(const std::string& account) {
+void registerAzureDefaultCredentialProvider(std::optional<std::string> account) {
 #ifdef VELOX_ENABLE_ABFS
   AzureClientProviderFactories::registerFactory(
-      account, [](const std::string&) {
+      account.value_or(""), [](const std::string&) {
         return std::make_unique<DefaultAzureCredentialProvider>();
       });
 #endif
