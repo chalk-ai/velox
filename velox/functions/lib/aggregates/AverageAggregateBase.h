@@ -235,6 +235,42 @@ class AverageAggregateBase : public exec::Aggregate {
     addSingleGroupIntermediateResultsImpl<false>(group, rows);
   }
 
+  bool supportsRetract() const override {
+    return true;
+  }
+
+  void removeSingleGroupRawInput(
+      char* group,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args) override {
+    decodedRaw_.decode(*args[0], rows);
+
+    if (decodedRaw_.isConstantMapping()) {
+      if (!decodedRaw_.isNullAt(0)) {
+        const TInput value = decodedRaw_.valueAt<TInput>(0);
+        const auto numRows = rows.countSelected();
+        retractNonNullValue(group, numRows, TAccumulator(value) * numRows);
+      }
+    } else if (decodedRaw_.mayHaveNulls()) {
+      rows.applyToSelected([&](vector_size_t i) {
+        if (!decodedRaw_.isNullAt(i)) {
+          retractNonNullValue(
+              group, TAccumulator(decodedRaw_.valueAt<TInput>(i)));
+        }
+      });
+    } else if (decodedRaw_.isIdentityMapping()) {
+      const TInput* data = decodedRaw_.template data<TInput>();
+      TAccumulator totalSum(0);
+      rows.applyToSelected([&](vector_size_t i) { totalSum += data[i]; });
+      retractNonNullValue(group, rows.countSelected(), totalSum);
+    } else {
+      TAccumulator totalSum(0);
+      rows.applyToSelected(
+          [&](vector_size_t i) { totalSum += decodedRaw_.valueAt<TInput>(i); });
+      retractNonNullValue(group, rows.countSelected(), totalSum);
+    }
+  }
+
  protected:
   /// Partial.
   template <bool tableHasNulls = true>
@@ -255,6 +291,20 @@ class AverageAggregateBase : public exec::Aggregate {
     accumulator(group)->sum += sum;
     accumulator(group)->count =
         checkedPlus<int64_t>(accumulator(group)->count, count);
+  }
+
+  // Inverse of updateNonNullValue used by removeSingleGroupRawInput. Float
+  // accumulation is subject to catastrophic cancellation; the null flag is
+  // deliberately not restored — the Window operator handles the
+  // "no remaining contributions" case via its own counter.
+  inline void retractNonNullValue(char* group, TAccumulator value) {
+    accumulator(group)->sum -= value;
+    accumulator(group)->count -= 1;
+  }
+
+  inline void retractNonNullValue(char* group, int64_t count, TAccumulator sum) {
+    accumulator(group)->sum -= sum;
+    accumulator(group)->count -= count;
   }
 
   inline SumCount<TAccumulator>* accumulator(char* group) {

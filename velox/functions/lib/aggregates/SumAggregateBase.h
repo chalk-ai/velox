@@ -110,6 +110,29 @@ class SumAggregateBase
         TAccumulator(0));
   }
 
+  bool supportsRetract() const override {
+    return true;
+  }
+
+  void removeSingleGroupRawInput(
+      char* group,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args) override {
+    // Retract by composing two helpers: updateDuplicateValues accumulates
+    // n * value into a temporary (same as the additive path), then
+    // subtractSingleValue subtracts that temporary from the group accumulator.
+    // The Window operator tracks how many non-null contributions remain so
+    // we deliberately do not touch the accumulator's null flag here.
+    BaseAggregate::template updateOneGroup<TAccumulator>(
+        group,
+        rows,
+        args[0],
+        &subtractSingleValue<TAccumulator>,
+        &updateDuplicateValues<TAccumulator>,
+        false,
+        TAccumulator(0));
+  }
+
  protected:
   // TData is used to store the updated sum state. It can be either
   // TAccumulator or TResult, which in most cases are the same, but for
@@ -154,6 +177,23 @@ class SumAggregateBase
   template <typename TData>
   static void updateSingleValue(TData& result, TData value) {
     velox::aggregate::SumHook<TData, Overflow>::add(result, value);
+  }
+
+  // Inverse of updateSingleValue used by removeSingleGroupRawInput. Float
+  // subtraction is subject to catastrophic cancellation; the Window operator
+  // documents this trade-off for its callers.
+  template <typename TData>
+#if defined(FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER)
+  FOLLY_DISABLE_UNDEFINED_BEHAVIOR_SANITIZER("signed-integer-overflow")
+#endif
+  static void subtractSingleValue(TData& result, TData value) {
+    if constexpr (
+        (std::is_same_v<TData, int64_t> && Overflow) ||
+        std::is_same_v<TData, double> || std::is_same_v<TData, float>) {
+      result -= value;
+    } else {
+      result = functions::checkedMinus<TData>(result, value);
+    }
   }
 
   // Disable undefined behavior sanitizer to not fail on signed integer

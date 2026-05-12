@@ -108,6 +108,37 @@ class CountAggregate : public SimpleNumericAggregate<bool, int64_t, int64_t> {
     }
   }
 
+  bool supportsRetract() const override {
+    return true;
+  }
+
+  void removeSingleGroupRawInput(
+      char* group,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args) override {
+    if (args.empty()) {
+      addToGroup(group, -static_cast<int64_t>(rows.countSelected()));
+      return;
+    }
+
+    DecodedVector decoded(*args[0], rows);
+    if (decoded.isConstantMapping()) {
+      if (!decoded.isNullAt(0)) {
+        addToGroup(group, -static_cast<int64_t>(rows.countSelected()));
+      }
+    } else if (decoded.mayHaveNulls()) {
+      int64_t nonNullCount = 0;
+      rows.applyToSelected([&](vector_size_t i) {
+        if (!decoded.isNullAt(i)) {
+          ++nonNullCount;
+        }
+      });
+      addToGroup(group, -nonNullCount);
+    } else {
+      addToGroup(group, -static_cast<int64_t>(rows.countSelected()));
+    }
+  }
+
   void addSingleGroupIntermediateResults(
       char* group,
       const SelectivityVector& rows,
