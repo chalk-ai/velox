@@ -100,6 +100,8 @@ class AggregateWindowFunction : public exec::WindowFunction {
     // the aggregate to the final result.
     aggregateResultVector_ = BaseVector::create(resultType, 1, pool_);
 
+    supportsRetract_ = aggregate_->supportsRetract();
+
     computeDefaultAggregateValue(resultType);
   }
 
@@ -116,6 +118,7 @@ class AggregateWindowFunction : public exec::WindowFunction {
     partition_ = partition;
 
     previousFrameMetadata_.reset();
+    slidingState_.reset();
   }
 
   void apply(
@@ -155,6 +158,9 @@ class AggregateWindowFunction : public exec::WindowFunction {
         aggregateInitialized_ = true;
       }
 
+      // An incremental block invalidates any sliding state from a prior block.
+      slidingState_.reset();
+
       fillArgVectors(startRow, frameMetadata.lastRow);
       incrementalAggregation(
           validRows,
@@ -163,7 +169,23 @@ class AggregateWindowFunction : public exec::WindowFunction {
           rawFrameEnds,
           resultOffset,
           result);
+    } else if (frameMetadata.slidingAggregation) {
+      fillArgVectors(frameMetadata.firstRow, frameMetadata.lastRow);
+      slidingAggregation(
+          validRows,
+          frameMetadata.firstRow,
+          frameMetadata.lastRow,
+          rawFrameStarts,
+          rawFrameEnds,
+          frameMetadata.useSlidingState,
+          resultOffset,
+          result);
     } else {
+      // The accumulator state from any prior sliding block is unreachable
+      // from a non-sliding/non-incremental block; drop it so we never try to
+      // resume from inconsistent state.
+      slidingState_.reset();
+
       fillArgVectors(frameMetadata.firstRow, frameMetadata.lastRow);
       simpleAggregation(
           validRows,
@@ -193,6 +215,33 @@ class AggregateWindowFunction : public exec::WindowFunction {
 
     // Resume incremental aggregation from the prior block.
     bool usePreviousAggregate;
+
+    // If both frame starts and frame ends are non-decreasing across this
+    // block (and the underlying aggregate supports retract), the aggregation
+    // can be performed in linear time by retracting rows that leave the
+    // frame and adding rows that enter it. Mutually exclusive with
+    // incrementalAggregation.
+    bool slidingAggregation;
+
+    // Resume the sliding accumulator state from the prior block.
+    bool useSlidingState;
+  };
+
+  // Tracks the accumulator's contents across apply() calls within a single
+  // partition for the sliding-window path. Coordinates are absolute within
+  // the partition (i.e., the same space as rawFrameStarts/rawFrameEnds).
+  struct SlidingState {
+    // Inclusive start of the rows currently in the accumulator.
+    vector_size_t accumStartAbs;
+
+    // Exclusive end of the rows currently in the accumulator.
+    vector_size_t accumEndAbs;
+
+    // Number of non-null contributions currently in the accumulator. When
+    // this drops to zero we substitute the empty-frame result rather than
+    // extracting from the accumulator, since the underlying null flag is
+    // not restored by retract.
+    int64_t nonNullCount;
   };
 
   bool handleAllEmptyFrames(
@@ -222,24 +271,35 @@ class AggregateWindowFunction : public exec::WindowFunction {
     vector_size_t firstRow = rawFrameStarts[firstValidRow];
     vector_size_t fixedFrameStartRow = firstRow;
     vector_size_t lastRow = rawFrameEnds[firstValidRow];
-    vector_size_t prevFrameEnds = lastRow;
+    vector_size_t prevFrameStart = firstRow;
+    vector_size_t prevFrameEnd = lastRow;
 
-    bool incrementalAggregation = true;
+    bool fixedStart = true;
+    bool nonDecreasingStart = true;
+    bool nonDecreasingEnd = true;
     validRows.applyToSelected([&](auto i) {
       firstRow = std::min(firstRow, rawFrameStarts[i]);
       lastRow = std::max(lastRow, rawFrameEnds[i]);
 
-      // Incremental aggregation can be done if :
-      // i) All rows have the same frameStart value.
-      // ii) The frame end values are non-decreasing.
-      incrementalAggregation &= (rawFrameStarts[i] == fixedFrameStartRow);
-      incrementalAggregation &= rawFrameEnds[i] >= prevFrameEnds;
-      prevFrameEnds = rawFrameEnds[i];
+      fixedStart &= (rawFrameStarts[i] == fixedFrameStartRow);
+      nonDecreasingStart &= (rawFrameStarts[i] >= prevFrameStart);
+      nonDecreasingEnd &= (rawFrameEnds[i] >= prevFrameEnd);
+      prevFrameStart = rawFrameStarts[i];
+      prevFrameEnd = rawFrameEnds[i];
     });
 
+    // Incremental aggregation handles expanding frames (fixed start,
+    // non-decreasing end) and works for all aggregates. Sliding aggregation
+    // handles frames where the start also advances; it requires the
+    // aggregate to support retract.
+    bool incrementalAggregation = fixedStart && nonDecreasingEnd;
+    bool slidingAggregation = !incrementalAggregation && nonDecreasingStart &&
+        nonDecreasingEnd && supportsRetract_;
+
     bool usePreviousAggregate = false;
+    bool useSlidingState = false;
     if (previousFrameMetadata_.has_value()) {
-      auto previousFrame = previousFrameMetadata_.value();
+      const auto& previousFrame = previousFrameMetadata_.value();
       // Incremental aggregation continues between blocks if :
       // i) Their starting firstRow values are the same.
       // ii) The nonDecreasing frameEnd property is also applicable between the
@@ -248,10 +308,26 @@ class AggregateWindowFunction : public exec::WindowFunction {
           previousFrame.firstRow == firstRow &&
           previousFrame.lastRow <= rawFrameEnds[firstValidRow]) {
         usePreviousAggregate = true;
+      } else if (
+          slidingAggregation && slidingState_.has_value() &&
+          slidingState_->accumStartAbs <= rawFrameStarts[firstValidRow] &&
+          slidingState_->accumEndAbs <= rawFrameEnds[firstValidRow] + 1) {
+        // The saved accumulator is a predecessor of this block's first
+        // frame: we can retract from its start and add toward its end.
+        useSlidingState = true;
+        // Extend firstRow to include the saved accumulator's leading rows
+        // so their argument values are present for retraction.
+        firstRow = std::min(firstRow, slidingState_->accumStartAbs);
       }
     }
 
-    return {firstRow, lastRow, incrementalAggregation, usePreviousAggregate};
+    return {
+        firstRow,
+        lastRow,
+        incrementalAggregation,
+        usePreviousAggregate,
+        slidingAggregation,
+        useSlidingState};
   }
 
   void fillArgVectors(vector_size_t firstRow, vector_size_t lastRow) {
@@ -317,6 +393,127 @@ class AggregateWindowFunction : public exec::WindowFunction {
     setEmptyFramesResult(validRows, resultOffset, emptyResult_, result);
   }
 
+  // Evaluates the aggregation over a sliding window. Both frame starts and
+  // frame ends are non-decreasing across this block, and the underlying
+  // aggregate supports retract, so each row's frame can be obtained from the
+  // previous row's by retracting rows that left the leading edge and adding
+  // rows that entered on the trailing edge — linear in the partition size
+  // rather than quadratic in the frame width.
+  void slidingAggregation(
+      const SelectivityVector& validRows,
+      vector_size_t firstRow,
+      vector_size_t lastRow,
+      const vector_size_t* rawFrameStarts,
+      const vector_size_t* rawFrameEnds,
+      bool useSlidingState,
+      vector_size_t resultOffset,
+      const VectorPtr& result) {
+    const vector_size_t numFrameRows = lastRow + 1 - firstRow;
+
+    // Precompute the per-row non-null status of the first argument over the
+    // local window. The Window operator tracks how many non-null
+    // contributions remain in the accumulator because the underlying null
+    // flag is not restored on retract; without that, the aggregate would
+    // return 0 instead of NULL once every row falls out of the frame.
+    // For argument-less aggregates (e.g. count(*)) every row counts.
+    std::vector<bool> rowIsNonNull;
+    if (!argVectors_.empty()) {
+      rowIsNonNull.resize(numFrameRows);
+      DecodedVector decoded(*argVectors_[0]);
+      for (vector_size_t i = 0; i < numFrameRows; ++i) {
+        rowIsNonNull[i] = !decoded.isNullAt(i);
+      }
+    }
+    auto countContributions = [&](vector_size_t localStart,
+                                  vector_size_t localEndExcl) -> int64_t {
+      if (argVectors_.empty()) {
+        return localEndExcl - localStart;
+      }
+      int64_t n = 0;
+      for (vector_size_t i = localStart; i < localEndExcl; ++i) {
+        if (rowIsNonNull[i]) {
+          ++n;
+        }
+      }
+      return n;
+    };
+
+    SelectivityVector rows;
+    rows.resize(numFrameRows);
+
+    // [accumStart, accumEnd) tracks the rows currently in the accumulator,
+    // in local (argVectors_) coordinates.
+    vector_size_t accumStart;
+    vector_size_t accumEnd;
+    int64_t nonNullCount;
+
+    if (useSlidingState) {
+      accumStart = slidingState_->accumStartAbs - firstRow;
+      accumEnd = slidingState_->accumEndAbs - firstRow;
+      nonNullCount = slidingState_->nonNullCount;
+    } else {
+      static const auto kSingleGroup = std::vector<vector_size_t>{0};
+      aggregate_->destroy(folly::Range<char**>(&rawSingleGroupRow_, 1));
+      aggregate_->initializeNewGroups(&rawSingleGroupRow_, kSingleGroup);
+      aggregateInitialized_ = true;
+      accumStart = rawFrameStarts[validRows.begin()] - firstRow;
+      accumEnd = accumStart;
+      nonNullCount = 0;
+    }
+
+    validRows.applyToSelected([&](auto i) {
+      const auto localStart = rawFrameStarts[i] - firstRow;
+      const auto localEndExcl = rawFrameEnds[i] - firstRow + 1;
+
+      // Retract leading-edge rows that have fallen out of the frame. With
+      // non-decreasing starts and ends across the partition, the retract
+      // range is everything in the accumulator below localStart.
+      const auto retractEnd = std::min<vector_size_t>(localStart, accumEnd);
+      if (retractEnd > accumStart) {
+        rows.clearAll();
+        rows.setValidRange(accumStart, retractEnd, true);
+        rows.updateBounds();
+        aggregate_->removeSingleGroupRawInput(
+            rawSingleGroupRow_, rows, argVectors_);
+        nonNullCount -= countContributions(accumStart, retractEnd);
+      }
+
+      // Add trailing-edge rows newly in the frame. If localStart > accumEnd
+      // (a gap because the frame jumped past the previous range), the gap
+      // rows are correctly excluded — only [localStart, localEndExcl) is
+      // added.
+      const auto addStart = std::max<vector_size_t>(localStart, accumEnd);
+      if (localEndExcl > addStart) {
+        rows.clearAll();
+        rows.setValidRange(addStart, localEndExcl, true);
+        rows.updateBounds();
+        aggregate_->addSingleGroupRawInput(
+            rawSingleGroupRow_, rows, argVectors_, false);
+        nonNullCount += countContributions(addStart, localEndExcl);
+      }
+
+      accumStart = localStart;
+      accumEnd = localEndExcl;
+
+      if (nonNullCount == 0) {
+        result->copy(emptyResult_.get(), resultOffset + i, 0, 1);
+      } else {
+        BaseVector::prepareForReuse(aggregateResultVector_, 1);
+        aggregate_->extractValues(
+            &rawSingleGroupRow_, 1, &aggregateResultVector_);
+        result->copy(aggregateResultVector_.get(), resultOffset + i, 0, 1);
+      }
+    });
+
+    slidingState_ = SlidingState{
+        accumStart + firstRow,
+        accumEnd + firstRow,
+        nonNullCount,
+    };
+
+    setEmptyFramesResult(validRows, resultOffset, emptyResult_, result);
+  }
+
   void simpleAggregation(
       const SelectivityVector& validRows,
       vector_size_t minFrame,
@@ -330,12 +527,10 @@ class AggregateWindowFunction : public exec::WindowFunction {
     static auto kSingleGroup = std::vector<vector_size_t>{0};
 
     validRows.applyToSelected([&](auto i) {
-      // This is a very naive algorithm.
-      // It evaluates the entire aggregation for each row by iterating over
-      // input rows from frameStart to frameEnd in the SelectivityVector.
-      // TODO : Try to re-use previous computations by advancing and retracting
-      // the aggregation based on the frame changes with each row. This would
-      // require adding new APIs to the Aggregate framework.
+      // Fallback path used when neither incrementalAggregation (expanding
+      // frame) nor slidingAggregation (monotonic frame + retract-capable
+      // aggregate) applies. Reaggregates every frame from scratch — quadratic
+      // in the frame width.
       aggregate_->destroy(folly::Range<char**>(&rawSingleGroupRow_, 1));
       aggregate_->initializeNewGroups(&rawSingleGroupRow_, kSingleGroup);
       aggregateInitialized_ = true;
@@ -393,6 +588,15 @@ class AggregateWindowFunction : public exec::WindowFunction {
   // Stores metadata about the previous output block of the partition
   // to optimize aggregate computation and reading argument vectors.
   std::optional<FrameMetadata> previousFrameMetadata_;
+
+  // Stores the sliding accumulator's current contents and non-null
+  // contribution count across apply() calls within a partition. Reset at
+  // partition boundaries and whenever a non-sliding block is processed.
+  std::optional<SlidingState> slidingState_;
+
+  // Cached at construction so analyzeFrameValues doesn't dispatch through a
+  // virtual call per block.
+  bool supportsRetract_{false};
 
   // Stores default result value for empty frame aggregation. Window functions
   // return the default value of an aggregate (aggregation with no rows) for
