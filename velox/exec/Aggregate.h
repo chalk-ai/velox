@@ -262,6 +262,41 @@ class Aggregate {
       const std::vector<VectorPtr>& args,
       bool mayPushdown) = 0;
 
+  /// Returns true if this aggregate function supports removing previously
+  /// added rows from a single-group accumulator via removeSingleGroupRawInput.
+  ///
+  /// The Window operator uses this to evaluate sliding-window aggregations in
+  /// O(N) time over a partition by retracting rows that leave the frame
+  /// instead of rebuilding the accumulator from scratch for every row.
+  ///
+  /// Aggregates that override this to return true must also override
+  /// removeSingleGroupRawInput.
+  ///
+  /// Floating-point retract is inherently lossy due to cancellation; callers
+  /// should not expect bit-exact equality with re-aggregation from scratch.
+  virtual bool supportsRetract() const {
+    return false;
+  }
+
+  /// Inverse of addSingleGroupRawInput. Removes the contribution of the rows
+  /// in 'rows' (as decoded from 'args') from the single-group accumulator at
+  /// 'group'.
+  ///
+  /// Preconditions:
+  ///   - supportsRetract() returns true.
+  ///   - The rows being retracted were previously added to this group via
+  ///     addSingleGroupRawInput.
+  ///
+  /// Implementations must not clear the accumulator's null flag. The Window
+  /// operator tracks the number of non-null contributions externally and
+  /// substitutes the empty-frame result when that count reaches zero.
+  virtual void removeSingleGroupRawInput(
+      char* /*group*/,
+      const SelectivityVector& /*rows*/,
+      const std::vector<VectorPtr>& /*args*/) {
+    VELOX_NYI("Unimplemented: {} {}", typeid(*this).name(), __func__);
+  }
+
   // Extracts final results (used for final and single aggregations).
   // @param groups Pointers to the start of the group rows.
   // @param numGroups Number of groups to extract results from.
