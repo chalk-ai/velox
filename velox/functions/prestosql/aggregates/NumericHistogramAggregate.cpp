@@ -517,6 +517,40 @@ void registerNumericHistogramAggregate(
           const core::QueryConfig& /*config*/)
           -> std::unique_ptr<exec::Aggregate> {
         const std::string& name = names.front();
+        // Companion-function path (chalk-private patch): when the auto-generated
+        // `*_merge_extract_*` / `*_extract_*` / `*_merge` companions invoke this
+        // factory, `argTypes` is the single varbinary intermediate type rather
+        // than the parent's `(bigint, value [, weight])`. Dispatch off the
+        // result map's key type to build the matching `SimpleAggregateAdapter`
+        // -- the adapter's intermediate-input path handles deserialization /
+        // `combine` against the stored varbinary state without needing the
+        // original raw input columns. Without this, the strict
+        // `argTypes.size() >= 2` check below fires and breaks every companion
+        // call for `numeric_histogram` (e.g. when used as a materialized
+        // aggregate where partial states are merged at lookup time).
+        if (argTypes.size() == 1 && argTypes[0]->isVarbinary()) {
+          VELOX_USER_CHECK(
+              resultType->isMap(),
+              "Aggregation {}: companion expects map result type, got {}",
+              name,
+              resultType->toString());
+          const auto keyKind = resultType->childAt(0)->kind();
+          switch (keyKind) {
+            case TypeKind::REAL:
+              return std::make_unique<exec::SimpleAggregateAdapter<
+                  NumericHistogramAggregate<float, double, 2>>>(
+                  step, argTypes, resultType);
+            case TypeKind::DOUBLE:
+              return std::make_unique<exec::SimpleAggregateAdapter<
+                  NumericHistogramAggregate<double, double, 2>>>(
+                  step, argTypes, resultType);
+            default:
+              VELOX_USER_FAIL(
+                  "Unknown companion result key type {} for aggregation {}",
+                  resultType->childAt(0)->toString(),
+                  name);
+          }
+        }
         VELOX_USER_CHECK_GE(
             argTypes.size(), 2, "{} takes at least two arguments", name);
         VELOX_USER_CHECK_LE(
