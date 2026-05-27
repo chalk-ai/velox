@@ -38,6 +38,10 @@ struct DriverStats {
   /// Number of dynamic filters produced by an operator.
   static constexpr std::string_view kDynamicFiltersProduced =
       "dynamicFiltersProduced";
+  /// Absolute wall-clock milliseconds when this driver first began executing.
+  static constexpr std::string_view kDriverStartTimeMs = "driverStartTimeMs";
+  /// Absolute wall-clock milliseconds when this driver finished executing.
+  static constexpr std::string_view kDriverFinishTimeMs = "driverFinishTimeMs";
 
   std::unordered_map<std::string, RuntimeMetric> runtimeStats;
 };

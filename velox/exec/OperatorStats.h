@@ -106,6 +106,17 @@ struct OperatorStats {
   static constexpr std::string_view kRunningIsBlockedWallNanos =
       "runningIsBlockedWallNanos";
 
+  // Operator lifecycle timestamps stored in runtimeStats (kNone unit, ms).
+  // min() gives the earliest across drivers; max() gives the latest.
+  /// Absolute ms when this operator first received an input batch.
+  static constexpr std::string_view kFirstAddInputTimeMs = "firstAddInputTimeMs";
+  /// Absolute ms when noMoreInput() was called (upstream closed).
+  static constexpr std::string_view kNoMoreInputTimeMs = "noMoreInputTimeMs";
+  /// Absolute ms when this operator first emitted a non-empty output batch.
+  static constexpr std::string_view kFirstGetOutputTimeMs = "firstGetOutputTimeMs";
+  /// Absolute ms when this operator last emitted a non-empty output batch.
+  static constexpr std::string_view kLastGetOutputTimeMs = "lastGetOutputTimeMs";
+
   /// Initial ordinal position in the operator's pipeline.
   int32_t operatorId = 0;
   int32_t pipelineId = 0;

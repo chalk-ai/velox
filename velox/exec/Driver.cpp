@@ -659,8 +659,17 @@ StopReason Driver::runInternal(
                   resultBytes = intermediateResult->estimateFlatSize();
                 }
                 auto lockedStats = op->stats().wlock();
-                lockedStats->addOutputVector(
-                    resultBytes, intermediateResult->size());
+                const bool isFirst = lockedStats->outputPositions == 0;
+                const auto nowMs = getCurrentTimeMs();
+                lockedStats->addOutputVector(resultBytes, intermediateResult->size());
+                if (isFirst) {
+                  lockedStats->addRuntimeStat(
+                      std::string(OperatorStats::kFirstGetOutputTimeMs),
+                      RuntimeCounter(nowMs, RuntimeCounter::Unit::kNone));
+                }
+                lockedStats->addRuntimeStat(
+                    std::string(OperatorStats::kLastGetOutputTimeMs),
+                    RuntimeCounter(nowMs, RuntimeCounter::Unit::kNone));
               }
             });
             if (intermediateResult) {
@@ -678,8 +687,15 @@ StopReason Driver::runInternal(
                   nextOp, &OperatorStats::addInputTiming, [&]() {
                     {
                       auto lockedStats = nextOp->stats().wlock();
+                      const bool isFirst = lockedStats->inputPositions == 0;
+                      const auto nowMs = getCurrentTimeMs();
                       lockedStats->addInputVector(
                           resultBytes, intermediateResult->size());
+                      if (isFirst) {
+                        lockedStats->addRuntimeStat(
+                            std::string(OperatorStats::kFirstAddInputTimeMs),
+                            RuntimeCounter(nowMs, RuntimeCounter::Unit::kNone));
+                      }
                     }
 
                     TestValue::adjust(
@@ -740,6 +756,10 @@ StopReason Driver::runInternal(
                           curOperatorId_ + 1,
                           kOpMethodNoMoreInput);
                     });
+                nextOp->addRuntimeStat(
+                    std::string(OperatorStats::kNoMoreInputTimeMs),
+                    RuntimeCounter(
+                        getCurrentTimeMs(), RuntimeCounter::Unit::kNone));
                 break;
               }
             }
@@ -914,6 +934,12 @@ void Driver::updateStats() {
         RuntimeMetric(
             1'000'000 * state_.totalOffThreadTimeMs,
             RuntimeCounter::Unit::kNanos);
+  }
+  if (state_.firstExecTimeMs > 0) {
+    stats.runtimeStats[std::string(DriverStats::kDriverStartTimeMs)] =
+        RuntimeMetric(state_.firstExecTimeMs, RuntimeCounter::Unit::kNone);
+    stats.runtimeStats[std::string(DriverStats::kDriverFinishTimeMs)] =
+        RuntimeMetric(getCurrentTimeMs(), RuntimeCounter::Unit::kNone);
   }
   task()->addDriverStats(ctx_->pipelineId, std::move(stats));
 }
