@@ -124,12 +124,17 @@ struct ThreadState {
   uint64_t totalPauseTimeMs{0};
   /// Total off thread time (including blocked time and pause time).
   uint64_t totalOffThreadTimeMs{0};
+  /// Absolute wall-clock ms when this driver first began executing (set once).
+  uint64_t firstExecTimeMs{0};
 
   bool isOnThread() const {
     return thread != std::thread::id();
   }
 
   void setThread() {
+    if (firstExecTimeMs == 0) {
+      firstExecTimeMs = getCurrentTimeMs();
+    }
     thread = std::this_thread::get_id();
     startExecTimeMs = getCurrentTimeMs();
     if (endExecTimeMs != 0) {
