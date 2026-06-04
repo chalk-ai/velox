@@ -1266,11 +1266,17 @@ std::pair<std::string, std::string> HiveInsertFileNameGenerator::gen(
   const std::string writeFileName = commitRequired
       ? fmt::format(".tmp.velox.{}_{}", targetFileName, makeUuid())
       : targetFileName;
-  if (generateFileName &&
-      insertTableHandle->storageFormat() == dwio::common::FileFormat::PARQUET) {
-    return {
-        fmt::format("{}{}", targetFileName, ".parquet"),
-        fmt::format("{}{}", writeFileName, ".parquet")};
+  if (generateFileName) {
+    if (insertTableHandle->storageFormat() == dwio::common::FileFormat::PARQUET) {
+      return {
+          fmt::format("{}{}", targetFileName, ".parquet"),
+          fmt::format("{}{}", writeFileName, ".parquet")};
+    }
+    if (insertTableHandle->storageFormat() == dwio::common::FileFormat::JSON) {
+      return {
+          fmt::format("{}{}", targetFileName, ".json"),
+          fmt::format("{}{}", writeFileName, ".json")};
+    }
   }
   return {targetFileName, writeFileName};
 }
