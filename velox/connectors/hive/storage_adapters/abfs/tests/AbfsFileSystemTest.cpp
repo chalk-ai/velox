@@ -27,9 +27,9 @@
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
 
-#include "connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
-#include "connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
-#include "connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
+#include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 #include "velox/common/testutil/TempFilePath.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsReadFile.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h"

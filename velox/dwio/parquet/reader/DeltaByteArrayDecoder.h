@@ -18,6 +18,7 @@
 
 #include "velox/common/base/BitUtil.h"
 #include "velox/dwio/parquet/reader/DeltaBpDecoder.h"
+#include "velox/common/base/Nulls.h"
 
 namespace facebook::velox::parquet {
 

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <bit>
 
 #include "velox/dwio/parquet/reader/PageReader.h"
 
@@ -249,7 +250,7 @@ void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
     repeatDecoder_ = std::make_unique<RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         repeatLength,
-        ::arrow::bit_util::NumRequiredBits(maxRepeat_));
+        std::bit_width(static_cast<uint32_t>(maxRepeat_)));
 
     pageData_ += repeatLength;
     remainingBytes -= repeatLength;
@@ -272,12 +273,12 @@ void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
       defineDecoder_ = std::make_unique<RleBpDecoder>(
           pageData_,
           pageData_ + defineLength,
-          ::arrow::bit_util::NumRequiredBits(maxDefine_));
+          std::bit_width(static_cast<uint32_t>(maxDefine_)));
     }
     wideDefineDecoder_ = std::make_unique<RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         defineLength,
-        ::arrow::bit_util::NumRequiredBits(maxDefine_));
+        std::bit_width(static_cast<uint32_t>(maxDefine_)));
     pageData_ += defineLength;
   }
   encodedDataSize_ = pageEnd - pageData_;
@@ -325,7 +326,7 @@ void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
     repeatDecoder_ = std::make_unique<RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         repeatLength,
-        ::arrow::bit_util::NumRequiredBits(maxRepeat_));
+        std::bit_width(static_cast<uint32_t>(maxRepeat_)));
   }
 
   if (maxDefine_ > 0) {
@@ -333,12 +334,12 @@ void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
       defineDecoder_ = std::make_unique<RleBpDecoder>(
           pageData_ + repeatLength,
           pageData_ + repeatLength + defineLength,
-          ::arrow::bit_util::NumRequiredBits(maxDefine_));
+          std::bit_width(static_cast<uint32_t>(maxDefine_)));
     }
     wideDefineDecoder_ = std::make_unique<RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_ + repeatLength),
         defineLength,
-        ::arrow::bit_util::NumRequiredBits(maxDefine_));
+        std::bit_width(static_cast<uint32_t>(maxDefine_)));
   }
   auto levelsSize = repeatLength + defineLength;
   pageData_ += levelsSize;

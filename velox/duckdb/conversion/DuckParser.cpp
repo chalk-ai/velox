@@ -23,6 +23,7 @@
 #include <duckdb/parser/expression/between_expression.hpp> // @manual
 #include <duckdb/parser/expression/case_expression.hpp> // @manual
 #include <duckdb/parser/expression/cast_expression.hpp> // @manual
+#include <duckdb/parser/expression/columnref_expression.hpp> // @manual
 #include <duckdb/parser/expression/comparison_expression.hpp> // @manual
 #include <duckdb/parser/expression/conjunction_expression.hpp> // @manual
 #include <duckdb/parser/expression/constant_expression.hpp> // @manual
@@ -839,12 +840,15 @@ parse::BoundType parseBoundType(WindowBoundary boundary) {
   switch (boundary) {
     case WindowBoundary::CURRENT_ROW_RANGE:
     case WindowBoundary::CURRENT_ROW_ROWS:
+    case WindowBoundary::CURRENT_ROW_GROUPS:
       return parse::BoundType::kCurrentRow;
     case WindowBoundary::EXPR_PRECEDING_ROWS:
     case WindowBoundary::EXPR_PRECEDING_RANGE:
+    case WindowBoundary::EXPR_PRECEDING_GROUPS:
       return parse::BoundType::kPreceding;
     case WindowBoundary::EXPR_FOLLOWING_ROWS:
     case WindowBoundary::EXPR_FOLLOWING_RANGE:
+    case WindowBoundary::EXPR_FOLLOWING_GROUPS:
       return parse::BoundType::kFollowing;
     case WindowBoundary::UNBOUNDED_FOLLOWING:
       return parse::BoundType::kUnboundedFollowing;

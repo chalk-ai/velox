@@ -760,11 +760,6 @@ std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
   return cache;
 }
 
-std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
-    memory::MemoryAllocator* allocator) {
-      return AsyncDataCache::create(allocator, nullptr);
-}
-
 // static
 AsyncDataCache* AsyncDataCache::getInstance() {
   return *getInstancePtr();

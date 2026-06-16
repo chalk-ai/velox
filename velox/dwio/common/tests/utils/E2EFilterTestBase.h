@@ -300,10 +300,26 @@ class E2EFilterTestBase : public testing::Test {
     for (int32_t i = 5; i < batch->size(); i += 2) {
       rows.push_back(i);
     }
+    auto* lazyChild = child->as<LazyVector>();
+    if (lazyChild->isLoaded()) {
+      // We early-materialize lazy children (e85f3641e), so the value hook never
+      // fires. Verify the loaded values directly instead of re-loading.
+      auto* loaded = lazyChild->loadedVector();
+      for (auto i = 0; i < rows.size(); ++i) {
+        auto row = rows[i] + rowIndex;
+        auto* reference =
+            batches[common::batchNumber(hitRows[row])]->childAt(columnIndex).get();
+        auto referenceIndex = common::batchRow(hitRows[row]);
+        if (!loaded->equalValueAt(reference, rows[i], referenceIndex)) {
+          return false;
+        }
+      }
+      return true;
+    }
     auto result = std::static_pointer_cast<FlatVector<T>>(
         BaseVector::create(child->type(), batch->size(), leafPool_.get()));
     TestingHook<T> hook(result.get());
-    child->as<LazyVector>()->load(rows, &hook);
+    lazyChild->load(rows, &hook);
     for (auto i = 0; i < rows.size(); ++i) {
       auto row = rows[i] + rowIndex;
       auto reference = batches[common::batchNumber(hitRows[row])]

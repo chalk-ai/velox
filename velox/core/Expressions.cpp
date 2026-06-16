@@ -23,7 +23,7 @@
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/SimpleVector.h"
 #include "velox/vector/VectorSaver.h"
-#include <common/memory/MemoryPool.h>
+#include "velox/common/memory/MemoryPool.h"
 
 namespace facebook::velox::core {
 

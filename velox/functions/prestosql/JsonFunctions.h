@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "velox/common/base/Status.h"
 #include "velox/functions/Macros.h"
 #include "velox/functions/UDFOutputString.h"
 #include "velox/functions/prestosql/json/JsonPathTokenizer.h"
@@ -305,6 +306,9 @@ struct JsonSizeFunction {
           case simdjson::ondemand::json_type::null:
             singleResultSize = 0;
             break;
+          case simdjson::ondemand::json_type::unknown: {
+            return simdjson::INCORRECT_TYPE;
+          }
         }
       }
       return simdjson::SUCCESS;

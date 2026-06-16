@@ -24,6 +24,9 @@
  * THE TPC SOFTWARE IS AVAILABLE WITHOUT CHARGE FROM TPC.
  */
 
+#pragma once
+#include "velox/tpcds/gen/dsdgen/include/dist.h"
+
 int* makePermutation(int nSize, int nStream, DSDGenContext& dsdGenContext);
 ds_key_t* makeKeyPermutation(
     ds_key_t* pNumberSet,

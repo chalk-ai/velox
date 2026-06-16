@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "velox/core/QueryConfig.h"
 #include "velox/functions/Macros.h"
 
 namespace facebook::velox::functions::sparksql {

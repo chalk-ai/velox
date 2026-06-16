@@ -21,6 +21,7 @@ using ::duckdb::DataChunk;
 using ::duckdb::Date;
 using ::duckdb::LogicalType;
 using ::duckdb::LogicalTypeId;
+using ::duckdb::UnboundType;
 using ::duckdb::Value;
 using ::duckdb::Vector;
 using ::duckdb::VectorOperations;
@@ -115,6 +116,13 @@ LogicalType fromVeloxType(const TypePtr& type) {
 
 //! Type mapping for DuckDB -> velox conversions, we support more types here
 TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
+  if (type.id() == LogicalTypeId::UNBOUND) {
+    type = UnboundType::TryDefaultBind(type);
+    VELOX_CHECK(
+        type.id() != LogicalTypeId::UNBOUND,
+        "Could not resolve unbound DuckDB type: {}",
+        type.ToString());
+  }
   switch (type.id()) {
     case LogicalTypeId::SQLNULL:
       return UNKNOWN();
@@ -136,6 +144,7 @@ TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
       type.GetDecimalProperties(width, scale);
       return DECIMAL(width, scale);
     case LogicalTypeId::HUGEINT:
+      return HUGEINT();
     case LogicalTypeId::DOUBLE:
       return DOUBLE();
     case LogicalTypeId::VARCHAR:
@@ -190,16 +199,6 @@ TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
     case LogicalTypeId::UUID: {
       if (auto customType = getCustomType("UUID", {})) {
         return customType;
-      }
-      [[fallthrough]];
-    }
-    case LogicalTypeId::USER: {
-      const auto name = ::duckdb::UserType::GetTypeName(type);
-      if (auto customType = getCustomType(name, {})) {
-        return customType;
-      }
-      if (name == "OPAQUE<void>") {
-        return OPAQUE<void>();
       }
       [[fallthrough]];
     }

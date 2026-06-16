@@ -1,0 +1,63 @@
+load("@bison//:bison.bzl", "bison")
+load("@flex//:flex.bzl", "flex")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+bison(
+    name = "generate_signature_parser_bison",
+    srcs = ["SignatureParser.yy"],
+    outs = [
+        "SignatureParser.yy.cc",
+        "SignatureParser.yy.h",
+    ],
+    args = [
+        "--defines=$(execpath SignatureParser.yy.h)",
+        "-o",
+        "$(execpath SignatureParser.yy.cc)",
+        "$(execpath SignatureParser.yy)",
+    ],
+)
+
+flex(
+    name = "generate_signature_parser_flex",
+    srcs = ["SignatureParser.ll"],
+    outs = ["Scanner.cpp"],
+    args = [
+        "-Cf",
+        "--prefix=veloxsp",
+        "-o",
+        "$(execpath Scanner.cpp)",
+        "$(execpath SignatureParser.ll)",
+    ],
+)
+
+cc_library(
+    name = "signature_parser",
+    srcs = [
+        "ParseUtil.cpp",
+        "Scanner.cpp",
+        "SignatureParser.yy.cc",
+    ],
+    hdrs = [
+        "ParseUtil.h",
+        "SignatureParser.h",
+    ],
+    include_prefix = "velox/expression/signature_parser",
+    textual_hdrs = [
+        "Scanner.h",
+        "SignatureParser.yy.h",
+    ],
+    deps = [
+        "//:common_headers",
+        "@flex//:headers",
+        "@fmt",
+        "@folly//folly:dynamic",
+        "@folly//folly:exception",
+        "@folly//folly:fixed_string",
+        "@folly//folly:preprocessor",
+        "@folly//folly:random",
+        "@folly//folly:string",
+        "@folly//folly/container:f14_hash",
+    ],
+)

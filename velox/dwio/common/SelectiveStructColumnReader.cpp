@@ -571,7 +571,7 @@ void SelectiveStructColumnReaderBase::getValues(
         setConstantField(childSpec->constantValue(), rows.size(), childResult);
         childSpec->deltaUpdate()->update(rows, childResult);
       } else {
-        // setOutputRowsForLazy(rows);  // Materializing immediately instead!
+        setOutputRowsForLazy(rows);
         setLazyField(
             std::make_unique<DeltaUpdateColumnLoader>(
                 this, children_[index], numReads_),
@@ -618,7 +618,7 @@ void SelectiveStructColumnReaderBase::getValues(
     }
 
     // LazyVector result.
-    // setOutputRowsForLazy(rows);  // Materializing immediately instead!
+    setOutputRowsForLazy(rows);
     setLazyField(
         makeColumnLoader(index),
         resultRow->type()->childAt(channel),

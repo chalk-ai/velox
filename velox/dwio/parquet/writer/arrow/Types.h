@@ -645,10 +645,11 @@ constexpr int64_t kMillisecondsPerDay = kSecondsPerDay * INT64_C(1000);
 constexpr int64_t kMicrosecondsPerDay = kMillisecondsPerDay * INT64_C(1000);
 constexpr int64_t kNanosecondsPerDay = kMicrosecondsPerDay * INT64_C(1000);
 
-MANUALLY_ALIGNED_STRUCT(1) Int96 {
+ARROW_PACKED_START(struct, Int96) {
   uint32_t value[3];
 };
-STRUCT_END(Int96, 12);
+ARROW_PACKED_END
+static_assert(sizeof(Int96) == 12, "Int96 not packed to 12 bytes");
 
 inline bool operator==(const Int96& left, const Int96& right) {
   return std::equal(left.value, left.value + 3, right.value);

@@ -123,7 +123,7 @@ Compression::type getArrowParquetCompression(
   } else if (compression == common::CompressionKind_NONE) {
     return Compression::UNCOMPRESSED;
   } else if (compression == common::CompressionKind_LZ4) {
-    return Compression::LZ4_HADOOP;
+    return Compression::LZ4;
   } else {
     VELOX_FAIL("Unsupported compression {}", compression);
   }

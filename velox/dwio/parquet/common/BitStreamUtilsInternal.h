@@ -25,9 +25,10 @@
 #include <cstring>
 
 #include "velox/common/base/Exceptions.h"
+#include "velox/dwio/parquet/common/BitPacking.h"
 
 #include "arrow/util/bit_util.h"
-#include "arrow/util/bpacking.h"
+#include "arrow/util/endian.h"
 
 namespace facebook::velox::parquet {
 
@@ -351,44 +352,40 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
   }
 
   if (sizeof(T) == 4) {
-    int numUnpacked = ::arrow::internal::unpack32(
-        reinterpret_cast<const uint32_t*>(buffer + byteOffset),
+    const int unpackSize = batchSize - i;
+    ::arrow::internal::unpack<uint32_t>(
+        buffer + byteOffset,
         reinterpret_cast<uint32_t*>(v + i),
-        batchSize - i,
-        numBits);
-    i += numUnpacked;
-    byteOffset += numUnpacked * numBits / 8;
+        {unpackSize, numBits});
+    i += unpackSize;
+    byteOffset += unpackSize * numBits / 8;
   } else if (sizeof(T) == 8 && numBits > 32) {
     // Use unpack64 only if numBits is larger than 32
     // TODO (ARROW-13677): improve the performance of internal::unpack64
     // and remove the restriction of numBits
-    int numUnpacked = ::arrow::internal::unpack64(
+    const int unpackSize = batchSize - i;
+    ::arrow::internal::unpack<uint64_t>(
         buffer + byteOffset,
         reinterpret_cast<uint64_t*>(v + i),
-        batchSize - i,
-        numBits);
-    i += numUnpacked;
-    byteOffset += numUnpacked * numBits / 8;
+        {unpackSize, numBits});
+    i += unpackSize;
+    byteOffset += unpackSize * numBits / 8;
   } else {
     // TODO: revisit this limit if necessary
     VELOX_DCHECK_LE(numBits, 32);
     const int bufferSize = 1024;
     uint32_t unpackBuffer[bufferSize];
     while (i < batchSize) {
-      int unpack_size = std::min(bufferSize, batchSize - i);
-      int numUnpacked = ::arrow::internal::unpack32(
-          reinterpret_cast<const uint32_t*>(buffer + byteOffset),
+      const int unpackSize = std::min(bufferSize, batchSize - i);
+      ::arrow::internal::unpack<uint32_t>(
+          buffer + byteOffset,
           unpackBuffer,
-          unpack_size,
-          numBits);
-      if (numUnpacked == 0) {
-        break;
-      }
-      for (int k = 0; k < numUnpacked; ++k) {
+          {unpackSize, numBits});
+      for (int k = 0; k < unpackSize; ++k) {
         v[i + k] = static_cast<T>(unpackBuffer[k]);
       }
-      i += numUnpacked;
-      byteOffset += numUnpacked * numBits / 8;
+      i += unpackSize;
+      byteOffset += unpackSize * numBits / 8;
     }
   }
 

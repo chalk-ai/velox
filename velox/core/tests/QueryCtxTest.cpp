@@ -57,14 +57,9 @@ TEST_F(QueryCtxTest, releaseCallbacks) {
   std::string capturedQueryId;
 
   {
-    auto queryCtx = QueryCtx::create(
-        nullptr,
-        QueryConfig{{}},
-        std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-        nullptr,
-        nullptr,
-        nullptr,
-        "test_query_id");
+    auto queryCtx = QueryCtx::Builder()
+        .queryId("test_query_id")
+        .build();
 
     // Add multiple callbacks.
     queryCtx->addReleaseCallback([&callbackCount]() { ++callbackCount; });
@@ -88,14 +83,9 @@ TEST_F(QueryCtxTest, releaseCallbackException) {
   int callbackCount = 0;
 
   {
-    auto queryCtx = QueryCtx::create(
-        nullptr,
-        QueryConfig{{}},
-        std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-        nullptr,
-        nullptr,
-        nullptr,
-        "test_query_id");
+    auto queryCtx = QueryCtx::Builder()
+        .queryId("test_query_id")
+        .build();
 
     // First callback succeeds.
     queryCtx->addReleaseCallback([&callbackCount]() { ++callbackCount; });

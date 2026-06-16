@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace facebook::velox::dwio::common {
 
 struct StripeProgress {

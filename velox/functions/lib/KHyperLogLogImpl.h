@@ -19,6 +19,7 @@
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/IOUtils.h"
 #include "velox/common/hyperloglog/Murmur3Hash128.h"
+#include "velox/functions/lib/KHyperLogLog.h"
 #include "velox/type/HugeInt.h"
 
 namespace facebook::velox::common::hll {

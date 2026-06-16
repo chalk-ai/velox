@@ -128,13 +128,12 @@ class MultiFragmentTest : public HiveConnectorTestBase,
     for (const auto& [k, v] : extraQueryConfigs) {
       configCopy[k] = v;
     }
-    auto queryCtx = core::QueryCtx::create(
-        executor_.get(),
-        core::QueryConfig(std::move(configCopy)),
-        {},
-        nullptr,
-        nullptr,
-        executor_.get());
+    auto queryCtx = core::QueryCtx::Builder()
+        .executor(executor_.get())
+        .queryConfig(core::QueryConfig(std::move(configCopy)))
+        .asyncDataCache(nullptr)
+        .spillExecutor(executor_.get())
+        .build();
     queryCtx->testingOverrideMemoryPool(
         memory::memoryManager()->addRootPool(
             queryCtx->queryId(), maxMemory, MemoryReclaimer::create()));

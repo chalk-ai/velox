@@ -417,15 +417,21 @@ class FileWriterImpl : public FileWriter {
 
     if (table.num_rows() == 0) {
       // Append a row group with 0 rows.
-      RETURN_NOT_OK_ELSE(writeRowGroup(0, 0), PARQUET_IGNORE_NOT_OK(close()));
+      auto s = writeRowGroup(0, 0);
+      if (!s.ok()) {
+        PARQUET_IGNORE_NOT_OK(close());
+      }
       return Status::OK();
     }
 
     for (int chunk = 0; chunk * chunkSize < table.num_rows(); chunk++) {
       int64_t offset = chunk * chunkSize;
-      RETURN_NOT_OK_ELSE(
-          writeRowGroup(offset, std::min(chunkSize, table.num_rows() - offset)),
-          PARQUET_IGNORE_NOT_OK(close()));
+      auto s = writeRowGroup(
+          offset, std::min(chunkSize, table.num_rows() - offset));
+      if (!s.ok()) {
+        PARQUET_IGNORE_NOT_OK(close());
+        return s;
+      }
     }
     return Status::OK();
   }

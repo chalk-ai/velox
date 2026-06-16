@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include "velox/functions/lib/Re2Functions.h"
-#include <absl/strings/string_view.h>
+#include "absl/strings/string_view.h"
 #include "velox/functions/lib/string/StringImpl.h"
 #include "velox/vector/FunctionVector.h"
 

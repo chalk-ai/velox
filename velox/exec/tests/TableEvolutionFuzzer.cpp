@@ -431,7 +431,7 @@ fuzzer::ExpressionFuzzer::FuzzedExpressionData generateRemainingFilters(
       "is_null",
       "is_not_null"};
 
-  auto signatureMap = getVectorFunctionSignatures();
+  auto signatureMap = facebook::velox::getVectorFunctionSignatures();
 
   // Configure VectorFuzzer to avoid null values and use the actual data types
   VectorFuzzer::Options vectorFuzzerOptions;

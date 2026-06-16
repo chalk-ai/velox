@@ -145,9 +145,7 @@ typedef ptrdiff_t utf8proc_ssize_t;
 typedef bool utf8proc_bool;
 #endif
 #include <limits.h>
-
-#define UTF8PROC_DLLEXPORT static
-
+#define UTF8PROC_DLLEXPORT
 #ifdef __cplusplus
 extern "C" {
 #endif

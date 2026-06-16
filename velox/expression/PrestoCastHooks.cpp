@@ -16,7 +16,7 @@
 
 #include <cmath>
 
-#include <double-conversion/double-conversion.h>
+#include "double-conversion/double-conversion.h"
 #include <folly/Expected.h>
 
 #include "velox/expression/PrestoCastHooks.h"
