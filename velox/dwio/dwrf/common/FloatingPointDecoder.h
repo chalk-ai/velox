@@ -19,6 +19,7 @@
 #include "velox/dwio/common/DecoderUtil.h"
 #include "velox/dwio/common/SeekableInputStream.h"
 #include "velox/dwio/common/StreamUtil.h"
+#include "velox/common/base/Nulls.h"
 
 namespace facebook::velox::dwrf {
 

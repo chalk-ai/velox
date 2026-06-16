@@ -436,13 +436,12 @@ class MergeTest : public OperatorTestBase {
   std::shared_ptr<core::QueryCtx> createQueryCtx(
       std::unordered_map<std::string, std::string> queryConfigs = {},
       bool hasSpillExecutor = true) const {
-    return core::QueryCtx::create(
-        executor_.get(),
-        core::QueryConfig{std::move(queryConfigs)},
-        {},
-        nullptr,
-        nullptr,
-        hasSpillExecutor ? spillExecutor_.get() : nullptr);
+    return core::QueryCtx::Builder()
+        .executor(executor_.get())
+        .queryConfig(core::QueryConfig{std::move(queryConfigs)})
+        .asyncDataCache(nullptr)
+        .spillExecutor(hasSpillExecutor ? spillExecutor_.get() : nullptr)
+        .build();
   }
 };
 

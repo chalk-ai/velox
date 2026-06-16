@@ -1,0 +1,57 @@
+load("@bison//:bison.bzl", "bison")
+load("@flex//:flex.bzl", "flex")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+bison(
+    name = "generate_type_parser_bison",
+    srcs = ["TypeParser.yy"],
+    outs = [
+        "TypeParser.yy.cc",
+        "TypeParser.yy.h",
+    ],
+    args = [
+        "--defines=$(execpath TypeParser.yy.h)",
+        "-o",
+        "$(execpath TypeParser.yy.cc)",
+        "$(execpath TypeParser.yy)",
+    ],
+)
+
+flex(
+    name = "generate_type_parser_flex",
+    srcs = ["TypeParser.ll"],
+    outs = ["Scanner.cpp"],
+    args = [
+        "-Cf",
+        "--prefix=veloxprestotp",
+        "-o",
+        "$(execpath Scanner.cpp)",
+        "$(execpath TypeParser.ll)",
+    ],
+)
+
+cc_library(
+    name = "type_parser",
+    srcs = [
+        "ParserUtil.cpp",
+        "Scanner.cpp",
+        "TypeParser.yy.cc",
+        "TypeParser.yy.h",
+    ],
+    hdrs = [
+        "ParserUtil.h",
+        "TypeParser.h",
+    ],
+    include_prefix = "velox/functions/prestosql/types/parser",
+    textual_hdrs = ["Scanner.h"],
+    implementation_deps = [
+        "@boost.algorithm",
+        "@flex//:headers",
+        "@fmt",
+    ],
+    deps = [
+        "//:common_headers",
+    ],
+)

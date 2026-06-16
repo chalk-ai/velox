@@ -167,7 +167,10 @@ PlanNodePtr toVeloxPlan(
 
   auto rowType = ROW(std::move(names), std::move(types));
 
-  auto tableName = logicalGet.function.to_string(logicalGet.bind_data.get());
+  ::duckdb::TableFunctionToStringInput to_string_input{
+      logicalGet.function, logicalGet.bind_data.get()};
+  auto toStringMap = logicalGet.function.to_string(to_string_input);
+  auto tableName = toStringMap.begin()->second;
   auto it = queryContext.inMemoryTables.find(tableName);
 
   if (it == queryContext.inMemoryTables.end()) {
@@ -913,11 +916,11 @@ static void customScalarFunction(
   VELOX_UNREACHABLE();
 }
 
-static ::duckdb::idx_t customAggregateState() {
+static ::duckdb::idx_t customAggregateState(const ::duckdb::AggregateFunction& /*function*/) {
   VELOX_UNREACHABLE();
 }
 
-static void customAggregateInitialize(::duckdb::data_ptr_t) {
+static void customAggregateInitialize(const ::duckdb::AggregateFunction& /*function*/, ::duckdb::data_ptr_t /*state*/) {
   VELOX_UNREACHABLE();
 }
 

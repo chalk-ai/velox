@@ -20,7 +20,10 @@
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/PortUtil.h"
 
-#include "boost/process.hpp"
+#include <boost/process/v1/child.hpp>
+#include <boost/process/v1/env.hpp>
+#include <boost/process/v1/environment.hpp>
+#include <boost/process/v1/search_path.hpp>
 
 using namespace facebook::velox;
 
@@ -81,22 +84,22 @@ class MinioServer {
   std::string consoleAddress_;
   const std::string accessKey_ = kMinioAccessKey;
   const std::string secretKey_ = kMinioSecretKey;
-  std::shared_ptr<::boost::process::child> serverProcess_;
+  std::shared_ptr<::boost::process::v1::child> serverProcess_;
 };
 
 void MinioServer::start() {
-  boost::process::environment env = boost::this_process::environment();
+  boost::process::v1::environment env = boost::this_process::environment();
   env["MINIO_ACCESS_KEY"] = accessKey_;
   env["MINIO_SECRET_KEY"] = secretKey_;
 
-  auto exePath = boost::process::search_path(kMinioExecutableName);
+  auto exePath = boost::process::v1::search_path(kMinioExecutableName);
   if (exePath.empty()) {
     VELOX_FAIL("Failed to find minio executable {}'", kMinioExecutableName);
   }
 
   const auto path = tempPath_->getPath();
   try {
-    serverProcess_ = std::make_shared<boost::process::child>(
+    serverProcess_ = std::make_shared<boost::process::v1::child>(
         env,
         exePath,
         "server",

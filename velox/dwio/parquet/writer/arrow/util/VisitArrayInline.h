@@ -19,6 +19,7 @@
 #pragma once
 
 #include "arrow/array.h"
+#include "arrow/status.h"
 #include "arrow/extension_type.h"
 #include "arrow/visitor_generate.h"
 
@@ -50,14 +51,14 @@ namespace facebook::velox::parquet::arrow::util {
 /// VisitArrayInline(some_array, &visitor);
 /// ```.
 template <typename VISITOR, typename... ARGS>
-inline Status
-visitArrayInline(const Array& array, VISITOR* visitor, ARGS&&... args) {
+inline ::arrow::Status
+visitArrayInline(const ::arrow::Array& array, VISITOR* visitor, ARGS&&... args) {
   switch (array.type_id()) {
     ARROW_GENERATE_FOR_ALL_TYPES(ARRAY_VISIT_INLINE);
     default:
       break;
   }
-  return Status::NotImplemented("Type not implemented");
+  return ::arrow::Status::NotImplemented("Type not implemented");
 }
 
 #undef ARRAY_VISIT_INLINE
