@@ -19,6 +19,7 @@
 #include "velox/common/hyperloglog/HllUtils.h"
 #include "velox/common/hyperloglog/SparseHll.h"
 #include "velox/common/memory/HashStringAllocator.h"
+#include "velox/core/QueryConfig.h"
 #include "velox/functions/Macros.h"
 #include "velox/functions/prestosql/types/HyperLogLogType.h"
 

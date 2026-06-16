@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include "velox/common/base/SimdUtil.h"
+#include "velox/common/base/Nulls.h"
+
 namespace facebook::velox::parquet {
 
 class StringDecoder {

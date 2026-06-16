@@ -74,7 +74,6 @@ class LogicalGet : public LogicalOperator {
   TableFilterSet table_filters;
 
   string GetName() const override;
-  string ParamsToString() const override;
   //! Returns the underlying table that is being scanned, or nullptr if there is
   //! none
   TableCatalogEntry* GetTable() const;
@@ -153,8 +152,6 @@ class LogicalAggregate : public LogicalOperator {
   vector<unique_ptr<BaseStatistics>> group_stats;
 
  public:
-  string ParamsToString() const override;
-
   vector<ColumnBinding> GetColumnBindings() override;
 
  protected:
@@ -249,22 +246,6 @@ class LogicalOrder : public LogicalOperator {
     return result;
   }
 
-  void Serialize(FieldWriter& writer) const override;
-  static unique_ptr<LogicalOperator> Deserialize(
-      LogicalDeserializationState& state,
-      FieldReader& reader);
-
-  string ParamsToString() const override {
-    string result = "ORDERS:\n";
-    for (idx_t i = 0; i < orders.size(); i++) {
-      if (i > 0) {
-        result += "\n";
-      }
-      result += orders[i].expression->GetName();
-    }
-    return result;
-  }
-
  protected:
   void ResolveTypes() override {
     const auto child_types = children[0]->types;
@@ -312,23 +293,6 @@ class LogicalJoin : public LogicalOperator {
   void ResolveTypes() override;
 };
 
-//! JoinCondition represents a left-right comparison join condition
-struct JoinCondition {
- public:
-  JoinCondition() {}
-
-  //! Turns the JoinCondition into an expression; note that this destroys the
-  //! JoinCondition as the expression inherits the left/right expressions
-  static unique_ptr<Expression> CreateExpression(JoinCondition cond);
-  static unique_ptr<Expression> CreateExpression(
-      vector<JoinCondition> conditions);
-
- public:
-  unique_ptr<Expression> left;
-  unique_ptr<Expression> right;
-  ExpressionType comparison;
-};
-
 //! LogicalComparisonJoin represents a join that involves comparisons between
 //! the LHS and RHS
 class LogicalComparisonJoin : public LogicalJoin {
@@ -342,9 +306,6 @@ class LogicalComparisonJoin : public LogicalJoin {
   vector<JoinCondition> conditions;
   //! Used for duplicate-eliminated joins
   vector<LogicalType> delim_types;
-
- public:
-  string ParamsToString() const override;
 
  public:
   static unique_ptr<LogicalOperator> CreateJoin(
@@ -409,13 +370,6 @@ class LogicalAnyJoin : public LogicalJoin {
 
   //! The JoinCondition on which this join is performed
   unique_ptr<Expression> condition;
-
- public:
-  string ParamsToString() const override;
-  void Serialize(FieldWriter& writer) const override;
-  static unique_ptr<LogicalOperator> Deserialize(
-      LogicalDeserializationState& state,
-      FieldReader& reader);
 };
 
 } // namespace duckdb

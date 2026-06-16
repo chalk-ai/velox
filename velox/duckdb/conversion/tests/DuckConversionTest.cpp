@@ -90,12 +90,17 @@ TEST(DuckConversionTest, duckValueToVariantUnsupported) {
   /// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101957. The scalar types are
   /// defined as static constexpr const causing a double definition only in the
   /// debug build.
+  ::duckdb::DuckDB db(nullptr);
+  ::duckdb::Connection con(db);
+  auto& context = *con.context;
+
   std::vector<LogicalType> unsupported = {
-      ::duckdb::TransformStringToLogicalType("interval"),
-      LogicalType::LIST({::duckdb::TransformStringToLogicalType("integer")}),
+      ::duckdb::TransformStringToLogicalType("interval", context),
+      LogicalType::LIST(
+          {::duckdb::TransformStringToLogicalType("integer", context)}),
       LogicalType::STRUCT(
-          {{"a", ::duckdb::TransformStringToLogicalType("integer")},
-           {"b", ::duckdb::TransformStringToLogicalType("tinyint")}})};
+          {{"a", ::duckdb::TransformStringToLogicalType("integer", context)},
+           {"b", ::duckdb::TransformStringToLogicalType("tinyint", context)}})};
 
   for (const auto& i : unsupported) {
     EXPECT_THROW(duckValueToVariant(Value(i)), std::runtime_error);
