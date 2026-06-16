@@ -649,7 +649,8 @@ struct NormalizeFunction {
         string.size(),
         &output,
         // TODO: Remove explicit std::string_view cast.
-        normalizationOptions.at(std::string_view(form)));
+        static_cast<utf8proc_option_t>(
+            normalizationOptions.at(std::string_view(form))));
     if (outputLength < 0) {
       result = string;
     } else {

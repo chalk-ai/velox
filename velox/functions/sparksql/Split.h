@@ -18,6 +18,8 @@
 #include <string_view>
 
 #include "velox/functions/Udf.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/functions/lib/Re2Functions.h"
 #include "velox/functions/lib/Utf8Utils.h"
 
 namespace facebook::velox::functions::sparksql {

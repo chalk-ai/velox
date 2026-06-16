@@ -15,7 +15,9 @@
  */
 #pragma once
 
+#include "velox/common/base/Status.h"
 #include "velox/functions/Macros.h"
+
 namespace facebook::velox::functions::sparksql {
 
 template <typename T>

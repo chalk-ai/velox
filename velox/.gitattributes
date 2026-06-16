@@ -10,3 +10,9 @@ external/md5/*              -diff -merge
 external/md5/*              linguist-vendored=true
 external/utf8proc/*         -diff -merge
 external/utf8proc/*         linguist-vendored=true
+
+external/hdfs/ArrowHdfsInternal.cpp diff
+external/tzdb/tzdb.cpp diff
+external/utf8proc/utf8proc.h diff
+external/utf8proc/utf8procImpl.cpp diff
+external/utf8proc/utf8procImpl.h diff

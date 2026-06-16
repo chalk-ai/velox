@@ -18,8 +18,10 @@
 #include <algorithm>
 #include <cmath>
 #include <type_traits>
+
 #include "folly/CPortability.h"
 #include "velox/type/FloatingPointUtil.h"
+#include "velox/type/CppToType.h"
 
 namespace facebook::velox::functions {
 
