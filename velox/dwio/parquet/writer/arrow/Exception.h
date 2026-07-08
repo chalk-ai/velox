@@ -24,7 +24,12 @@
 #include <utility>
 
 #include "arrow/type_fwd.h"
+#if __has_include("arrow/util/string_builder.h")
 #include "arrow/util/string_builder.h"
+#define VELOX_PARQUET_ARROW_HAS_STRING_BUILDER 1
+#else
+#include "arrow/util/string_util.h"
+#endif
 #include "velox/dwio/parquet/writer/arrow/Platform.h"
 
 // PARQUET-1085.
@@ -61,13 +66,15 @@
 
 #define PARQUET_IGNORE_NOT_OK(s)                               \
   do {                                                         \
-    ::arrow::Status S = ::arrow::internal::GenericToStatus(s); \
+    ::arrow::Status S =                                        \
+        ::facebook::velox::parquet::arrow::detail::toStatus(s); \
     ARROW_UNUSED(S);                                           \
   } while (0)
 
 #define PARQUET_THROW_NOT_OK(s)                                        \
   do {                                                                 \
-    ::arrow::Status S = ::arrow::internal::GenericToStatus(s);         \
+    ::arrow::Status S =                                                \
+        ::facebook::velox::parquet::arrow::detail::toStatus(s);         \
     if (!S.ok()) {                                                     \
       throw ::facebook::velox::parquet::arrow::ParquetStatusException( \
           std::move(S));                                               \
@@ -85,6 +92,31 @@
 
 namespace facebook::velox::parquet::arrow {
 
+namespace detail {
+template <typename StatusLike>
+::arrow::Status toStatus(StatusLike&& statusLike) {
+#if defined(VELOX_PARQUET_ARROW_HAS_STRING_BUILDER)
+  return ::arrow::internal::GenericToStatus(
+      std::forward<StatusLike>(statusLike));
+#else
+  return ::arrow::ToStatus(std::forward<StatusLike>(statusLike));
+#endif
+}
+
+template <typename... Args>
+std::string makeParquetExceptionMessage(Args&&... args) {
+#if defined(VELOX_PARQUET_ARROW_HAS_STRING_BUILDER)
+  return ::arrow::util::StringBuilder(std::forward<Args>(args)...);
+#else
+  return ::arrow::internal::JoinToString(std::forward<Args>(args)...);
+#endif
+}
+} // namespace detail
+
+#if defined(VELOX_PARQUET_ARROW_HAS_STRING_BUILDER)
+#undef VELOX_PARQUET_ARROW_HAS_STRING_BUILDER
+#endif
+
 class ParquetException : public std::exception {
  public:
   PARQUET_NORETURN static void eofException(const std::string& msg = "") {
@@ -101,7 +133,8 @@ class ParquetException : public std::exception {
 
   template <typename... Args>
   explicit ParquetException(Args&&... args)
-      : msg_(::arrow::util::StringBuilder(std::forward<Args>(args)...)) {}
+      : msg_(detail::makeParquetExceptionMessage(
+            std::forward<Args>(args)...)) {}
 
   explicit ParquetException(std::string msg) : msg_(std::move(msg)) {}
 
