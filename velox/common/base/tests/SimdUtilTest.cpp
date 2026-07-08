@@ -387,9 +387,9 @@ TEST_F(SimdUtilTest, crc32) {
   EXPECT_EQ(checksum, 3531890030);
   checksum = simd::crc32U64(0, 987654321);
   EXPECT_EQ(checksum, 121285919);
-  checksum = simd::crc32U64(0, 123456789, xsimd::generic{});
+  checksum = simd::crc32U64(0, 123456789, xsimd::common{});
   EXPECT_EQ(checksum, 3531890030);
-  checksum = simd::crc32U64(0, 987654321, xsimd::generic{});
+  checksum = simd::crc32U64(0, 987654321, xsimd::common{});
   EXPECT_EQ(checksum, 121285919);
 }
 
