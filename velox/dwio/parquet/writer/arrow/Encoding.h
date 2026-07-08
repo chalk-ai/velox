@@ -311,8 +311,14 @@ class TypedDecoder : virtual public Decoder {
             "Number of values / definition_levels read did not match");
       }
 
+#if __has_include("arrow/util/spaced.h")
       return ::arrow::util::internal::SpacedExpand<T>(
           buffer, numValues, nullCount, validBits, validBitsOffset);
+#else
+      ::arrow::util::internal::SpacedExpandRightward<T>(
+          buffer, numValues, nullCount, validBits, validBitsOffset);
+      return numValues;
+#endif
     } else {
       return decode(buffer, numValues);
     }
