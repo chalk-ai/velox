@@ -2585,7 +2585,7 @@ void DeltaBitPackEncoder<DType>::flushBlock() {
     // The minimum number of bits required to write any of values in deltas_.
     // Vector. See overflow comment above.
     const auto bitWidth = bitWidthData[i] =
-        ::arrow::bit_util::NumRequiredBits(maxDelta - minDelta);
+        facebook::velox::parquet::numRequiredBits(maxDelta - minDelta);
 
     for (uint32_t j = start; j < start + valuesCurrentMiniBlock; j++) {
       // See overflow comment above.
