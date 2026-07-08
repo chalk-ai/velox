@@ -37,7 +37,14 @@ OperatorCtx::OperatorCtx(
       planNodeId_(planNodeId),
       operatorId_(operatorId),
       operatorType_(operatorType),
-      pool_(driverCtx_->addOperatorPool(planNodeId, operatorType_)) {}
+      pool_(driverCtx_->addOperatorPool(planNodeId, operatorType_)),
+      customPools_(
+          driverCtx_->addCustomOperatorPools(planNodeId, operatorType_)) {}
+
+memory::MemoryPool* OperatorCtx::customPool(std::string_view tag) const {
+  auto it = customPools_.find(std::string(tag));
+  return it == customPools_.end() ? nullptr : it->second;
+}
 
 core::ExecCtx* OperatorCtx::execCtx() const {
   if (!execCtx_) {
@@ -141,6 +148,21 @@ void Operator::finishTrace() {
   if (splitTracer_ != nullptr) {
     splitTracer_->finish();
   }
+}
+
+std::unique_ptr<Operator> Operator::PlanNodeTranslator::toOperator(
+    DriverCtx* /*ctx*/,
+    int32_t /*id*/,
+    const core::PlanNodePtr& /*node*/) {
+  return nullptr;
+}
+
+std::unique_ptr<Operator> Operator::PlanNodeTranslator::toOperator(
+    DriverCtx* /*ctx*/,
+    int32_t /*id*/,
+    const core::PlanNodePtr& /*node*/,
+    std::shared_ptr<ExchangeClient> /*exchangeClient*/) {
+  return nullptr;
 }
 
 std::vector<std::unique_ptr<Operator::PlanNodeTranslator>>&
@@ -369,16 +391,14 @@ void Operator::recordSpillStats() {
   if (fillTime != 0) {
     lockedStats->addRuntimeStat(
         kSpillFillTime,
-        RuntimeCounter{
-            static_cast<int64_t>(fillTime), RuntimeCounter::Unit::kNanos});
+        RuntimeCounter{saturateCast(fillTime), RuntimeCounter::Unit::kNanos});
   }
   const auto sortTime =
       spillStats_->spillSortTimeNanos.load(std::memory_order_relaxed);
   if (sortTime != 0) {
     lockedStats->addRuntimeStat(
         kSpillSortTime,
-        RuntimeCounter{
-            static_cast<int64_t>(sortTime), RuntimeCounter::Unit::kNanos});
+        RuntimeCounter{saturateCast(sortTime), RuntimeCounter::Unit::kNanos});
   }
   const auto extractTime =
       spillStats_->spillExtractVectorTimeNanos.load(std::memory_order_relaxed);
@@ -386,7 +406,7 @@ void Operator::recordSpillStats() {
     lockedStats->addRuntimeStat(
         kSpillExtractVectorTime,
         RuntimeCounter{
-            static_cast<int64_t>(extractTime), RuntimeCounter::Unit::kNanos});
+            saturateCast(extractTime), RuntimeCounter::Unit::kNanos});
   }
   const auto serializationTime =
       spillStats_->spillSerializationTimeNanos.load(std::memory_order_relaxed);
@@ -394,34 +414,30 @@ void Operator::recordSpillStats() {
     lockedStats->addRuntimeStat(
         kSpillSerializationTime,
         RuntimeCounter{
-            static_cast<int64_t>(serializationTime),
-            RuntimeCounter::Unit::kNanos});
+            saturateCast(serializationTime), RuntimeCounter::Unit::kNanos});
   }
   const auto flushTime =
       spillStats_->spillFlushTimeNanos.load(std::memory_order_relaxed);
   if (flushTime != 0) {
     lockedStats->addRuntimeStat(
         kSpillFlushTime,
-        RuntimeCounter{
-            static_cast<int64_t>(flushTime), RuntimeCounter::Unit::kNanos});
+        RuntimeCounter{saturateCast(flushTime), RuntimeCounter::Unit::kNanos});
   }
   const auto writes = spillStats_->spillWrites.load(std::memory_order_relaxed);
   if (writes != 0) {
     lockedStats->addRuntimeStat(
-        kSpillWrites, RuntimeCounter{static_cast<int64_t>(writes)});
+        kSpillWrites, RuntimeCounter{saturateCast(writes)});
   }
   const auto writeTime =
       spillStats_->spillWriteTimeNanos.load(std::memory_order_relaxed);
   if (writeTime != 0) {
     lockedStats->addRuntimeStat(
         kSpillWriteTime,
-        RuntimeCounter{
-            static_cast<int64_t>(writeTime), RuntimeCounter::Unit::kNanos});
+        RuntimeCounter{saturateCast(writeTime), RuntimeCounter::Unit::kNanos});
   }
   const auto runs = spillStats_->spillRuns.load(std::memory_order_relaxed);
   if (runs != 0) {
-    lockedStats->addRuntimeStat(
-        kSpillRuns, RuntimeCounter{static_cast<int64_t>(runs)});
+    lockedStats->addRuntimeStat(kSpillRuns, RuntimeCounter{saturateCast(runs)});
     updateGlobalSpillRunStats(runs);
   }
 
@@ -429,8 +445,7 @@ void Operator::recordSpillStats() {
       spillStats_->spillMaxLevelExceededCount.load(std::memory_order_relaxed);
   if (maxLevelExceeded != 0) {
     lockedStats->addRuntimeStat(
-        kExceededMaxSpillLevel,
-        RuntimeCounter{static_cast<int64_t>(maxLevelExceeded)});
+        kExceededMaxSpillLevel, RuntimeCounter{saturateCast(maxLevelExceeded)});
     updateGlobalMaxSpillLevelExceededCount(maxLevelExceeded);
   }
 
@@ -439,14 +454,13 @@ void Operator::recordSpillStats() {
   if (readBytes != 0) {
     lockedStats->addRuntimeStat(
         kSpillReadBytes,
-        RuntimeCounter{
-            static_cast<int64_t>(readBytes), RuntimeCounter::Unit::kBytes});
+        RuntimeCounter{saturateCast(readBytes), RuntimeCounter::Unit::kBytes});
   }
 
   const auto reads = spillStats_->spillReads.load(std::memory_order_relaxed);
   if (reads != 0) {
     lockedStats->addRuntimeStat(
-        kSpillReads, RuntimeCounter{static_cast<int64_t>(reads)});
+        kSpillReads, RuntimeCounter{saturateCast(reads)});
   }
 
   const auto readTime =
@@ -454,8 +468,7 @@ void Operator::recordSpillStats() {
   if (readTime != 0) {
     lockedStats->addRuntimeStat(
         kSpillReadTime,
-        RuntimeCounter{
-            static_cast<int64_t>(readTime), RuntimeCounter::Unit::kNanos});
+        RuntimeCounter{saturateCast(readTime), RuntimeCounter::Unit::kNanos});
   }
 
   const auto deserializationTime =
@@ -465,8 +478,7 @@ void Operator::recordSpillStats() {
     lockedStats->addRuntimeStat(
         kSpillDeserializationTime,
         RuntimeCounter{
-            static_cast<int64_t>(deserializationTime),
-            RuntimeCounter::Unit::kNanos});
+            saturateCast(deserializationTime), RuntimeCounter::Unit::kNanos});
   }
 
   // Collect filesystem I/O stats for spilling.
@@ -541,6 +553,12 @@ void OperatorStats::addRuntimeStat(
     std::string_view name,
     const RuntimeCounter& value) {
   addOperatorRuntimeStats(name, value, runtimeStats);
+}
+
+void OperatorStats::setRuntimeStat(
+    std::string_view name,
+    const RuntimeMetric& metric) {
+  setOperatorRuntimeStats(name, metric, runtimeStats);
 }
 
 void OperatorStats::add(const OperatorStats& other) {
@@ -757,9 +775,12 @@ uint64_t Operator::MemoryReclaimer::reclaim(
     ++stats.numNonReclaimableAttempts;
     RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
     LOG(WARNING) << "Can't reclaim from memory pool " << pool->name()
-                 << " which is under non-reclaimable section, memory usage: "
-                 << succinctBytes(pool->usedBytes())
-                 << ", reservation: " << succinctBytes(pool->reservedBytes());
+                 << " which is under non-reclaimable section"
+                 << ", root pool: " << pool->root()->name()
+                 << ", used: " << succinctBytes(pool->usedBytes())
+                 << ", reservation: " << succinctBytes(pool->reservedBytes())
+                 << ", root pool reservation: "
+                 << succinctBytes(pool->root()->reservedBytes());
     return 0;
   }
 

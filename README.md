@@ -73,9 +73,9 @@ of available functions [can be found here.](https://facebookincubator.github.io/
 
 Recent blog posts ([all posts](https://velox-lib.io/blog)):
 
-- [From flaky Axiom CI to a Velox bug fix: a cross-repo debugging story](https://velox-lib.io/blog/debugging-flaky-ci-across-repos) (2026-03-29)
-- [Accelerating Unicode string processing with SIMD in Velox](https://velox-lib.io/blog/simd-capped-unicode-length) (2026-03-13)
-- [The hidden traps of regex in LIKE and split](https://velox-lib.io/blog/regex-hidden-traps) (2026-03-07)
+- [Making OpenZL Available in Nimble OSS](https://velox-lib.io/blog/openzl-in-nimble-oss) (2026-07-05)
+- [Why RIGHT SEMI JOIN Can Be Slower Than LEFT SEMI JOIN in Velox](https://velox-lib.io/blog/right-semi-join-performance) (2026-06-26)
+- [From copyBits to SIMD: Accelerating Parquet DELTA Decoding in Velox](https://velox-lib.io/blog/parquet-delta-decoding) (2026-06-17)
 
 ## Community
 
@@ -238,6 +238,13 @@ $ make
 Run `make` in the root directory to compile the sources. For development, use
 `make debug` to build a non-optimized debug version, or `make release` to build
 an optimized version.  Use `make unittest` to build and run tests.
+
+Four test suites use grouped binaries on Linux CI to reduce link times
+(`velox/exec/tests`, `velox/functions/prestosql/aggregates/tests`,
+`velox/common/caching/tests`, `velox/serializers/tests`). All other suites use
+individual binaries on all platforms. On macOS, grouping is off by default. To
+disable grouping on Linux, pass `-DVELOX_ENABLE_GROUPED_TESTS=OFF` via
+`EXTRA_CMAKE_FLAGS`.
 
 Note that,
 * Velox requires a compiler at the minimum GCC 11.0 or Clang 15.0.

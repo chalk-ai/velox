@@ -128,6 +128,7 @@ HashProbe::HashProbe(
       joinNode_(std::move(joinNode)),
       joinType_{joinNode_->joinType()},
       nullAware_{joinNode_->isNullAware()},
+      nullAsValue_{joinNode_->isNullAsValue()},
       probeType_(joinNode_->sources()[0]->outputType()),
       canOutputBuildRowsInParallel_(
           driverCtx->queryConfig().parallelOutputJoinBuildRowsEnabled() &&
@@ -690,7 +691,9 @@ void HashProbe::decodeAndDetectNonNullKeys() {
     hashers_[i]->decode(*key, nonNullInputRows_);
   }
 
-  deselectRowsWithNulls(hashers_, nonNullInputRows_);
+  if (!nullAsValue_) {
+    deselectRowsWithNulls(hashers_, nonNullInputRows_);
+  }
   if (isRightSemiProjectJoin(joinType_) &&
       nonNullInputRows_.countSelected() < input_->size()) {
     probeSideHasNullKeys_ = true;
@@ -1059,6 +1062,33 @@ RowVectorPtr HashProbe::getOutput() {
   return getOutputInternal(/*toSpillOutput=*/false);
 }
 
+void HashProbe::processRightSemiNoFilter(bool emptyBuildSide) {
+  if (emptyBuildSide) {
+    input_ = nullptr;
+    return;
+  }
+
+  auto* rows = table_->rows();
+  const int32_t nextOffset = rows->nextOffset();
+  for (const auto probeRow : lookup_->rows) {
+    char* hit = lookup_->hits[probeRow];
+    while (hit != nullptr) {
+      // Duplicate build rows are linked by nextOffset. The first probe that
+      // reaches a key marks the whole chain. If the head row is already
+      // marked, all duplicates for this key have already been marked.
+      if (!rows->testAndSetProbedFlag(hit)) {
+        break;
+      }
+      if (nextOffset == 0) {
+        break;
+      }
+      hit = *reinterpret_cast<char**>(hit + nextOffset);
+    }
+  }
+
+  input_ = nullptr;
+}
+
 RowVectorPtr HashProbe::getOutputInternal(bool toSpillOutput) {
   if (isFinished()) {
     return nullptr;
@@ -1147,8 +1177,15 @@ RowVectorPtr HashProbe::getOutputInternal(bool toSpillOutput) {
   const bool isLeftSemiOrAntiJoinNoFilter = !filter_ &&
       (isLeftSemiFilterJoin(joinType_) || isLeftSemiProjectJoin(joinType_) ||
        isAntiJoin(joinType_) || isCountingJoin(joinType_));
+  const bool isRightSemiFilterJoinNoFilter =
+      !filter_ && isRightSemiFilterJoin(joinType_);
 
   const bool emptyBuildSide = (table_->numDistinct() == 0);
+
+  if (isRightSemiFilterJoinNoFilter) {
+    processRightSemiNoFilter(emptyBuildSide);
+    return nullptr;
+  }
 
   // Left semi and anti joins are always cardinality reducing, e.g. for a
   // given row of input they produce zero or 1 row of output. Therefore, if
@@ -1942,8 +1979,11 @@ void HashProbe::ensureOutputFits() {
   }
   LOG(WARNING) << "Failed to reserve " << succinctBytes(bytesToReserve)
                << " for memory pool " << pool()->name()
-               << ", usage: " << succinctBytes(pool()->usedBytes())
-               << ", reservation: " << succinctBytes(pool()->reservedBytes());
+               << ", root pool: " << pool()->root()->name()
+               << ", used: " << succinctBytes(pool()->usedBytes())
+               << ", reservation: " << succinctBytes(pool()->reservedBytes())
+               << ", root pool reservation: "
+               << succinctBytes(pool()->root()->reservedBytes());
 }
 
 bool HashProbe::needLazyLoadProbeInput() const {
@@ -2060,8 +2100,12 @@ void HashProbe::reclaim(
     LOG(WARNING)
         << "Can't reclaim from hash probe operator, exceeded maximum spill "
            "level of "
-        << config->maxSpillLevel << ", " << pool()->name() << ", usage "
-        << succinctBytes(pool()->usedBytes());
+        << config->maxSpillLevel << ", " << pool()->name()
+        << ", root pool: " << pool()->root()->name()
+        << ", used: " << succinctBytes(pool()->usedBytes())
+        << ", reservation: " << succinctBytes(pool()->reservedBytes())
+        << ", root pool reservation: "
+        << succinctBytes(pool()->root()->reservedBytes());
     return;
   }
 
@@ -2078,9 +2122,13 @@ void HashProbe::reclaim(
                  << (table_ == nullptr ? "nullptr"
                                        : std::to_string(table_->numDistinct()))
                  << "], " << pool()->name()
-                 << ", usage: " << succinctBytes(pool()->usedBytes())
+                 << ", root pool: " << pool()->root()->name()
+                 << ", used: " << succinctBytes(pool()->usedBytes())
+                 << ", reservation: " << succinctBytes(pool()->reservedBytes())
                  << ", node pool reservation: "
-                 << succinctBytes(pool()->parent()->reservedBytes());
+                 << succinctBytes(pool()->parent()->reservedBytes())
+                 << ", root pool reservation: "
+                 << succinctBytes(pool()->root()->reservedBytes());
     return;
   }
 
@@ -2108,9 +2156,14 @@ void HashProbe::reclaim(
                            ? "nullptr"
                            : std::to_string(probeOp->table_->numDistinct()))
                    << "], " << peerPool->name()
-                   << ", usage: " << succinctBytes(peerPool->usedBytes())
+                   << ", root pool: " << peerPool->root()->name()
+                   << ", used: " << succinctBytes(peerPool->usedBytes())
+                   << ", reservation: "
+                   << succinctBytes(peerPool->reservedBytes())
                    << ", node pool reservation: "
-                   << succinctBytes(peerPool->parent()->reservedBytes());
+                   << succinctBytes(peerPool->parent()->reservedBytes())
+                   << ", root pool reservation: "
+                   << succinctBytes(peerPool->root()->reservedBytes());
       return;
     }
     hasMoreProbeInput |= !probeOp->noMoreSpillInput_;

@@ -18,7 +18,7 @@
 
 #include <filesystem>
 
-#include "velox/connectors/hive/TableHandle.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/connectors/hive/iceberg/IcebergColumnHandle.h"
 #include "velox/connectors/hive/iceberg/IcebergConfig.h"
 #include "velox/connectors/hive/iceberg/IcebergConnector.h"
@@ -46,7 +46,8 @@ void IcebergTestBase::SetUp() {
       std::make_shared<config::ConfigBase>(
           std::unordered_map<std::string, std::string>()),
       ioExecutor_.get());
-  registerConnector(icebergConnector);
+  ConnectorRegistry::global().insert(
+      icebergConnector->connectorId(), icebergConnector);
 
   connectorSessionProperties_ = std::make_shared<config::ConfigBase>(
       std::unordered_map<std::string, std::string>(), true);
@@ -75,7 +76,7 @@ void IcebergTestBase::TearDown() {
   opPool_.reset();
   root_.reset();
   queryCtx_.reset();
-  unregisterConnector(kIcebergConnectorId);
+  ConnectorRegistry::global().erase(kIcebergConnectorId);
   HiveConnectorTestBase::TearDown();
 }
 
@@ -91,6 +92,15 @@ void IcebergTestBase::setupMemoryPools() {
   opPool_ = root_->addLeafChild("operator");
   connectorPool_ =
       root_->addAggregateChild("connector", exec::MemoryReclaimer::create());
+
+  recreateConnectorQueryCtx(/*sessionTimezone=*/"", false);
+}
+
+void IcebergTestBase::recreateConnectorQueryCtx(
+    const std::string& sessionTimezone,
+    bool adjustTimestampToTimezone) {
+  connectorQueryCtx_.reset();
+  queryCtx_.reset();
 
   queryCtx_ = core::QueryCtx::create(nullptr, core::QueryConfig({}));
   auto expressionEvaluator = std::make_unique<exec::SimpleExpressionEvaluator>(
@@ -108,7 +118,8 @@ void IcebergTestBase::setupMemoryPools() {
       "task.IcebergTest",
       "planNodeId.IcebergTest",
       0,
-      "");
+      sessionTimezone,
+      adjustTimestampToTimezone);
 }
 
 std::vector<RowVectorPtr> IcebergTestBase::createTestData(
@@ -187,8 +198,8 @@ void addColumnHandles(
         std::make_shared<const IcebergColumnHandle>(
             columnName,
             partitionColumnIds.contains(i)
-                ? HiveColumnHandle::ColumnType::kPartitionKey
-                : HiveColumnHandle::ColumnType::kRegular,
+                ? FileColumnHandle::ColumnType::kPartitionKey
+                : FileColumnHandle::ColumnType::kRegular,
             type,
             field));
   }
@@ -298,22 +309,86 @@ IcebergTestBase::createSplitsForDirectory(const std::string& directory) {
 
     const auto file = filesystems::getFileSystem(filePath, nullptr)
                           ->openFileForRead(filePath);
-    splits.push_back(
-        std::make_shared<HiveIcebergSplit>(
-            kIcebergConnectorId,
-            filePath,
-            fileFormat_,
-            0,
-            file->size(),
-            partitionKeys,
-            std::nullopt,
-            std::unordered_map<std::string, std::string>{},
-            nullptr,
-            /*cacheable=*/true,
-            std::vector<IcebergDeleteFile>()));
+    splits.push_back(IcebergSplitBuilder(filePath)
+                         .connectorId(kIcebergConnectorId)
+                         .fileFormat(fileFormat_)
+                         .length(file->size())
+                         .partitionKeys(partitionKeys)
+                         .build());
   }
 
   return splits;
+}
+
+uint64_t IcebergTestBase::getFileSize(const std::string& path) {
+  return filesystems::getFileSystem(path, nullptr)
+      ->openFileForRead(path)
+      ->size();
+}
+
+std::vector<std::shared_ptr<ConnectorSplit>> IcebergTestBase::makeIcebergSplits(
+    const std::string& dataFilePath,
+    const std::vector<IcebergDeleteFile>& deleteFiles,
+    const std::unordered_map<std::string, std::optional<std::string>>&
+        partitionKeys,
+    uint32_t splitCount,
+    const std::unordered_map<std::string, std::string>& infoColumns,
+    int64_t dataSequenceNumber) {
+  VELOX_CHECK_GT(splitCount, 0);
+  std::vector<std::shared_ptr<ConnectorSplit>> splits;
+  const auto fileSize = getFileSize(dataFilePath);
+  const auto splitSize = fileSize / splitCount;
+  splits.reserve(splitCount);
+
+  for (auto i = 0; i < splitCount; ++i) {
+    splits.emplace_back(IcebergSplitBuilder(dataFilePath)
+                            .connectorId(kIcebergConnectorId)
+                            .fileFormat(fileFormat_)
+                            .start(i * splitSize)
+                            .length(splitSize)
+                            .partitionKeys(partitionKeys)
+                            .deleteFiles(deleteFiles)
+                            .infoColumns(infoColumns)
+                            .dataSequenceNumber(dataSequenceNumber)
+                            .build());
+  }
+
+  return splits;
+}
+
+std::shared_ptr<ConnectorSplit>
+IcebergTestBase::makeIcebergSplitWithInfoColumns(
+    const std::string& dataFilePath,
+    const std::unordered_map<std::string, std::string>& infoColumns,
+    const std::vector<IcebergDeleteFile>& deleteFiles,
+    int64_t dataSequenceNumber) {
+  auto splits = makeIcebergSplits(
+      dataFilePath, deleteFiles, {}, 1, infoColumns, dataSequenceNumber);
+  VELOX_CHECK_EQ(splits.size(), 1);
+  return splits.front();
+}
+
+ColumnHandleMap IcebergTestBase::makeColumnHandles(
+    const RowTypePtr& rowType,
+    const std::unordered_set<int>& partitionIndices) {
+  ColumnHandleMap assignments;
+  for (auto i = 0; i < rowType->size(); ++i) {
+    const auto& columnName = rowType->nameOf(i);
+    const auto& columnType = rowType->childAt(i);
+    const auto columnHandleType = partitionIndices.contains(i)
+        ? FileColumnHandle::ColumnType::kPartitionKey
+        : FileColumnHandle::ColumnType::kRegular;
+    assignments.insert(
+        {columnName,
+         std::make_shared<HiveColumnHandle>(
+             columnName,
+             columnHandleType,
+             columnType,
+             columnType,
+             std::vector<common::Subfield>{})});
+  }
+
+  return assignments;
 }
 
 } // namespace facebook::velox::connector::hive::iceberg::test

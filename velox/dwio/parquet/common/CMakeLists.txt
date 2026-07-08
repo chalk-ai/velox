@@ -12,14 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-find_package(Thrift CONFIG REQUIRED)
-
 velox_add_library(
   velox_dwio_parquet_common
   BloomFilter.cpp
-  XxHasher.cpp
   LevelComparison.cpp
   LevelConversion.cpp
+  XxHasher.cpp
   HEADERS
   BitStreamUtilsInternal.h
   BloomFilter.h
@@ -27,6 +25,7 @@ velox_add_library(
   LevelComparison.h
   LevelConversion.h
   LevelConversionUtil.h
+  ParquetConfig.h
   RleEncodingInternal.h
   XxHasher.h
 )
@@ -41,6 +40,5 @@ velox_link_libraries(
   fmt::fmt
   Folly::folly
   Snappy::snappy
-  thrift::thrift
   zstd::zstd
 )
