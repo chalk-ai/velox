@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "velox/common/base/Exceptions.h"
 
@@ -62,6 +63,13 @@ inline int unpack64(
 #endif
 
 namespace facebook::velox::parquet {
+
+inline int numRequiredBits(uint64_t value) {
+  if (value == std::numeric_limits<uint64_t>::max()) {
+    return 64;
+  }
+  return ::arrow::bit_util::Log2(value + 1);
+}
 
 /// Utility class to write bit/byte streams.  This class can write data to
 /// either be bit packed or byte aligned (and a single stream that has a mix of
