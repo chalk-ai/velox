@@ -23,7 +23,11 @@
 #include <memory>
 #include <vector>
 
+#if __has_include("arrow/util/spaced.h")
 #include "arrow/util/spaced.h"
+#else
+#include "arrow/util/spaced_internal.h"
+#endif
 
 #include "velox/dwio/parquet/writer/arrow/Exception.h"
 #include "velox/dwio/parquet/writer/arrow/Platform.h"
