@@ -14,34 +14,52 @@
  * limitations under the License.
  */
 
+#include "velox/experimental/cudf/CudfConfig.h"
 #include "velox/experimental/cudf/connectors/hive/CudfHiveConnector.h"
+#include "velox/experimental/cudf/connectors/hive/iceberg/CudfIcebergConnector.h"
+#include "velox/experimental/cudf/exec/CudfAggregation.h"
 #include "velox/experimental/cudf/exec/CudfAssignUniqueId.h"
 #include "velox/experimental/cudf/exec/CudfBatchConcat.h"
+#include "velox/experimental/cudf/exec/CudfDistinct.h"
+#include "velox/experimental/cudf/exec/CudfEnforceSingleRow.h"
 #include "velox/experimental/cudf/exec/CudfFilterProject.h"
-#include "velox/experimental/cudf/exec/CudfHashAggregation.h"
+#include "velox/experimental/cudf/exec/CudfGroupId.h"
+#include "velox/experimental/cudf/exec/CudfGroupby.h"
 #include "velox/experimental/cudf/exec/CudfHashJoin.h"
 #include "velox/experimental/cudf/exec/CudfLimit.h"
 #include "velox/experimental/cudf/exec/CudfLocalPartition.h"
+#include "velox/experimental/cudf/exec/CudfMarkDistinct.h"
+#include "velox/experimental/cudf/exec/CudfNestedLoopJoin.h"
 #include "velox/experimental/cudf/exec/CudfOrderBy.h"
+#include "velox/experimental/cudf/exec/CudfReduce.h"
 #include "velox/experimental/cudf/exec/CudfTopN.h"
+#include "velox/experimental/cudf/exec/CudfWindow.h"
 #include "velox/experimental/cudf/exec/OperatorAdapters.h"
 #include "velox/experimental/cudf/exec/Utilities.h"
+#include "velox/experimental/cudf/exec/Validation.h"
 #include "velox/experimental/cudf/expression/ExpressionEvaluator.h"
 
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/exec/AssignUniqueId.h"
 #include "velox/exec/CallbackSink.h"
+#include "velox/exec/EnforceSingleRow.h"
 #include "velox/exec/FilterProject.h"
+#include "velox/exec/GroupId.h"
 #include "velox/exec/HashAggregation.h"
 #include "velox/exec/HashBuild.h"
 #include "velox/exec/HashProbe.h"
 #include "velox/exec/Limit.h"
 #include "velox/exec/LocalPartition.h"
+#include "velox/exec/MarkDistinct.h"
+#include "velox/exec/NestedLoopJoinBuild.h"
+#include "velox/exec/NestedLoopJoinProbe.h"
 #include "velox/exec/OrderBy.h"
 #include "velox/exec/StreamingAggregation.h"
 #include "velox/exec/TableScan.h"
 #include "velox/exec/Task.h"
 #include "velox/exec/TopN.h"
 #include "velox/exec/Values.h"
+#include "velox/exec/Window.h"
 
 namespace facebook::velox::cudf_velox {
 
@@ -93,14 +111,30 @@ class TableScanAdapter : public OperatorAdapter {
     auto tableScanNode =
         std::dynamic_pointer_cast<const core::TableScanNode>(planNode);
     if (!tableScanNode) {
+      LOG_FALLBACK(
+          "TableScan planNode is not TableScanNode, PlanNode id: {}",
+          planNode->id());
       return false;
     }
-    auto const& connector = velox::connector::getConnector(
+    auto const& connector = velox::connector::ConnectorRegistry::tryGet(
         tableScanNode->tableHandle()->connectorId());
     auto cudfHiveConnector = std::dynamic_pointer_cast<
         facebook::velox::cudf_velox::connector::hive::CudfHiveConnector>(
         connector);
-    return cudfHiveConnector != nullptr;
+    auto cudfIcebergConnector =
+        std::dynamic_pointer_cast<facebook::velox::cudf_velox::connector::hive::
+                                      iceberg::CudfIcebergConnector>(connector);
+
+    bool canRunOnGPU =
+        cudfHiveConnector != nullptr or cudfIcebergConnector != nullptr;
+
+    if (!canRunOnGPU) {
+      LOG_FALLBACK(
+          "TableScan connector is not CudfHiveConnector or CudfIcebergConnector, PlanNode id: {}",
+          planNode->id());
+    }
+
+    return canRunOnGPU;
   }
 
   bool acceptsGpuInput() const override {
@@ -139,6 +173,9 @@ class FilterProjectAdapter : public OperatorAdapter {
       exec::DriverCtx* ctx) const override {
     auto filterProjectOp = dynamic_cast<const exec::FilterProject*>(op);
     if (!filterProjectOp) {
+      LOG_FALLBACK(
+          "FilterProjectAdapter operator is not FilterProject, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
@@ -147,9 +184,13 @@ class FilterProjectAdapter : public OperatorAdapter {
     auto filterNode = filterProjectOp->filterNode();
 
     if (projectPlanNode) {
-      if (projectPlanNode->sources()[0]->outputType()->size() == 0 ||
-          projectPlanNode->outputType()->size() == 0) {
-        return false;
+      if (projectPlanNode->sources()[0]->outputType()->size() == 0) {
+        if (filterNode || !projectPlanNode->projections().empty()) {
+          LOG_FALLBACK(
+              "FilterProject empty input type with filter or projections, PlanNode id: {}",
+              planNode->id());
+          return false;
+        }
       }
     }
 
@@ -157,6 +198,9 @@ class FilterProjectAdapter : public OperatorAdapter {
     if (filterNode) {
       if (!canBeEvaluatedByCudf(
               {filterNode->filter()}, ctx->task->queryCtx().get())) {
+        LOG_FALLBACK(
+            "FilterProject filter cannot be evaluated by cuDF, PlanNode id: {}",
+            planNode->id());
         return false;
       }
     }
@@ -165,6 +209,9 @@ class FilterProjectAdapter : public OperatorAdapter {
     if (projectPlanNode) {
       if (!canBeEvaluatedByCudf(
               projectPlanNode->projections(), ctx->task->queryCtx().get())) {
+        LOG_FALLBACK(
+            "FilterProject projections cannot be evaluated by cuDF, PlanNode id: {}",
+            planNode->id());
         return false;
       }
     }
@@ -197,7 +244,7 @@ class FilterProjectAdapter : public OperatorAdapter {
   }
 };
 
-/// AggregationAdapter - Replaces with CudfHashAggregation
+/// AggregationAdapter - Replaces with CudfGroupby, CudfDistinct, or CudfReduce
 class AggregationAdapter : public OperatorAdapter {
  public:
   AggregationAdapter() : OperatorAdapter("Aggregation") {}
@@ -212,23 +259,29 @@ class AggregationAdapter : public OperatorAdapter {
       const core::PlanNodePtr& planNode,
       exec::DriverCtx* ctx) const override {
     if (!canHandle(op)) {
+      LOG_FALLBACK(
+          "Aggregation op is not HashAggregation or StreamingAggregation, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
     auto aggregationPlanNode =
         std::dynamic_pointer_cast<const core::AggregationNode>(planNode);
     if (!aggregationPlanNode) {
+      LOG_FALLBACK(
+          "Aggregation planNode is not AggregationNode, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
-    if (aggregationPlanNode->sources()[0]->outputType()->size() == 0) {
-      // We cannot handle RowVectors with a length but no data.
-      // This is the case with count(*) global (without groupby)
-      return false;
+    bool canEvaluate =
+        canBeEvaluatedByCudf(*aggregationPlanNode, ctx->task->queryCtx().get());
+    if (!canEvaluate) {
+      LOG_FALLBACK(
+          "Aggregation aggregation cannot be evaluated by cuDF, PlanNode id: {}",
+          planNode->id());
     }
-
-    return canBeEvaluatedByCudf(
-        *aggregationPlanNode, ctx->task->queryCtx().get());
+    return canEvaluate;
   }
 
   bool acceptsGpuInput() const override {
@@ -247,15 +300,25 @@ class AggregationAdapter : public OperatorAdapter {
     auto aggregationPlanNode =
         std::dynamic_pointer_cast<const core::AggregationNode>(planNode);
 
+    bool isGlobal = aggregationPlanNode->groupingKeys().empty();
+    bool isDistinct = !isGlobal && aggregationPlanNode->aggregates().empty();
+
     std::vector<std::unique_ptr<exec::Operator>> result;
     if (CudfConfig::getInstance().concatOptimizationEnabled) {
       result.push_back(
           std::make_unique<CudfBatchConcat>(
               operatorId, ctx, aggregationPlanNode));
     }
-    result.push_back(
-        std::make_unique<CudfHashAggregation>(
-            operatorId, ctx, aggregationPlanNode));
+    if (isGlobal) {
+      result.push_back(
+          std::make_unique<CudfReduce>(operatorId, ctx, aggregationPlanNode));
+    } else if (isDistinct) {
+      result.push_back(
+          std::make_unique<CudfDistinct>(operatorId, ctx, aggregationPlanNode));
+    } else {
+      result.push_back(
+          std::make_unique<CudfGroupby>(operatorId, ctx, aggregationPlanNode));
+    }
     return result;
   }
 };
@@ -269,36 +332,42 @@ class CudfHashJoinBaseAdapter : public OperatorAdapter {
       const core::PlanNodePtr& planNode,
       exec::DriverCtx* ctx) const override {
     if (!canHandle(op)) {
+      LOG_FALLBACK(
+          "HashJoin operator is not HashBuild or HashProbe, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
     auto joinPlanNode =
         std::dynamic_pointer_cast<const core::HashJoinNode>(planNode);
     if (!joinPlanNode) {
+      LOG_FALLBACK(
+          "HashJoin planNode is not HashJoinNode, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
     if (!CudfHashJoinProbe::isSupportedJoinType(joinPlanNode->joinType())) {
+      LOG_FALLBACK(
+          "HashJoin unsupported join type, PlanNode id: {}", planNode->id());
       return false;
     }
 
     // Disabling null-aware anti join with filter until we implement it right
     if (joinPlanNode->joinType() == core::JoinType::kAnti &&
         joinPlanNode->isNullAware() && joinPlanNode->filter()) {
-      return false;
-    }
-
-    // Null-aware LEFT SEMI PROJECT with filter requires tracking per-row
-    // NULL vs no-match state during filter evaluation, which is not yet
-    // implemented. The no-filter case is supported.
-    if (joinPlanNode->joinType() == core::JoinType::kLeftSemiProject &&
-        joinPlanNode->isNullAware() && joinPlanNode->filter()) {
+      LOG_FALLBACK(
+          "HashJoin null-aware anti join with filter not implemented, PlanNode id: {}",
+          planNode->id());
       return false;
     }
 
     if (joinPlanNode->filter()) {
       if (!canBeEvaluatedByCudf(
               {joinPlanNode->filter()}, ctx->task->queryCtx().get())) {
+        LOG_FALLBACK(
+            "HashJoin join filter cannot be evaluated by cuDF, PlanNode id: {}",
+            planNode->id());
         return false;
       }
     }
@@ -366,6 +435,118 @@ class HashJoinProbeAdapter : public CudfHashJoinBaseAdapter {
     std::vector<std::unique_ptr<exec::Operator>> result;
     result.push_back(
         std::make_unique<CudfHashJoinProbe>(operatorId, ctx, joinPlanNode));
+    return result;
+  }
+};
+
+class CudfNestedLoopJoinBaseAdapter : public OperatorAdapter {
+ public:
+  using OperatorAdapter::OperatorAdapter;
+
+  bool canRunOnGPU(
+      const exec::Operator* op,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx) const override {
+    if (!canHandle(op)) {
+      return false;
+    }
+
+    auto joinPlanNode =
+        std::dynamic_pointer_cast<const core::NestedLoopJoinNode>(planNode);
+    if (!joinPlanNode) {
+      LOG_FALLBACK(
+          "NestedLoopJoin planNode is not NestedLoopJoinNode, PlanNode id: {}",
+          planNode->id());
+      return false;
+    }
+
+    if (!CudfNestedLoopJoinProbe::isSupportedJoinType(
+            joinPlanNode->joinType())) {
+      LOG_FALLBACK(
+          "NestedLoopJoin unsupported join type: {}, PlanNode id: {}",
+          static_cast<int>(joinPlanNode->joinType()),
+          planNode->id());
+      return false;
+    }
+
+    // Check if join condition can be evaluated on GPU
+    if (joinPlanNode->joinCondition()) {
+      if (!canBeEvaluatedByCudf(
+              {joinPlanNode->joinCondition()}, ctx->task->queryCtx().get())) {
+        LOG_FALLBACK(
+            "NestedLoopJoin filter cannot be evaluated by cuDF, PlanNode id: {}",
+            planNode->id());
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+/// NestedLoopJoinBuildAdapter - Replaces with CudfNestedLoopJoinBuild
+class NestedLoopJoinBuildAdapter : public CudfNestedLoopJoinBaseAdapter {
+ public:
+  NestedLoopJoinBuildAdapter()
+      : CudfNestedLoopJoinBaseAdapter("NestedLoopJoinBuild") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::NestedLoopJoinBuild*>(op) != nullptr;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return false;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto joinPlanNode =
+        std::dynamic_pointer_cast<const core::NestedLoopJoinNode>(planNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfNestedLoopJoinBuild>(
+            operatorId, ctx, joinPlanNode));
+    return result;
+  }
+};
+
+/// NestedLoopJoinProbeAdapter - Replaces with CudfNestedLoopJoinProbe
+class NestedLoopJoinProbeAdapter : public CudfNestedLoopJoinBaseAdapter {
+ public:
+  NestedLoopJoinProbeAdapter()
+      : CudfNestedLoopJoinBaseAdapter("NestedLoopJoinProbe") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::NestedLoopJoinProbe*>(op) != nullptr;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return true;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto joinPlanNode =
+        std::dynamic_pointer_cast<const core::NestedLoopJoinNode>(planNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfNestedLoopJoinProbe>(
+            operatorId, ctx, joinPlanNode));
     return result;
   }
 };
@@ -503,8 +684,18 @@ class LocalPartitionAdapter : public OperatorAdapter {
       exec::DriverCtx* /*ctx*/) const override {
     auto localPartitionPlanNode =
         std::dynamic_pointer_cast<const core::LocalPartitionNode>(planNode);
-    return canHandle(op) && localPartitionPlanNode &&
+    bool canRun = canHandle(op) && localPartitionPlanNode &&
         CudfLocalPartition::shouldReplace(localPartitionPlanNode);
+    if (!canRun) {
+      LOG_FALLBACK(
+          "LocalPartitionAdapter {}, PlanNode id: {}",
+          !canHandle(op) ? "operator is not LocalPartition"
+              : !localPartitionPlanNode
+              ? "planNode is not LocalPartitionNode"
+              : "CudfLocalPartition::shouldReplace returned false",
+          planNode->id());
+    }
+    return canRun;
   }
 
   bool acceptsGpuInput() const override {
@@ -611,8 +802,9 @@ class AssignUniqueIdAdapter : public OperatorAdapter {
             operatorId,
             ctx,
             assignUniqueIdPlanNode,
-            assignUniqueIdPlanNode->taskUniqueId(),
-            assignUniqueIdPlanNode->uniqueIdCounter()));
+            ctx->task->planFragment().taskUniqueId.value_or(
+                assignUniqueIdPlanNode->taskUniqueId()),
+            ctx->task->uniqueRowIdPool()));
     return result;
   }
 };
@@ -628,8 +820,11 @@ class ValuesAdapter : public OperatorAdapter {
 
   bool canRunOnGPU(
       const exec::Operator* /*op*/,
-      const core::PlanNodePtr& /*planNode*/,
+      const core::PlanNodePtr& planNode,
       exec::DriverCtx* /*ctx*/) const override {
+    LOG_FALLBACK(
+        "Values operator not supported on cuDF, PlanNode id: {}",
+        planNode->id());
     return false;
   }
 
@@ -654,6 +849,88 @@ class ValuesAdapter : public OperatorAdapter {
   }
 };
 
+/// MarkDistinctAdapter - Replaces with CudfMarkDistinct
+class MarkDistinctAdapter : public OperatorAdapter {
+ public:
+  MarkDistinctAdapter() : OperatorAdapter("MarkDistinct") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::MarkDistinct*>(op) != nullptr;
+  }
+
+  bool canRunOnGPU(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* /*ctx*/) const override {
+    return std::dynamic_pointer_cast<const core::MarkDistinctNode>(planNode) !=
+        nullptr;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return true;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto markDistinctPlanNode =
+        std::dynamic_pointer_cast<const core::MarkDistinctNode>(planNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfMarkDistinct>(
+            operatorId, ctx, markDistinctPlanNode));
+    return result;
+  }
+};
+
+/// EnforceSingleRowAdapter - Replaces with CudfEnforceSingleRow
+class EnforceSingleRowAdapter : public OperatorAdapter {
+ public:
+  EnforceSingleRowAdapter() : OperatorAdapter("EnforceSingleRow") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::EnforceSingleRow*>(op) != nullptr;
+  }
+
+  bool canRunOnGPU(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* /*ctx*/) const override {
+    return std::dynamic_pointer_cast<const core::EnforceSingleRowNode>(
+               planNode) != nullptr;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return true;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto enforceSingleRowPlanNode =
+        std::dynamic_pointer_cast<const core::EnforceSingleRowNode>(planNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfEnforceSingleRow>(
+            operatorId, ctx, enforceSingleRowPlanNode));
+    return result;
+  }
+};
+
 /// CallbackSinkAdapter - Keeps original operator
 class CallbackSinkAdapter : public OperatorAdapter {
  public:
@@ -665,8 +942,11 @@ class CallbackSinkAdapter : public OperatorAdapter {
 
   bool canRunOnGPU(
       const exec::Operator* /*op*/,
-      const core::PlanNodePtr& /*planNode*/,
+      const core::PlanNodePtr& planNode,
       exec::DriverCtx* /*ctx*/) const override {
+    LOG_FALLBACK(
+        "CallbackSink operator not supported on cuDF, PlanNode id: {}",
+        planNode->id());
     return false;
   }
 
@@ -688,6 +968,99 @@ class CallbackSinkAdapter : public OperatorAdapter {
 
   bool keepOperator() const override {
     return true;
+  }
+};
+
+// WindowAdapter - Replaces with CudfWindow
+class WindowAdapter : public OperatorAdapter {
+ public:
+  WindowAdapter() : OperatorAdapter("Window") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::Window*>(op) != nullptr;
+  }
+
+  bool canRunOnGPU(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* /*ctx*/) const override {
+    auto windowNode =
+        std::dynamic_pointer_cast<const core::WindowNode>(planNode);
+    if (!windowNode) {
+      return false;
+    }
+    std::string reason;
+    if (!CudfWindow::canRunOnGPU(*windowNode, &reason)) {
+      LOG_FALLBACK(
+          "{}, PlanNode id: {}",
+          reason.empty() ? "unknown" : reason,
+          planNode->id());
+      return false;
+    }
+    return true;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return true;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto windowPlanNode =
+        std::dynamic_pointer_cast<const core::WindowNode>(planNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfWindow>(operatorId, ctx, windowPlanNode));
+    return result;
+  }
+};
+
+/// GroupIdAdapter - Replaces with CudfGroupId
+class GroupIdAdapter : public OperatorAdapter {
+ public:
+  GroupIdAdapter() : OperatorAdapter("GroupId") {}
+
+  bool canHandle(const exec::Operator* op) const override {
+    return dynamic_cast<const exec::GroupId*>(op) != nullptr;
+  }
+
+  bool canRunOnGPU(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* /*ctx*/) const override {
+    return std::dynamic_pointer_cast<const core::GroupIdNode>(planNode) !=
+        nullptr;
+  }
+
+  bool acceptsGpuInput() const override {
+    return true;
+  }
+
+  bool producesGpuOutput() const override {
+    return true;
+  }
+
+  std::vector<std::unique_ptr<exec::Operator>> createReplacements(
+      const exec::Operator* /*op*/,
+      const core::PlanNodePtr& planNode,
+      exec::DriverCtx* ctx,
+      int32_t operatorId) const override {
+    auto groupIdNode =
+        std::dynamic_pointer_cast<const core::GroupIdNode>(planNode);
+    VELOX_CHECK_NOT_NULL(groupIdNode);
+
+    std::vector<std::unique_ptr<exec::Operator>> result;
+    result.push_back(
+        std::make_unique<CudfGroupId>(operatorId, ctx, groupIdNode));
+    return result;
   }
 };
 
@@ -704,14 +1077,20 @@ void registerAllOperatorAdapters() {
   registry.registerAdapter(std::make_unique<AggregationAdapter>());
   registry.registerAdapter(std::make_unique<HashJoinBuildAdapter>());
   registry.registerAdapter(std::make_unique<HashJoinProbeAdapter>());
+  registry.registerAdapter(std::make_unique<NestedLoopJoinBuildAdapter>());
+  registry.registerAdapter(std::make_unique<NestedLoopJoinProbeAdapter>());
   registry.registerAdapter(std::make_unique<OrderByAdapter>());
   registry.registerAdapter(std::make_unique<TopNAdapter>());
   registry.registerAdapter(std::make_unique<LimitAdapter>());
   registry.registerAdapter(std::make_unique<LocalPartitionAdapter>());
   registry.registerAdapter(std::make_unique<LocalExchangeAdapter>());
   registry.registerAdapter(std::make_unique<AssignUniqueIdAdapter>());
+  registry.registerAdapter(std::make_unique<MarkDistinctAdapter>());
+  registry.registerAdapter(std::make_unique<EnforceSingleRowAdapter>());
+  registry.registerAdapter(std::make_unique<GroupIdAdapter>());
   registry.registerAdapter(std::make_unique<ValuesAdapter>());
   registry.registerAdapter(std::make_unique<CallbackSinkAdapter>());
+  registry.registerAdapter(std::make_unique<WindowAdapter>());
 }
 
 } // namespace facebook::velox::cudf_velox

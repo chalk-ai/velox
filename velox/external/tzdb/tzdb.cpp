@@ -57,13 +57,13 @@ using namespace std::chrono_literals;
 std::string __libcpp_tzdb_directory() {
   struct stat sb;
   using namespace std;
-
-  // Allow override via environment variable for hermetic builds.
-  if (const char* tzdir = getenv("TZDIR")) {
-    if (stat(tzdir, &sb) == 0 && S_ISDIR(sb.st_mode))
-      return tzdir;
+  // First, check for the TZDIR environment variable.
+  // If set, it takes precedence over standard system paths.
+  if (auto tzdir = getenv("TZDIR")) {
+    if (stat(tzdir, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+        return tzdir;
+    }
   }
-
 #if !defined(__APPLE__)
   CONSTDATA auto tz_dir_default = "/usr/share/zoneinfo";
   CONSTDATA auto tz_dir_buildroot = "/usr/share/zoneinfo/uclibc";

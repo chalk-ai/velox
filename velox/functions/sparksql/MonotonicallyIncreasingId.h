@@ -17,6 +17,7 @@
 
 #include "velox/core/QueryConfig.h"
 #include "velox/functions/Macros.h"
+#include "velox/functions/sparksql/SparkQueryConfig.h"
 
 namespace facebook::velox::functions::sparksql {
 
@@ -27,7 +28,7 @@ struct MonotonicallyIncreasingIdFunction {
   FOLLY_ALWAYS_INLINE void initialize(
       const std::vector<TypePtr>& /*inputTypes*/,
       const core::QueryConfig& config) {
-    count_ = (int64_t)config.sparkPartitionId() << 33;
+    count_ = (int64_t)SparkQueryConfig{config}.partitionId() << 33;
   }
 
   FOLLY_ALWAYS_INLINE void call(int64_t& result) {

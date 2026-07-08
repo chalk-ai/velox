@@ -20,6 +20,7 @@
 #include "velox/expression/VectorReaders.h"
 #include "velox/functions/lib/DateTimeFormatter.h"
 #include "velox/functions/lib/TimeUtils.h"
+#include "velox/functions/sparksql/SparkQueryConfig.h"
 #include "velox/type/DecimalUtil.h"
 
 namespace facebook::velox::functions::sparksql {
@@ -355,7 +356,7 @@ struct ToJsonFunction {
         "to_json function does not support type {}.",
         inputTypes[0]->toString());
     sessionTimezone_ = getTimeZoneFromConfig(config);
-    ignoreNullFields_ = config.sparkJsonIgnoreNullFields();
+    ignoreNullFields_ = SparkQueryConfig{config}.jsonIgnoreNullFields();
   }
 
   FOLLY_ALWAYS_INLINE bool call(

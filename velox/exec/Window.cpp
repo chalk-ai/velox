@@ -16,11 +16,11 @@
 #include "velox/exec/Window.h"
 #include "velox/exec/OperatorType.h"
 #include "velox/exec/OperatorUtils.h"
-#include "velox/exec/PartitionStreamingWindowBuild.h"
-#include "velox/exec/RowsStreamingWindowBuild.h"
-#include "velox/exec/SortWindowBuild.h"
-#include "velox/exec/SubPartitionedSortWindowBuild.h"
 #include "velox/exec/Task.h"
+#include "velox/exec/window/PartitionStreamingWindowBuild.h"
+#include "velox/exec/window/RowsStreamingWindowBuild.h"
+#include "velox/exec/window/SortWindowBuild.h"
+#include "velox/exec/window/SubPartitionedSortWindowBuild.h"
 
 namespace facebook::velox::exec {
 
@@ -62,17 +62,17 @@ Window::Window(
   }
   if (windowNode->inputsSorted()) {
     if (supportRowsStreaming()) {
-      windowBuild_ = std::make_unique<RowsStreamingWindowBuild>(
+      windowBuild_ = std::make_unique<window::RowsStreamingWindowBuild>(
           windowNode_, pool(), spillConfig, &nonReclaimableSection_);
     } else {
-      windowBuild_ = std::make_unique<PartitionStreamingWindowBuild>(
+      windowBuild_ = std::make_unique<window::PartitionStreamingWindowBuild>(
           windowNode, pool(), spillConfig, &nonReclaimableSection_);
     }
   } else {
     if (auto numSubPartitions =
             operatorCtx_->driverCtx()->queryConfig().windowNumSubPartitions();
         numSubPartitions > 1) {
-      windowBuild_ = std::make_unique<SubPartitionedSortWindowBuild>(
+      windowBuild_ = std::make_unique<window::SubPartitionedSortWindowBuild>(
           windowNode,
           numSubPartitions,
           pool(),
@@ -82,7 +82,7 @@ Window::Window(
           &stats_,
           spillStats_.get());
     } else {
-      windowBuild_ = std::make_unique<SortWindowBuild>(
+      windowBuild_ = std::make_unique<window::SortWindowBuild>(
           windowNode,
           pool(),
           makePrefixSortConfig(driverCtx->queryConfig()),
@@ -279,8 +279,11 @@ void Window::reclaim(
     // TODO Add support for spilling after noMoreInput().
     LOG(WARNING)
         << "Can't reclaim from window operator which has started producing output: "
-        << pool()->name() << ", usage: " << succinctBytes(pool()->usedBytes())
-        << ", reservation: " << succinctBytes(pool()->reservedBytes());
+        << pool()->name() << ", root pool: " << pool()->root()->name()
+        << ", used: " << succinctBytes(pool()->usedBytes())
+        << ", reservation: " << succinctBytes(pool()->reservedBytes())
+        << ", root pool reservation: "
+        << succinctBytes(pool()->root()->reservedBytes());
     return;
   }
 

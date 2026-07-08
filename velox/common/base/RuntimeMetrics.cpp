@@ -30,7 +30,7 @@ void RuntimeMetric::addValue(int64_t value) {
 }
 
 void RuntimeMetric::aggregate() {
-  count = std::min(count, static_cast<int64_t>(1));
+  count = std::min(count, static_cast<uint64_t>(1));
   min = max = sum;
 }
 
@@ -117,6 +117,14 @@ void addThreadLocalRuntimeStat(
     const RuntimeCounter& value) {
   if (localRuntimeStatWriter) {
     localRuntimeStatWriter->addRuntimeStat(name, value);
+  }
+}
+
+void setThreadLocalRuntimeStat(
+    std::string_view name,
+    const RuntimeMetric& metric) {
+  if (localRuntimeStatWriter) {
+    localRuntimeStatWriter->setRuntimeStat(name, metric);
   }
 }
 

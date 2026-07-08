@@ -13,6 +13,7 @@
 # limitations under the License.
 project(Arrow)
 
+if(VELOX_ENABLE_ARROW)
   find_package(Thrift CONFIG REQUIRED)
   if(Thrift_FOUND)
     set(THRIFT_SOURCE "SYSTEM")
@@ -38,7 +39,6 @@ project(Arrow)
     ARROW_CMAKE_ARGS
     -DARROW_PARQUET=OFF
     -DARROW_DEPENDENCY_SOURCE=AUTO
-    -DARROW_WITH_THRIFT=ON
     -DARROW_WITH_LZ4=ON
     -DARROW_WITH_SNAPPY=ON
     -DARROW_WITH_ZLIB=ON
@@ -52,26 +52,19 @@ project(Arrow)
     -DCMAKE_INSTALL_PREFIX=${ARROW_PREFIX}/install
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
     -DARROW_BUILD_STATIC=ON
-    -DThrift_SOURCE=${THRIFT_SOURCE}
     -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
     -DBOOST_ROOT=${BOOST_ROOT}
+    -DBoost_NO_BOOST_CMAKE=TRUE
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     # Remove with Arrow upgrade to Arrow 20.
     -DARROW_CXXFLAGS=-Wno-documentation
+    # Arrow inherits the CMake build type from Velox. So a Debug build turns
+    # on additional warnings that can cause the build to fail
+    # (e.g. deprecated-literal-operator in Apple Clang 21).
+    # The SYSTEM version of Arrow is always a Release build.
+    -DBUILD_WARNING_LEVEL=PRODUCTION
   )
   set(ARROW_LIBDIR ${ARROW_PREFIX}/install/lib)
-
-  add_library(thrift STATIC IMPORTED GLOBAL)
-  if(NOT Thrift_FOUND)
-    set(THRIFT_ROOT ${ARROW_PREFIX}/src/arrow_ep-build/thrift_ep-install)
-    set(THRIFT_LIB ${THRIFT_ROOT}/lib/libthrift.a)
-
-    file(MAKE_DIRECTORY ${THRIFT_ROOT}/include)
-    set(THRIFT_INCLUDE_DIR ${THRIFT_ROOT}/include)
-  endif()
-
-  set_property(TARGET thrift PROPERTY INTERFACE_INCLUDE_DIRECTORIES ${THRIFT_INCLUDE_DIR})
-  set_property(TARGET thrift PROPERTY IMPORTED_LOCATION ${THRIFT_LIB})
 
   set(VELOX_ARROW_BUILD_VERSION 18.0.0)
   set(
@@ -92,10 +85,10 @@ project(Arrow)
     URL_HASH ${VELOX_ARROW_BUILD_SHA256_CHECKSUM}
     SOURCE_SUBDIR cpp
     CMAKE_ARGS ${ARROW_CMAKE_ARGS}
-    BUILD_BYPRODUCTS ${ARROW_LIBDIR}/libarrow.a ${ARROW_LIBDIR}/libarrow_testing.a ${THRIFT_LIB}
+    BUILD_BYPRODUCTS ${ARROW_LIBDIR}/libarrow.a ${ARROW_LIBDIR}/libarrow_testing.a
     PATCH_COMMAND
-      git apply ${CMAKE_CURRENT_LIST_DIR}/cmake-compatibility.patch && git apply
-      ${CMAKE_CURRENT_LIST_DIR}/thrift-download.patch
+      patch -p1 -i ${CMAKE_CURRENT_LIST_DIR}/cmake-compatibility.patch && patch -p1 -i
+      ${CMAKE_CURRENT_LIST_DIR}/arrow-testing-boost.patch
   )
 
   add_library(arrow STATIC IMPORTED GLOBAL)
@@ -109,9 +102,15 @@ project(Arrow)
     PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${ARROW_PREFIX}/install/include
   )
   set_target_properties(arrow PROPERTIES IMPORTED_LOCATION ${ARROW_LIBDIR}/libarrow.a)
-  set_property(TARGET arrow PROPERTY INTERFACE_LINK_LIBRARIES ${RE2} thrift)
+  set_property(TARGET arrow PROPERTY INTERFACE_LINK_LIBRARIES ${RE2})
+  # Mirror the path-based interface dep from CMake/FindArrow.cmake — see
+  # the SYSTEM-arrow comment there for the ODR-violation rationale that
+  # forces us to use ${ARROW_LIBDIR}/libarrow.a (path) instead of the
+  # `arrow` target name.
   set_target_properties(
     arrow_testing
-    PROPERTIES IMPORTED_LOCATION ${ARROW_LIBDIR}/libarrow_testing.a
+    PROPERTIES
+      IMPORTED_LOCATION ${ARROW_LIBDIR}/libarrow_testing.a
+      INTERFACE_LINK_LIBRARIES ${ARROW_LIBDIR}/libarrow.a
   )
 endif()

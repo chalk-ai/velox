@@ -7,10 +7,15 @@
 #include <fmt/format.h>
 #include <folly/Indestructible.h>
 #include <folly/String.h>
-#include <folly/experimental/symbolizer/StackTrace.h>
+#include <folly/debugging/symbolizer/StackTrace.h>
 
 #include "velox/common/process/ProcessBase.h"
 #include "velox/common/process/StackTrace.h"
+
+#ifdef __linux__
+#include <folly/debugging/symbolizer/Symbolizer.h> // @manual
+#include <folly/fibers/FiberManager.h> // @manual
+#endif
 
 namespace facebook::velox::process {
 

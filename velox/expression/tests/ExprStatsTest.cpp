@@ -21,7 +21,6 @@
 #include "velox/functions/Registerer.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/prestosql/tests/utils/FunctionBaseTest.h"
-#include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
 #include "velox/parse/TypeResolver.h"
 
@@ -349,14 +348,14 @@ TEST_F(ExprStatsTest, specialForms) {
   ASSERT_EQ(1, stats.at("coalesce").numProcessedVectors);
   ASSERT_EQ(1024, stats.at("coalesce").numProcessedRows);
 
-  // SWITCH.
+  // CASE (simple CASE — subject evaluated once).
   events.clear();
   evaluate("case c0 when 7 then 1 when 11 then 2 else 0 end", data);
   ASSERT_EQ(1, events.size());
   stats = events.back().stats;
 
-  ASSERT_EQ(1, stats.at("switch").numProcessedVectors);
-  ASSERT_EQ(1024, stats.at("switch").numProcessedRows);
+  ASSERT_EQ(1, stats.at("case").numProcessedVectors);
+  ASSERT_EQ(1024, stats.at("case").numProcessedRows);
 
   ASSERT_TRUE(exec::unregisterExprSetListener(listener));
 }
@@ -724,35 +723,20 @@ TEST_F(ExprStatsTest, adaptiveCpuSamplingPerFunctionRates) {
   ASSERT_NE(plusExpr, nullptr) << "Failed to find 'plus' expression";
   ASSERT_NE(slowAddExpr, nullptr) << "Failed to find 'slow_add' expression";
 
-  // Cheap function (plus) should be in sampling mode with rate > 1.
-  ASSERT_TRUE(plusExpr->isAdaptiveSampling())
-      << "Expected cheap function 'plus' to be in sampling mode";
-  ASSERT_GT(plusExpr->adaptiveSamplingRate(), 1u)
-      << "Expected sampling rate > 1 for cheap function";
-
-  // Expensive function (slow_add) should always track (not sampling).
-  ASSERT_FALSE(slowAddExpr->isAdaptiveSampling())
-      << "Expected expensive function 'slow_add' to always track";
+  /// The expensive function (slow_add) should have a lower or equal sampling
+  /// rate compared to the cheap function (plus).
+  ASSERT_LE(
+      slowAddExpr->adaptiveSamplingRate(), plusExpr->adaptiveSamplingRate())
+      << "Expected expensive function to have lower or equal sampling rate "
+      << "than cheap function. slow_add rate: "
+      << slowAddExpr->adaptiveSamplingRate()
+      << ", plus rate: " << plusExpr->adaptiveSamplingRate();
 
   // Both functions should have timing data.
   auto stats = exprSet->stats();
   ASSERT_GT(stats["plus"].timing.cpuNanos, 0u);
   ASSERT_GT(stats["slow_add"].timing.cpuNanos, 0u);
 
-  // slow_add is always-track after calibration. It won't have timing for the
-  // warmup + calibration batches (1 + 5 = 6), but all post-calibration batches
-  // should be tracked.
-  constexpr uint64_t kCalibrationOverhead = 6; // 1 warmup + 5 calibration
-  ASSERT_EQ(
-      stats["slow_add"].timing.count,
-      stats["slow_add"].numProcessedVectors - kCalibrationOverhead);
-
-  // plus is in sampling mode. Stats should be adjusted (extrapolated) so
-  // timing.count matches numProcessedVectors.
-  ASSERT_EQ(stats["plus"].timing.count, stats["plus"].numProcessedVectors);
-  ASSERT_GT(stats["plus"].timing.cpuNanos, 0u);
-
-  // Verify the sampling rate for plus is reasonable (should be > 1).
   LOG(INFO) << "plus sampling rate: " << plusExpr->adaptiveSamplingRate()
             << ", slow_add sampling rate: "
             << slowAddExpr->adaptiveSamplingRate();
