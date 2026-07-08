@@ -19,6 +19,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <limits>
 
@@ -29,6 +30,10 @@
 #include "velox/dwio/parquet/common/LevelComparison.h"
 
 namespace facebook::velox::parquet {
+
+inline int64_t popCount(uint64_t value) {
+  return std::popcount(value);
+}
 
 // clang-format off
 /* Python code to generate lookup table:
@@ -242,7 +247,7 @@ inline uint64_t ExtractBitsSoftware(uint64_t bitmap, uint64_t selectBitmap) {
   int bitLen = 0;
   constexpr uint8_t kLookupMask = (1U << kLookupBits) - 1;
   while (selectBitmap != 0) {
-    const auto mask_len = ARROW_POPCOUNT32(selectBitmap & kLookupMask);
+    const auto mask_len = popCount(selectBitmap & kLookupMask);
     const uint64_t value =
         kPextTable[selectBitmap & kLookupMask][bitmap & kLookupMask];
     bitValue |= (value << bitLen);
@@ -281,19 +286,19 @@ int64_t DefLevelsBatchToBitmap(
     auto presentBitmap = static_cast<extractBitmapT>(GreaterThanBitmap(
         defLevels, batchSize, levelInfo.repeatedAncestorDefLevel - 1));
     auto selectedBits = ExtractBits(definedBitmap, presentBitmap);
-    int64_t selectedCount = ::arrow::bit_util::PopCount(presentBitmap);
+    int64_t selectedCount = popCount(presentBitmap);
     if (FOLLY_UNLIKELY(selectedCount > upperBoundRemaining)) {
       VELOX_FAIL("Values read exceeded upper bound");
     }
     writer->AppendWord(selectedBits, selectedCount);
-    return ::arrow::bit_util::PopCount(selectedBits);
+    return popCount(selectedBits);
   } else {
     if (FOLLY_UNLIKELY(batchSize > upperBoundRemaining)) {
       VELOX_FAIL("Values read exceeded upper bound");
     }
 
     writer->AppendWord(definedBitmap, batchSize);
-    return ::arrow::bit_util::PopCount(definedBitmap);
+    return popCount(definedBitmap);
   }
 }
 
