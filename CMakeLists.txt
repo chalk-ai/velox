@@ -797,7 +797,7 @@ if(NOT VELOX_DISABLE_GOOGLETEST)
 endif()
 
 velox_set_source(xsimd)
-velox_resolve_dependency(xsimd 10.0.0)
+velox_resolve_dependency(xsimd 14.1.0)
 
 velox_set_source(stemmer)
 velox_resolve_dependency(stemmer)
