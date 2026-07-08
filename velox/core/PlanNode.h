@@ -215,6 +215,12 @@ class PlanNode : public ISerializable {
     return false;
   }
 
+  /// Returns true if this plan node requires each source to run in a separate
+  /// producer pipeline and the node itself to run in a consumer pipeline.
+  virtual bool isLocalExchange() const {
+    return false;
+  }
+
   /// Returns true if this plan node operator supports task barrier processing.
   /// To support barrier processing, the operator must be able to drain its
   /// buffered output when it receives the drain signal at split boundary. Not
