@@ -661,7 +661,7 @@ endif()
 if(${VELOX_BUILD_MINIMAL_WITH_DWIO} OR ${VELOX_ENABLE_HIVE_CONNECTOR} OR VELOX_ENABLE_GCS)
   # Locate or build protobuf.
   velox_set_source(Protobuf)
-  velox_resolve_dependency(Protobuf 3.21.7 REQUIRED)
+  velox_resolve_dependency(Protobuf REQUIRED)
   include_directories(${Protobuf_INCLUDE_DIRS})
 endif()
 
