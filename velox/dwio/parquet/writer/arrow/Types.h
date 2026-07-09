@@ -645,9 +645,17 @@ constexpr int64_t kMillisecondsPerDay = kSecondsPerDay * INT64_C(1000);
 constexpr int64_t kMicrosecondsPerDay = kMillisecondsPerDay * INT64_C(1000);
 constexpr int64_t kNanosecondsPerDay = kMicrosecondsPerDay * INT64_C(1000);
 
-ARROW_PACKED_START(struct, Int96) {
+#if defined(_MSC_VER)
+#pragma pack(push, 1)
+struct Int96 {
+#else
+struct __attribute__((__packed__)) Int96 {
+#endif
   uint32_t value[3];
 };
+#if defined(_MSC_VER)
+#pragma pack(pop)
+#endif
 static_assert(sizeof(Int96) == 12, "Int96 not packed to 12 bytes");
 static_assert(alignof(Int96) <= 4, "Int96 alignment too large");
 
