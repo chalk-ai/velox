@@ -25,16 +25,18 @@ velox_add_library(
 )
 velox_link_libraries(velox_parse_expression velox_type velox_parse_utils velox_expression)
 
-velox_add_library(
-  velox_parse_parser
-  ExpressionsParser.cpp
-  QueryPlanner.cpp
-  HEADERS
-  DuckLogicalOperator.h
-  ExpressionsParser.h
-  QueryPlanner.h
-)
-velox_link_libraries(velox_parse_parser velox_parse_expression velox_type velox_duckdb_parser)
+if(${VELOX_ENABLE_DUCKDB})
+  velox_add_library(
+    velox_parse_parser
+    ExpressionsParser.cpp
+    QueryPlanner.cpp
+    HEADERS
+    DuckLogicalOperator.h
+    ExpressionsParser.h
+    QueryPlanner.h
+  )
+  velox_link_libraries(velox_parse_parser velox_parse_expression velox_type velox_duckdb_parser)
+endif()
 
 velox_add_library(velox_parse_utils TypeResolver.cpp HEADERS PlanNodeIdGenerator.h)
 velox_link_libraries(
