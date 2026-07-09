@@ -73,8 +73,9 @@ size_t columnMetadataSize(const thrift::ColumnChunk& column) {
   // Optional crypto metadata. Only the heap-backed payloads of the active
   // union arm are added.
   if (column.crypto_metadata() &&
-      column.crypto_metadata()->ENCRYPTION_WITH_COLUMN_KEY()) {
-    const auto& key = *column.crypto_metadata()->ENCRYPTION_WITH_COLUMN_KEY();
+      column.crypto_metadata()->getType() ==
+          thrift::ColumnCryptoMetaData::Type::ENCRYPTION_WITH_COLUMN_KEY) {
+    const auto& key = column.crypto_metadata()->get_ENCRYPTION_WITH_COLUMN_KEY();
     size += key.path_in_schema()->size() * sizeof(std::string);
     for (const auto& path : *key.path_in_schema()) {
       size += heapStringSize(path);
