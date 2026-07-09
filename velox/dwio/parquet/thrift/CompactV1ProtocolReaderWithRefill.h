@@ -31,7 +31,7 @@ class CompactV1ProtocolReaderWithRefill
     static_assert(sizeof(double) == sizeof(uint64_t));
     static_assert(std::numeric_limits<double>::is_iec559);
     ensureBuffer(sizeof(double));
-    uint64_t bits = readLEFromBuffer<int64_t>();
+    uint64_t bits = protocol_.in_.readLE<int64_t>();
     dub = folly::bit_cast<double>(bits);
   }
 };
