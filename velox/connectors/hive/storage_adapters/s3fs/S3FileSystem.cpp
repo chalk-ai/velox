@@ -235,10 +235,15 @@ class S3FileSystem::Impl {
     Aws::Client::ClientConfigurationInitValues initValues;
     initValues.shouldDisableIMDS = !s3Config_->useIMDS();
     Aws::S3::S3ClientConfiguration clientConfig(initValues);
+#if AWS_SDK_VERSION_MAJOR > 1 || \
+    (AWS_SDK_VERSION_MAJOR == 1 &&                      \
+     (AWS_SDK_VERSION_MINOR > 11 ||                      \
+      (AWS_SDK_VERSION_MINOR == 11 && AWS_SDK_VERSION_PATCH >= 654)))
     clientConfig.checksumConfig.requestChecksumCalculation =
         Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
     clientConfig.checksumConfig.responseChecksumValidation =
         Aws::Client::ResponseChecksumValidation::WHEN_REQUIRED;
+#endif
     if (s3Config_->endpoint().has_value()) {
       clientConfig.endpointOverride = s3Config_->endpoint().value();
     }
