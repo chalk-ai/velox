@@ -692,7 +692,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO} OR ${VELOX_ENABLE_HIVE_CONNECTOR} OR VELOX_E
 endif()
 
 velox_set_source(simdjson)
-velox_resolve_dependency(simdjson 3.9.3)
+velox_resolve_dependency(simdjson 4.1.0)
 
 velox_set_source(FastFloat)
 velox_resolve_dependency(FastFloat)
@@ -823,7 +823,7 @@ if(NOT VELOX_DISABLE_GOOGLETEST)
 endif()
 
 velox_set_source(xsimd)
-velox_resolve_dependency(xsimd 10.0.0)
+velox_resolve_dependency(xsimd 14.1.0)
 
 velox_set_source(stemmer)
 velox_resolve_dependency(stemmer)
