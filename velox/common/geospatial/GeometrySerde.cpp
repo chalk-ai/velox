@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <geos/geom/CoordinateSequence.h>
+#include <geos/geom/CoordinateArraySequence.h>
 #include <geos/geom/GeometryFactory.h>
 #include <geos/geom/LineString.h>
 #include <geos/geom/Point.h>
@@ -126,7 +126,8 @@ std::unique_ptr<geos::geom::CoordinateSequence>
 GeometryDeserializer::readCoordinates(
     velox::common::InputByteStream& input,
     size_t count) {
-  auto coords = std::make_unique<geos::geom::CoordinateSequence>(count, 2);
+  auto coords =
+      std::make_unique<geos::geom::CoordinateArraySequence>(count, 2);
   for (size_t i = 0; i < count; ++i) {
     // TODO: Consider using setOrdinate if there's a performance issue.
     coords->setAt(readCoordinate(input), i);
@@ -295,7 +296,8 @@ std::unique_ptr<geos::geom::Geometry> GeometryDeserializer::readEnvelope(
     return getGeometryFactory()->createPolygon();
   }
 
-  auto coordinates = std::make_unique<geos::geom::CoordinateSequence>();
+  auto coordinates =
+      std::make_unique<geos::geom::CoordinateArraySequence>();
   coordinates->add(geos::geom::Coordinate(xMin, yMin));
   coordinates->add(geos::geom::Coordinate(xMin, yMax));
   coordinates->add(geos::geom::Coordinate(xMax, yMax));
