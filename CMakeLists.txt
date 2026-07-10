@@ -692,7 +692,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO} OR ${VELOX_ENABLE_HIVE_CONNECTOR} OR VELOX_E
 endif()
 
 velox_set_source(simdjson)
-velox_resolve_dependency(simdjson 4.1.0)
+velox_resolve_dependency(simdjson)
 
 velox_set_source(FastFloat)
 velox_resolve_dependency(FastFloat)
