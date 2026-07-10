@@ -19,11 +19,11 @@
 
 #include "velox/common/Casts.h"
 #include "velox/common/encode/Base64.h"
+#include "velox/common/memory/MemoryPool.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/SimpleVector.h"
 #include "velox/vector/VectorSaver.h"
-#include <common/memory/MemoryPool.h>
 
 namespace facebook::velox::core {
 
