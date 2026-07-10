@@ -17,8 +17,8 @@
 #pragma once
 
 #include <geos/geom/Coordinate.h>
-#include <geos/geom/CoordinateSequence.h>
-#include <geos/geom/GeometryFactory.h>
+#include <geos/geom/CoordinateArraySequence.h>
+#include <geos/geom/CoordinateSequenceFactory.h>
 #include <geos/geom/Envelope.h>
 #include <geos/io/GeoJSON.h>
 #include <geos/io/GeoJSONReader.h>
@@ -1279,9 +1279,9 @@ struct StConvexHullFunction {
 
       if ((minX == maxX) || (minY == maxY)) {
         // Envelope is a line, so that's the minimum convex hull
-        auto coords = std::make_unique<geos::geom::CoordinateSequence>(
-            std::initializer_list<geos::geom::CoordinateXY>{
-                {minX, minY}, {maxX, maxY}});
+        auto coords = factory_->getCoordinateSequenceFactory()->create(
+            {geos::geom::Coordinate(minX, minY),
+             geos::geom::Coordinate(maxX, maxY)});
 
         common::geospatial::GeometrySerializer::serialize(
             *(factory_->createLineString(std::move(coords))), result);
@@ -2090,7 +2090,7 @@ struct StLineStringFunction {
   FOLLY_ALWAYS_INLINE void call(
       out_type<Geometry>& result,
       const arg_type<Array<Geometry>>& input) {
-    std::unique_ptr<geos::geom::CoordinateSequence> coords =
+    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
         common::geospatial::GeometryDeserializer::deserializePointsToCoordinate<
             Geometry>(input, "ST_LineString", true);
 
@@ -2117,7 +2117,7 @@ struct StMultiPointFunction {
   FOLLY_ALWAYS_INLINE bool call(
       out_type<Geometry>& result,
       const arg_type<Array<Geometry>>& input) {
-    std::unique_ptr<geos::geom::CoordinateSequence> coords =
+    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
         common::geospatial::GeometryDeserializer::deserializePointsToCoordinate<
             Geometry>(input, "ST_MultiPoint", false);
 
