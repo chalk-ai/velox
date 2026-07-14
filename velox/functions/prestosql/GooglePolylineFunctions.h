@@ -20,6 +20,7 @@
 #include <string>
 
 #include <geos/geom/Coordinate.h>
+#include <geos/geom/CoordinateSequence.h>
 #include <geos/geom/Point.h>
 
 #include "velox/common/geospatial/GeometrySerde.h"
@@ -66,7 +67,7 @@ struct GooglePolylineEncodeFunctionImpl {
       return status;
     }
 
-    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
+    std::unique_ptr<geos::geom::CoordinateSequence> coords =
         common::geospatial::GeometryDeserializer::deserializePointsToCoordinate<
             Geometry>(points, "google_polyline_encode", false);
 

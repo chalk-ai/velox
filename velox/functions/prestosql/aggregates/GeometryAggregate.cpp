@@ -16,7 +16,7 @@
 
 #include "velox/functions/prestosql/aggregates/GeometryAggregate.h"
 
-#include <geos/geom/CoordinateArraySequence.h>
+#include <geos/geom/CoordinateSequence.h>
 #include <geos/geom/Geometry.h>
 
 #include "velox/common/geospatial/GeometrySerde.h"
@@ -136,8 +136,8 @@ class ConvexHullAggregate {
       }
 
       // Create a single CoordinateSequence from all coordinates
-      auto coords = std::make_unique<geos::geom::CoordinateArraySequence>(
-          totalPoints, 2);
+      auto coords =
+          std::make_unique<geos::geom::CoordinateSequence>(totalPoints, 2);
       size_t index = 0;
 
       // Add all coordinates from coordinate sequences

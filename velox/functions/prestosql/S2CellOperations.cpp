@@ -40,7 +40,7 @@ namespace {
 
 // Maps a GEOS coordinate (x=longitude, y=latitude) to a point on the
 // unit sphere.
-S2Point toS2Point(const geos::geom::Coordinate& coord) {
+S2Point toS2Point(const geos::geom::CoordinateXY& coord) {
   return S2LatLng::FromDegrees(coord.y, coord.x).ToPoint();
 }
 

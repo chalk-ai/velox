@@ -17,7 +17,7 @@
 #pragma once
 
 #include <folly/Likely.h>
-#include <geos/geom/CoordinateArraySequence.h>
+#include <geos/geom/CoordinateSequence.h>
 #include <geos/geom/Geometry.h>
 #include <geos/geom/GeometryFactory.h>
 
@@ -415,13 +415,13 @@ class GeometryDeserializer {
       const StringView& geometry);
 
   template <typename T>
-  static std::unique_ptr<geos::geom::CoordinateArraySequence>
+  static std::unique_ptr<geos::geom::CoordinateSequence>
   deserializePointsToCoordinate(
       const exec::ArrayView<true, T>& input,
       const std::string& functionName,
       bool forbidDuplicates) {
-    std::unique_ptr<geos::geom::CoordinateArraySequence> coords =
-        std::make_unique<geos::geom::CoordinateArraySequence>(input.size(), 2);
+    std::unique_ptr<geos::geom::CoordinateSequence> coords =
+        std::make_unique<geos::geom::CoordinateSequence>(input.size(), 2);
 
     double lastX = std::numeric_limits<double>::signaling_NaN();
     double lastY = std::numeric_limits<double>::signaling_NaN();
@@ -463,7 +463,7 @@ class GeometryDeserializer {
       }
       lastX = x;
       lastY = y;
-      coords->setAt({x, y}, i);
+      coords->setAt(geos::geom::CoordinateXY(x, y), i);
     }
     return coords;
   }
