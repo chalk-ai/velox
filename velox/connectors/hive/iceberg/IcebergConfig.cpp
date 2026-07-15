@@ -32,4 +32,14 @@ std::string IcebergConfig::functionPrefix() const {
       kFunctionPrefixConfig, kDefaultFunctionPrefix);
 }
 
+bool IcebergConfig::closePartitionWriterOnPartitionChange(
+    const config::ConfigBase* session) const {
+  const auto defaultValue = config_->get<bool>(
+      kClosePartitionWriterOnPartitionChangeConfig, false);
+  return session != nullptr
+      ? session->get<bool>(
+            kClosePartitionWriterOnPartitionChangeSession, defaultValue)
+      : defaultValue;
+}
+
 } // namespace facebook::velox::connector::hive::iceberg

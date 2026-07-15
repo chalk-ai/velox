@@ -21,6 +21,7 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <folly/json.h>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -285,6 +286,20 @@ folly::dynamic buildIcebergCommitData(
   return commitData;
 }
 
+RowVectorPtr wrapInputRows(
+    const RowVectorPtr& input,
+    vector_size_t begin,
+    vector_size_t size) {
+  if (begin == 0 && size == input->size()) {
+    return input;
+  }
+
+  auto indices = allocateIndices(size, input->pool());
+  auto* rawIndices = indices->asMutable<vector_size_t>();
+  std::iota(rawIndices, rawIndices + size, begin);
+  return exec::wrap(size, std::move(indices), input);
+}
+
 } // namespace
 
 IcebergDataSink::IcebergDataSink(
@@ -358,6 +373,9 @@ IcebergDataSink::IcebergDataSink(
               ? std::make_unique<IcebergPartitionName>(partitionSpec_)
               : nullptr),
       partitionRowType_(std::move(partitionRowType)),
+      closePartitionWriterOnPartitionChange_(
+          icebergConfig->closePartitionWriterOnPartitionChange(
+              connectorQueryCtx->sessionProperties())),
       icebergInsertTableHandle_(insertTableHandle) {
   commitPartitionValue_.resize(maxOpenWriters_);
 
@@ -413,6 +431,50 @@ std::vector<std::string> IcebergDataSink::commitMessage() const {
     }
   }
   return commitTasks;
+}
+
+void IcebergDataSink::appendData(RowVectorPtr input) {
+  if (!closePartitionWriterOnPartitionChange_ || !isPartitioned() ||
+      isBucketed()) {
+    HiveDataSink::appendData(std::move(input));
+    return;
+  }
+
+  checkRunning();
+  input->loadedVector();
+
+  if (input->size() == 0) {
+    return;
+  }
+
+  computePartitionAndBucketIds(input);
+
+  vector_size_t runStart = 0;
+  while (runStart < input->size()) {
+    const auto partitionId = partitionIds_[runStart];
+    auto runEnd = runStart + 1;
+    while (runEnd < input->size() && partitionIds_[runEnd] == partitionId) {
+      ++runEnd;
+    }
+
+    if (activeSortedPartitionId_.has_value() &&
+        activeSortedPartitionId_.value() != partitionId &&
+        activeSortedPartitionWriterIndex_.has_value()) {
+      const auto previousWriterIndex =
+          activeSortedPartitionWriterIndex_.value();
+      if (previousWriterIndex < writers_.size() &&
+          writers_[previousWriterIndex] != nullptr) {
+        rotateWriter(previousWriterIndex);
+      }
+    }
+
+    const auto writerIndex = ensureWriter(getWriterId(runStart));
+    write(writerIndex, wrapInputRows(input, runStart, runEnd - runStart));
+
+    activeSortedPartitionId_ = partitionId;
+    activeSortedPartitionWriterIndex_ = writerIndex;
+    runStart = runEnd;
+  }
 }
 
 void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {

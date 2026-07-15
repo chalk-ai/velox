@@ -17,6 +17,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -173,6 +174,8 @@ class IcebergDataSink : public HiveDataSink {
   /// Presto and Spark Iceberg commit protocol.
   std::vector<std::string> commitMessage() const override;
 
+  void appendData(RowVectorPtr input) override;
+
  private:
   IcebergDataSink(
       RowTypePtr inputType,
@@ -300,6 +303,14 @@ class IcebergDataSink : public HiveDataSink {
   // folly::dynamic array of values across all partition fields), ready for JSON
   // serialization.
   std::vector<folly::dynamic> commitPartitionValue_;
+
+  // Enables a memory-saving write mode for partition-sorted inputs. The sink
+  // keeps at most one partition writer active by rotating the previously active
+  // partition writer when rows for a new partition arrive. Repeated partitions
+  // remain correct, but produce additional files.
+  const bool closePartitionWriterOnPartitionChange_;
+  std::optional<uint64_t> activeSortedPartitionId_;
+  std::optional<uint32_t> activeSortedPartitionWriterIndex_;
 
   // Statistics for all data files written by this sink, organized by writer
   // index and file index within each writer. These statistics are populated
