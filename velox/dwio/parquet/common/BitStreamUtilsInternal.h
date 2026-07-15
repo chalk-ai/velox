@@ -23,13 +23,53 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "velox/common/base/Exceptions.h"
 
 #include "arrow/util/bit_util.h"
+#if __has_include("arrow/util/bpacking.h")
 #include "arrow/util/bpacking.h"
+#else
+#include "arrow/util/bpacking_internal.h"
+
+namespace arrow::internal {
+
+inline int unpack32(
+    const uint32_t* in,
+    uint32_t* out,
+    int batchSize,
+    int numBits) {
+  UnpackOptions options;
+  options.batch_size = batchSize;
+  options.bit_width = numBits;
+  unpack(reinterpret_cast<const uint8_t*>(in), out, options);
+  return batchSize;
+}
+
+inline int unpack64(
+    const uint8_t* in,
+    uint64_t* out,
+    int batchSize,
+    int numBits) {
+  UnpackOptions options;
+  options.batch_size = batchSize;
+  options.bit_width = numBits;
+  unpack(in, out, options);
+  return batchSize;
+}
+
+} // namespace arrow::internal
+#endif
 
 namespace facebook::velox::parquet {
+
+inline int numRequiredBits(uint64_t value) {
+  if (value == std::numeric_limits<uint64_t>::max()) {
+    return 64;
+  }
+  return ::arrow::bit_util::Log2(value + 1);
+}
 
 /// Utility class to write bit/byte streams.  This class can write data to
 /// either be bit packed or byte aligned (and a single stream that has a mix of

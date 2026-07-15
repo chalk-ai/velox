@@ -141,11 +141,24 @@ class AsyncRPCFunction {
   /// The function builds the typed batch request from its internal
   /// accumulated state and dispatches it.
   ///
-  /// Returns responses for ALL accumulated rows. Null rows get
+  /// @param maxRows Maximum number of rows to flush. 0 means flush all.
+  ///
+  /// Returns exactly maxRows responses (or all remaining if maxRows is
+  /// 0). Each response's rowId MUST be set to its 0-based index within
+  /// the flushed batch — the operator uses this to scatter responses
+  /// into the correct positions before stamping global row IDs. The
+  /// responses may appear in any order in the vector; the operator
+  /// reorders them by rowId. Null rows get
   /// RPCResponse{.error = "null_input"}. This keeps the operator
   /// completely agnostic to null handling in batch mode.
-  virtual folly::SemiFuture<std::vector<RPCResponse>> flushBatch() {
+  virtual folly::SemiFuture<std::vector<RPCResponse>> flushBatch(
+      int32_t /*maxRows*/) {
     VELOX_UNSUPPORTED("flushBatch() not implemented for function '{}'", name());
+  }
+
+  /// Convenience overload: flush all accumulated rows.
+  virtual folly::SemiFuture<std::vector<RPCResponse>> flushBatch() {
+    return flushBatch(0);
   }
 
   /// Number of rows accumulated so far (for threshold checks).
@@ -176,6 +189,31 @@ class AsyncRPCFunction {
       }
     }
     return result;
+  }
+
+  // ── Congestion Control ───────────────────────────────────────
+
+  /// Signal returned by evaluateCongestion() to indicate batch health.
+  enum class CongestionSignal {
+    /// Unit completed cleanly — feed its latency to the gradient window.
+    kSuccess,
+    /// Unit showed backend overload — shrink the window.
+    kError,
+    /// No congestion evaluation — skip window adjustment.
+    kNone,
+  };
+
+  /// Evaluate congestion from completed responses. Called by RPCOperator after
+  /// a unit (a drained set of PER_ROW rows, or one BATCH) completes. The
+  /// function inspects responses and returns a signal the operator maps to the
+  /// latency-gradient window: kSuccess feeds the unit's round-trip latency as a
+  /// gradient sample, kError applies a multiplicative decrease. User-data
+  /// errors (bad handle, null input) must classify as kNone so they never move
+  /// the window — only true backend overload should back off. Default: kNone
+  /// (no congestion control).
+  virtual CongestionSignal evaluateCongestion(
+      const std::vector<RPCResponse>& /*responses*/) const {
+    return CongestionSignal::kNone;
   }
 };
 

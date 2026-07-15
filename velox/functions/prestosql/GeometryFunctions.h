@@ -18,7 +18,6 @@
 
 #include <geos/geom/Coordinate.h>
 #include <geos/geom/CoordinateSequence.h>
-#include <geos/geom/GeometryFactory.h>
 #include <geos/geom/Envelope.h>
 #include <geos/io/GeoJSON.h>
 #include <geos/io/GeoJSONReader.h>
@@ -1279,9 +1278,10 @@ struct StConvexHullFunction {
 
       if ((minX == maxX) || (minY == maxY)) {
         // Envelope is a line, so that's the minimum convex hull
-        auto coords = std::make_unique<geos::geom::CoordinateSequence>(
-            std::initializer_list<geos::geom::CoordinateXY>{
-                {minX, minY}, {maxX, maxY}});
+        auto coords =
+            std::make_unique<geos::geom::CoordinateSequence>(2, 2);
+        coords->setAt(geos::geom::Coordinate(minX, minY), 0);
+        coords->setAt(geos::geom::Coordinate(maxX, maxY), 1);
 
         common::geospatial::GeometrySerializer::serialize(
             *(factory_->createLineString(std::move(coords))), result);
@@ -1953,14 +1953,14 @@ struct GeometryToBingTilesFunction {
     if (zoom < 0 || zoom > 23) {
       return Status::UserError("Zoom level must be between 0 and 23");
     }
-    auto envelope =
-        common::geospatial::GeometryDeserializer::deserializeEnvelope(geometry);
-    if (envelope->isNull()) {
+    auto geom =
+        common::geospatial::GeometryDeserializer::deserializeNonEmpty(geometry);
+    if (!geom) {
       return Status::OK();
     }
 
     std::vector<int64_t> covering;
-    auto geom = common::geospatial::GeometryDeserializer::deserialize(geometry);
+    const auto* envelope = geom->getEnvelopeInternal();
 
     if (geom->getGeometryTypeId() == geos::geom::GeometryTypeId::GEOS_POINT) {
       covering = geospatial::getMinimalTilesCoveringGeometry(*envelope, zoom);

@@ -24,6 +24,7 @@
 #include "velox/common/base/Exceptions.h"
 
 #include <folly/Likely.h>
+#include <xsimd/types/xsimd_common_arch.hpp>
 #include <xsimd/xsimd.hpp>
 
 namespace facebook::velox::simd {
@@ -367,6 +368,29 @@ auto toBitMask(xsimd::batch_bool<T, A> mask, const A& arch = {}) {
   return detail::BitMask<T, A>::toBitMask(mask, arch);
 }
 
+/// Returns true if at least one lane in the mask is true.
+template <typename T, typename A = xsimd::default_arch>
+inline bool any(xsimd::batch_bool<T, A> mask, const A& arch = {}) {
+#if XSIMD_WITH_AVX2
+  // x86 bitmasks perform better than xsimd reductions.
+  return toBitMask<T, A>(mask, arch) != 0;
+#else
+  (void)arch;
+  return xsimd::any<T, A>(mask);
+#endif
+}
+
+/// Returns true if no lanes in the mask are true.
+template <typename T, typename A = xsimd::default_arch>
+inline bool none(xsimd::batch_bool<T, A> mask, const A& arch = {}) {
+#if XSIMD_WITH_AVX2
+  return toBitMask<T, A>(mask, arch) == 0;
+#else
+  (void)arch;
+  return xsimd::none<T, A>(mask);
+#endif
+}
+
 // Get a vector mask from bit mask.
 template <typename T, typename BitMaskType, typename A = xsimd::default_arch>
 xsimd::batch_bool<T, A> fromBitMask(BitMaskType bitMask, const A& arch = {}) {
@@ -378,6 +402,17 @@ xsimd::batch_bool<T, A> fromBitMask(BitMaskType bitMask, const A& arch = {}) {
 template <typename T, typename A = xsimd::default_arch>
 auto allSetBitMask(const A& = {}) {
   return detail::BitMask<T, A>::kAllSet;
+}
+
+/// Returns true if every lane in the mask is true.
+template <typename T, typename A = xsimd::default_arch>
+inline bool all(xsimd::batch_bool<T, A> mask, const A& arch = {}) {
+#if XSIMD_WITH_AVX2
+  return toBitMask<T, A>(mask, arch) == allSetBitMask<T>(arch);
+#else
+  (void)arch;
+  return xsimd::all<T, A>(mask);
+#endif
 }
 
 namespace detail {
@@ -417,6 +452,16 @@ xsimd::batch<To, A> getHalf(xsimd::batch<From, A> data, const A& arch = {}) {
   return detail::GetHalf<To, From, A>::template apply<kSecond>(data, arch);
 }
 
+namespace detail {
+template <typename T, typename A>
+struct Crc32;
+}
+
+// Calculate the CRC32 checksum.
+template <typename A = xsimd::default_arch>
+uint32_t crc32U64(uint32_t checksum, uint64_t value, const A& arch = {}) {
+  return detail::Crc32<uint64_t, A>::apply(checksum, value, arch);
+}
 
 // Return a vector consisting {0, 1, ..., n} where 'n' is the number
 // of lanes.

@@ -19,7 +19,7 @@
 #include <atomic>
 #include <thread>
 #include "velox/common/base/tests/GTestUtils.h"
-#include "velox/exec/OutputBufferManager.h"
+#include "velox/exec/DefaultOutputBufferManager.h"
 #include "velox/exec/Task.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -62,12 +62,13 @@ class ExchangeClientTest : public testing::Test,
     if (!isRegisteredVectorSerde()) {
       velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
     }
-    bufferManager_ = OutputBufferManager::getInstanceRef();
+    bufferManager_ = DefaultOutputBufferManager::getInstanceRef();
 
     common::testutil::TestValue::enable();
   }
 
   void TearDown() override {
+    executor_->stop();
     exec::test::waitForAllTasksToBeDeleted();
     test::testingShutdownLocalExchangeSource();
   }
@@ -162,7 +163,7 @@ class ExchangeClientTest : public testing::Test,
 
   std::string serdeKind_;
   std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
-  std::shared_ptr<OutputBufferManager> bufferManager_;
+  std::shared_ptr<DefaultOutputBufferManager> bufferManager_;
 };
 
 TEST_P(ExchangeClientTest, nonVeloxCreateExchangeSourceException) {
@@ -1108,6 +1109,7 @@ TEST_P(ExchangeClientTest, lazyFetching) {
     auto pages = fetchPages(1, *client, 1);
     ASSERT_EQ(1, pages.size());
 
+    bufferManager_->noMoreData(taskId);
     task->requestCancel();
     bufferManager_->removeTask(taskId);
     task.reset();
@@ -1143,6 +1145,7 @@ TEST_P(ExchangeClientTest, lazyFetching) {
     auto pages = fetchPages(1, *client, 1);
     ASSERT_EQ(1, pages.size());
 
+    bufferManager_->noMoreData(taskId);
     task->requestCancel();
     bufferManager_->removeTask(taskId);
     task.reset();

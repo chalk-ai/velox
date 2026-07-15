@@ -346,10 +346,16 @@ class FileWriterImpl : public FileWriter {
     if (!closed_) {
       // Make idempotent.
       closed_ = true;
-      if (rowGroupWriter_ != nullptr) {
-        PARQUET_CATCH_NOT_OK(rowGroupWriter_->close());
-      }
+      PARQUET_CATCH_NOT_OK(finishRowGroup());
       PARQUET_CATCH_NOT_OK(writer_->close());
+    }
+    return Status::OK();
+  }
+
+  ::arrow::Status finishRowGroup() override {
+    if (rowGroupWriter_ != nullptr) {
+      PARQUET_CATCH_NOT_OK(rowGroupWriter_->close());
+      rowGroupWriter_ = nullptr;
     }
     return Status::OK();
   }
@@ -417,15 +423,22 @@ class FileWriterImpl : public FileWriter {
 
     if (table.num_rows() == 0) {
       // Append a row group with 0 rows.
-      RETURN_NOT_OK_ELSE(writeRowGroup(0, 0), PARQUET_IGNORE_NOT_OK(close()));
+      auto status = writeRowGroup(0, 0);
+      if (!status.ok()) {
+        PARQUET_IGNORE_NOT_OK(close());
+        return status;
+      }
       return Status::OK();
     }
 
     for (int chunk = 0; chunk * chunkSize < table.num_rows(); chunk++) {
       int64_t offset = chunk * chunkSize;
-      RETURN_NOT_OK_ELSE(
-          writeRowGroup(offset, std::min(chunkSize, table.num_rows() - offset)),
-          PARQUET_IGNORE_NOT_OK(close()));
+      auto status =
+          writeRowGroup(offset, std::min(chunkSize, table.num_rows() - offset));
+      if (!status.ok()) {
+        PARQUET_IGNORE_NOT_OK(close());
+        return status;
+      }
     }
     return Status::OK();
   }
@@ -497,12 +510,24 @@ class FileWriterImpl : public FileWriter {
       offset += batchSize;
 
       // Flush current row group if it is full.
-      if (rowGroupWriter_->numRows() >= maxRowGroupLength) {
+      if (rowGroupWriter_->numRows() >= maxRowGroupLength &&
+          // Avoid leaving an empty row group at the end of the file.
+          offset < batch.num_rows()) {
         RETURN_NOT_OK(newBufferedRowGroup());
       }
     }
 
     return Status::OK();
+  }
+
+  int64_t currentRowGroupTotalBytes() const override {
+    if (rowGroupWriter_ == nullptr) {
+      return 0;
+    }
+    auto stats = rowGroupWriter_->estimatedBufferedStats();
+    return stats.defLevelBytes + stats.repLevelBytes + stats.valueBytes +
+        stats.dictBytes + rowGroupWriter_->totalCompressedBytes() +
+        rowGroupWriter_->totalCompressedBytesWritten();
   }
 
   const WriterProperties& properties() const {

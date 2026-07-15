@@ -51,7 +51,7 @@ function(velox_install_library_headers)
     cmake_path(
       RELATIVE_PATH
       CMAKE_CURRENT_SOURCE_DIR
-      BASE_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      BASE_DIRECTORY "${PROJECT_SOURCE_DIR}"
       OUTPUT_VARIABLE _hdr_dir
     )
     install(FILES ${_hdrs} DESTINATION include/${_hdr_dir})
@@ -173,7 +173,7 @@ function(velox_add_library TARGET)
         )
       endif()
     endif()
-    # create alias for compatability
+    # create alias for compatibility
     if(NOT TARGET ${TARGET})
       add_library(${TARGET} ALIAS velox)
     endif()
@@ -269,14 +269,26 @@ function(velox_sources TARGET)
   endif()
 endfunction()
 
+# Group test sources into batched binaries to reduce link target count on CI.
+# On macOS, defaults to OFF so each test source gets its own binary and
+# individual tests are discoverable via 'ctest -R <TestName>'.
+if(APPLE)
+  option(VELOX_ENABLE_GROUPED_TESTS "Group test sources into batched binaries" OFF)
+else()
+  option(VELOX_ENABLE_GROUPED_TESTS "Group test sources into batched binaries" ON)
+endif()
+
 # Number of test source files per grouped test binary. Controls the trade-off
 # between link time (fewer groups = faster linking) and ctest parallelism
-# (more groups = more parallel test processes). Set to 1 for per-file binaries.
+# (more groups = more parallel test processes). Ignored when
+# VELOX_ENABLE_GROUPED_TESTS is OFF.
 set(VELOX_TESTS_PER_GROUP 10 CACHE STRING "Number of test source files per grouped test binary")
 
 # Creates grouped test binaries from a list of test sources. Groups tests into
 # batches of VELOX_TESTS_PER_GROUP to reduce link target count while
-# maintaining ctest parallelism.
+# maintaining ctest parallelism. When VELOX_ENABLE_GROUPED_TESTS is OFF, each
+# source file becomes its own binary named after the source file (without
+# extension), making individual tests discoverable via 'ctest -R <TestName>'.
 #
 # Usage:
 #   velox_add_grouped_tests(
@@ -291,6 +303,18 @@ function(velox_add_grouped_tests)
 
   if(NOT ARG_WORKING_DIRECTORY)
     set(ARG_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  endif()
+
+  if(NOT VELOX_ENABLE_GROUPED_TESTS)
+    # Create one binary per source file, named after the source file.
+    foreach(_source IN LISTS ARG_SOURCES)
+      get_filename_component(_name ${_source} NAME_WE)
+      set(_target "${ARG_PREFIX}_${_name}")
+      add_executable(${_target} ${_source} ${ARG_EXTRA_SOURCES})
+      add_test(NAME ${_target} COMMAND ${_target} WORKING_DIRECTORY ${ARG_WORKING_DIRECTORY})
+      target_link_libraries(${_target} ${ARG_DEPS})
+    endforeach()
+    return()
   endif()
 
   list(LENGTH ARG_SOURCES _num_sources)
@@ -318,4 +342,57 @@ function(velox_add_grouped_tests)
       math(EXPR _group "${_group} + 1")
     endif()
   endforeach()
+endfunction()
+
+# Check if compiler-rt is available and conditionally link libatomic for Clang.
+# compiler-rt provides atomic implementations, so libatomic is only needed when
+# compiler-rt is not installed.
+function(velox_configure_clang_atomic_linker_flags)
+  if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    return()
+  endif()
+
+  set(COMPILER_RT_FOUND FALSE)
+
+  # Get Clang's resource directory
+  execute_process(
+    COMMAND ${CMAKE_CXX_COMPILER} -print-resource-dir
+    OUTPUT_VARIABLE CLANG_RESOURCE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+
+  if(CLANG_RESOURCE_DIR)
+    # Check for compiler-rt in Clang's resource directory
+    file(
+      GLOB COMPILER_RT_LIBS
+      "${CLANG_RESOURCE_DIR}/lib/*/libclang_rt.builtins*.a"
+      "${CLANG_RESOURCE_DIR}/lib/*/libclang_rt.builtins*.so"
+    )
+    if(COMPILER_RT_LIBS)
+      set(COMPILER_RT_FOUND TRUE)
+    endif()
+  endif()
+
+  # Also check common system library paths for Ubuntu and CentOS
+  if(NOT COMPILER_RT_FOUND)
+    foreach(LIB_PATH /usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu)
+      if(
+        EXISTS "${LIB_PATH}/libclang_rt.builtins.a"
+        OR EXISTS "${LIB_PATH}/libclang_rt.builtins-x86_64.a"
+        OR EXISTS "${LIB_PATH}/libclang_rt.builtins-aarch64.a"
+      )
+        set(COMPILER_RT_FOUND TRUE)
+        break()
+      endif()
+    endforeach()
+  endif()
+
+  # Only link libatomic if compiler-rt is not found
+  if(NOT COMPILER_RT_FOUND)
+    message(STATUS "compiler-rt not found, linking libatomic for Clang")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -latomic" PARENT_SCOPE)
+  else()
+    message(STATUS "compiler-rt found, skipping libatomic linking")
+  endif()
 endfunction()

@@ -158,6 +158,11 @@ class HashProbe : public Operator {
   // arbitration.
   RowVectorPtr getOutputInternal(bool toSpillOutput);
 
+  // Handles the right semi filter join fast path when there is no extra
+  // filter. Marks matching build rows as probed and consumes the current
+  // input batch.
+  void processRightSemiNoFilter(bool emptyBuildSide);
+
   // Check if output_ can be re-used and if not make a new one.
   void prepareOutput(vector_size_t size);
 
@@ -396,6 +401,8 @@ class HashProbe : public Operator {
   const core::JoinType joinType_;
 
   const bool nullAware_;
+
+  const bool nullAsValue_;
 
   const RowTypePtr probeType_;
 

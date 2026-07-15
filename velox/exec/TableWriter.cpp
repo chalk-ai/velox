@@ -15,6 +15,7 @@
  */
 
 #include "velox/exec/TableWriter.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/exec/OperatorType.h"
 #include "velox/exec/Task.h"
 
@@ -63,7 +64,8 @@ TableWriter::TableWriter(
         &nonReclaimableSection_);
   }
   const auto& connectorId = tableWriteNode->insertTableHandle()->connectorId();
-  connector_ = connector::getConnector(connectorId);
+  connector_ = connector::ConnectorRegistry::tryGet(
+      *driverCtx->task->queryCtx(), connectorId);
   connectorQueryCtx_ = operatorCtx_->createConnectorQueryCtx(
       connectorId,
       planNodeId(),
@@ -315,6 +317,19 @@ void TableWriter::updateStats(const connector::DataSink::Stats& stats) {
           RuntimeCounter(
               stats.compressionTimeNs, RuntimeCounter::Unit::kNanos));
     }
+    for (const auto& [name, metric] : stats.writerRuntimeStats) {
+      lockedStats->setRuntimeStat(name, metric);
+    }
+    const auto backgroundTimingStat =
+        stats.writerRuntimeStats.find(std::string{kBackgroundCpuTimeNanos});
+    if (backgroundTimingStat != stats.writerRuntimeStats.end()) {
+      lockedStats->backgroundTiming.clear();
+      lockedStats->backgroundTiming.add(
+          CpuWallTiming{
+              backgroundTimingStat->second.count,
+              0,
+              static_cast<uint64_t>(backgroundTimingStat->second.sum)});
+    }
     lockedStats->addRuntimeStat(
         kRunningWallNanos,
         RuntimeCounter(
@@ -392,8 +407,11 @@ uint64_t TableWriter::ConnectorReclaimer::reclaim(
     // TODO: reduce the log frequency if it is too verbose.
     ++stats.numNonReclaimableAttempts;
     LOG(WARNING) << "Can't reclaim from a closed writer connector pool: "
-                 << pool->name()
-                 << ", memory usage: " << succinctBytes(pool->reservedBytes());
+                 << pool->name() << ", root pool: " << pool->root()->name()
+                 << ", used: " << succinctBytes(pool->usedBytes())
+                 << ", reservation: " << succinctBytes(pool->reservedBytes())
+                 << ", root pool reservation: "
+                 << succinctBytes(pool->root()->reservedBytes());
     return 0;
   }
 
@@ -402,8 +420,11 @@ uint64_t TableWriter::ConnectorReclaimer::reclaim(
     ++stats.numNonReclaimableAttempts;
     LOG(WARNING)
         << "Can't reclaim from a writer connector pool which hasn't initialized yet: "
-        << pool->name()
-        << ", memory usage: " << succinctBytes(pool->reservedBytes());
+        << pool->name() << ", root pool: " << pool->root()->name()
+        << ", used: " << succinctBytes(pool->usedBytes())
+        << ", reservation: " << succinctBytes(pool->reservedBytes())
+        << ", root pool reservation: "
+        << succinctBytes(pool->root()->reservedBytes());
     return 0;
   }
   RuntimeStatWriterScopeGuard opStatsGuard(op_);

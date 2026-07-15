@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "folly/json.h"
-#include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/dwio/common/BufferUtil.h"
 
@@ -69,28 +69,36 @@ std::vector<uint64_t> parseDeltaDeletionVectorRowIndexes(
 
 DeltaSplitReader::DeltaSplitReader(
     const std::shared_ptr<const hive::HiveConnectorSplit>& hiveSplit,
-    const HiveTableHandlePtr& hiveTableHandle,
-    const std::unordered_map<std::string, HiveColumnHandlePtr>* partitionKeys,
+    const FileTableHandlePtr& tableHandle,
+    const std::unordered_map<std::string, FileColumnHandlePtr>* partitionKeys,
     const ConnectorQueryCtx* connectorQueryCtx,
-    const std::shared_ptr<const HiveConfig>& hiveConfig,
+    const std::shared_ptr<const FileConfig>& fileConfig,
     const RowTypePtr& readerOutputType,
-    const std::shared_ptr<io::IoStatistics>& ioStats,
-    const std::shared_ptr<IoStats>& fsStats,
+    const std::shared_ptr<io::IoStatistics>& dataIoStats,
+    const std::shared_ptr<io::IoStatistics>& metadataIoStats,
+    const std::shared_ptr<IoStats>& ioStats,
     FileHandleFactory* fileHandleFactory,
-    folly::Executor* executor,
-    const std::shared_ptr<common::ScanSpec>& scanSpec)
-    : SplitReader(
+    folly::Executor* ioExecutor,
+    const std::shared_ptr<common::ScanSpec>& scanSpec,
+    const std::unordered_map<std::string, FileColumnHandlePtr>* infoColumns,
+    std::vector<column_index_t> bucketChannels,
+    const common::SubfieldFilters* subfieldFiltersForValidation)
+    : HiveSplitReader(
           hiveSplit,
-          hiveTableHandle,
+          tableHandle,
           partitionKeys,
           connectorQueryCtx,
-          hiveConfig,
+          fileConfig,
           readerOutputType,
+          dataIoStats,
+          metadataIoStats,
           ioStats,
-          fsStats,
           fileHandleFactory,
-          executor,
-          scanSpec),
+          ioExecutor,
+          scanSpec,
+          infoColumns,
+          std::move(bucketChannels),
+          subfieldFiltersForValidation),
       baseReadOffset_(0),
       splitOffset_(0),
       deletedRows_(),
@@ -101,18 +109,11 @@ void DeltaSplitReader::prepareSplit(
     std::shared_ptr<common::MetadataFilter> metadataFilter,
     dwio::common::RuntimeStatistics& runtimeStats,
     const folly::F14FastMap<std::string, std::string>& fileReadOps) {
-  createReader(fileReadOps);
+  HiveSplitReader::prepareSplit(
+      std::move(metadataFilter), runtimeStats, fileReadOps);
   if (emptySplit_) {
     return;
   }
-
-  auto rowType = getAdaptedRowType();
-  if (checkIfSplitIsEmpty(runtimeStats)) {
-    VELOX_CHECK(emptySplit_);
-    return;
-  }
-
-  createRowReader(std::move(metadataFilter), std::move(rowType), std::nullopt);
   baseReadOffset_ = 0;
   splitOffset_ = baseRowReader_->nextRowNumber();
   deletedRows_ = parseDeltaDeletionVectorRowIndexes(hiveSplit_->extraFileInfo);
@@ -125,10 +126,6 @@ uint64_t DeltaSplitReader::next(uint64_t size, VectorPtr& output) {
   mutation.deletedRows = nullptr;
 
   if (deleteBitmap_) {
-    std::memset(
-        static_cast<void*>(deleteBitmap_->asMutable<int8_t>()),
-        0L,
-        deleteBitmap_->size());
     deleteBitmap_->setSize(0);
   }
 
@@ -142,6 +139,8 @@ uint64_t DeltaSplitReader::next(uint64_t size, VectorPtr& output) {
     const auto numBytes = bits::nbytes(actualSize);
     dwio::common::ensureCapacity<int8_t>(
         deleteBitmap_, numBytes, connectorQueryCtx_->memoryPool(), false, true);
+    std::memset(
+        static_cast<void*>(deleteBitmap_->asMutable<int8_t>()), 0L, numBytes);
 
     const auto rowNumberLowerBound = splitOffset_ + baseReadOffset_;
     const auto rowNumberUpperBound = rowNumberLowerBound + actualSize;
@@ -168,6 +167,11 @@ uint64_t DeltaSplitReader::next(uint64_t size, VectorPtr& output) {
       ? deleteBitmap_->as<uint64_t>()
       : nullptr;
 
-  return baseRowReader_->next(actualSize, output, &mutation);
+  auto numScanned = baseRowReader_->next(actualSize, output, &mutation);
+  if (numScanned > 0 && output->size() > 0 && !bucketChannels().empty()) {
+    applyBucketConversion(
+        output, bucketConversionRows(*output->asChecked<RowVector>()));
+  }
+  return numScanned;
 }
 } // namespace facebook::velox::connector::hive::delta

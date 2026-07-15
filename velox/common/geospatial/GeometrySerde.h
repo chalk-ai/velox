@@ -409,6 +409,11 @@ class GeometryDeserializer {
   static const std::unique_ptr<geos::geom::Envelope> deserializeEnvelope(
       const StringView& geometry);
 
+  /// Deserializes a geometry, returning nullptr for empty geometries
+  /// (those with null envelopes).
+  static std::unique_ptr<geos::geom::Geometry> deserializeNonEmpty(
+      const StringView& geometry);
+
   template <typename T>
   static std::unique_ptr<geos::geom::CoordinateSequence>
   deserializePointsToCoordinate(
@@ -458,7 +463,7 @@ class GeometryDeserializer {
       }
       lastX = x;
       lastY = y;
-      coords->setAt(geos::geom::CoordinateXY{x, y}, i);
+      coords->setAt(geos::geom::CoordinateXY(x, y), i);
     }
     return coords;
   }

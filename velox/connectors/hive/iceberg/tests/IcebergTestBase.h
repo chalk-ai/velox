@@ -18,12 +18,16 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/connectors/hive/iceberg/IcebergConfig.h"
 #include "velox/connectors/hive/iceberg/IcebergDataSink.h"
+#include "velox/connectors/hive/iceberg/IcebergDeleteFile.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #ifdef VELOX_ENABLE_PARQUET
@@ -69,6 +73,35 @@ class IcebergTestBase : public exec::test::HiveConnectorTestBase {
   std::vector<std::shared_ptr<ConnectorSplit>> createSplitsForDirectory(
       const std::string& directory);
 
+  /// Returns the size of a test file.
+  static uint64_t getFileSize(const std::string& path);
+
+  /// Creates Iceberg connector splits for a data file. Tests can attach delete
+  /// files, partition keys, info columns, and a data sequence number to each
+  /// split.
+  std::vector<std::shared_ptr<ConnectorSplit>> makeIcebergSplits(
+      const std::string& dataFilePath,
+      const std::vector<IcebergDeleteFile>& deleteFiles = {},
+      const std::unordered_map<std::string, std::optional<std::string>>&
+          partitionKeys = {},
+      uint32_t splitCount = 1,
+      const std::unordered_map<std::string, std::string>& infoColumns = {},
+      int64_t dataSequenceNumber = 0);
+
+  /// Creates one Iceberg connector split for a full data file with info
+  /// columns.
+  std::shared_ptr<ConnectorSplit> makeIcebergSplitWithInfoColumns(
+      const std::string& dataFilePath,
+      const std::unordered_map<std::string, std::string>& infoColumns,
+      const std::vector<IcebergDeleteFile>& deleteFiles = {},
+      int64_t dataSequenceNumber = 0);
+
+  /// Creates Hive column handles for all columns in 'rowType', marking
+  /// specified columns as partition keys.
+  ColumnHandleMap makeColumnHandles(
+      const RowTypePtr& rowType,
+      const std::unordered_set<int>& partitionIndices = {});
+
   std::vector<std::string> listFiles(const std::string& dirPath);
 
   std::shared_ptr<IcebergPartitionSpec> createPartitionSpec(
@@ -78,6 +111,13 @@ class IcebergTestBase : public exec::test::HiveConnectorTestBase {
   void setConnectorSessionProperty(
       const std::string& key,
       const std::string& value);
+
+  /// Recreates the connector query context with the given session timezone
+  /// and timestamp-adjustment flag. Tests use this to exercise non-UTC
+  /// session configurations and verify timezone-sensitive behavior.
+  void recreateConnectorQueryCtx(
+      const std::string& sessionTimezone,
+      bool adjustTimestampToTimezone);
 
   /// Extracts partition key-value pairs from a file path.
   /// Returns a map where keys are partition column names and values are

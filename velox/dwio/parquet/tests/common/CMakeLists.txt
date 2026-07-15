@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-find_package(Thrift CONFIG REQUIRED)
-
 add_executable(velox_dwio_parquet_common_test LevelConversionTest.cpp)
 
 add_test(velox_dwio_parquet_common_test velox_dwio_parquet_common_test)
@@ -21,7 +19,6 @@ target_link_libraries(
   velox_dwio_parquet_common_test
   velox_dwio_parquet_common
   arrow
-  thrift::thrift
   velox_link_libs
   velox_exec
   GTest::gtest

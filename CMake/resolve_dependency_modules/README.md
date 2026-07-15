@@ -27,7 +27,7 @@ by Velox. See details on bundling below.
 | bison             | 3.0.4           | No       ||
 | cmake             | 3.28            | No       ||
 | double-conversion | 3.1.5           | No       ||
-| xsimd             | 10.0.0          | Yes      ||
+| xsimd             | 14.1.0          | Yes      ||
 | re2               | 2024-07-02      | Yes      ||
 | fmt               | 11.2.0          | Yes      | Used API must be fmt 9 compatible |
 | simdjson          | 4.1.0           | Yes      ||
@@ -41,9 +41,9 @@ by Velox. See details on bundling below.
 | DuckDB (testing)  | 0.8.1           | Yes      ||
 | arrow             | 15.0.0          | Yes      ||
 | geos              | 3.10.7          | Yes      ||
+| s2geometry        | 0.12.0          | Yes      ||
 | fast_float        | v8.0.2          | Yes      ||
 | xxhash            | default         | No       ||
-| thrift            | 0.16            | No       ||
 
 # Bundled Dependency Management
 This module provides a dependency management system that allows us to automatically fetch and build dependencies from source if needed.

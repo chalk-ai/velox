@@ -20,6 +20,7 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/common/testutil/TempFilePath.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
@@ -82,13 +83,14 @@ void AggregationTestBase::SetUp() {
       kHiveConnectorId,
       std::make_shared<config::ConfigBase>(
           std::unordered_map<std::string, std::string>()));
-  connector::registerConnector(hiveConnector);
+  connector::ConnectorRegistry::global().insert(
+      hiveConnector->connectorId(), hiveConnector);
   dwrf::registerDwrfReaderFactory();
 }
 
 void AggregationTestBase::TearDown() {
   dwrf::unregisterDwrfReaderFactory();
-  connector::unregisterConnector(kHiveConnectorId);
+  connector::ConnectorRegistry::global().erase(kHiveConnectorId);
   OperatorTestBase::TearDown();
 }
 
@@ -220,7 +222,7 @@ std::string getMergeExtractFunctionNameWithSuffix(
   VELOX_CHECK(signatures.has_value());
 
   for (const auto& signature : signatures.value()) {
-    exec::SignatureBinder binder{*signature, argTypes};
+    exec::SignatureBinder binder{*signature, argTypes, TypeCoercer::defaults()};
     if (binder.tryBind()) {
       if (auto resolvedType = binder.tryResolveReturnType()) {
         return exec::CompanionSignatures::mergeExtractFunctionNameWithSuffix(
@@ -243,7 +245,7 @@ std::string getExtractFunctionNameWithSuffix(
   VELOX_CHECK(signatures.has_value());
 
   for (const auto& signature : signatures.value()) {
-    exec::SignatureBinder binder{*signature, argTypes};
+    exec::SignatureBinder binder{*signature, argTypes, TypeCoercer::defaults()};
     if (binder.tryBind()) {
       if (auto resultType = binder.tryResolveReturnType()) {
         return exec::CompanionSignatures::extractFunctionNameWithSuffix(
@@ -1037,8 +1039,8 @@ void AggregationTestBase::testAggregationsImpl(
     auto partialStats = taskStats.at(partialNodeId).customStats;
     auto intermediateStats = taskStats.at(intermediateNodeId).customStats;
     if (inputVectors > 1) {
-      EXPECT_LT(0, partialStats.at("abandonedPartialAggregation").count);
-      EXPECT_LT(0, intermediateStats.at("abandonedPartialAggregation").count);
+      EXPECT_LT(0, partialStats.at("abandonedPartialAggregationRows").sum);
+      EXPECT_LT(0, intermediateStats.at("abandonedPartialAggregationRows").sum);
     }
   }
 
