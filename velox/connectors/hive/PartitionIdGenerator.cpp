@@ -55,9 +55,13 @@ PartitionIdGenerator::PartitionIdGenerator(
 
 void PartitionIdGenerator::run(
     const RowVectorPtr& input,
-    raw_vector<uint64_t>& result) {
+    raw_vector<uint64_t>& result,
+    std::vector<PartitionRun>* runs) {
   const auto numRows = input->size();
   result.resize(numRows);
+  if (runs != nullptr) {
+    runs->clear();
+  }
 
   // Compute value IDs using VectorHashers and store these in 'result'.
   computeValueIds(input, result);
@@ -68,11 +72,15 @@ void PartitionIdGenerator::run(
   // TODO Optimize common use case where all records belong to the same
   // partition. VectorHashers keep track of the number of unique values, hence,
   // we can find out if there is only one unique value for each partition key.
-  for (auto i = 0; i < numRows; ++i) {
+  bool hasRun = false;
+  uint64_t runPartitionId = 0;
+  vector_size_t runStart = 0;
+  for (vector_size_t i = 0; i < numRows; ++i) {
     auto valueId = result[i];
     auto it = partitionIds_.find(valueId);
+    uint64_t partitionId;
     if (it != partitionIds_.end()) {
-      result[i] = it->second;
+      partitionId = it->second;
     } else {
       uint64_t nextPartitionId = partitionIds_.size();
       VELOX_USER_CHECK_LT(
@@ -84,8 +92,24 @@ void PartitionIdGenerator::run(
       partitionIds_.emplace(valueId, nextPartitionId);
       savePartitionValues(nextPartitionId, input, i);
 
-      result[i] = nextPartitionId;
+      partitionId = nextPartitionId;
     }
+    result[i] = partitionId;
+
+    if (runs != nullptr) {
+      if (!hasRun) {
+        hasRun = true;
+        runPartitionId = partitionId;
+        runStart = i;
+      } else if (partitionId != runPartitionId) {
+        runs->push_back({runPartitionId, runStart, i});
+        runPartitionId = partitionId;
+        runStart = i;
+      }
+    }
+  }
+  if (runs != nullptr && hasRun) {
+    runs->push_back({runPartitionId, runStart, numRows});
   }
 }
 

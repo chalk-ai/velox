@@ -20,6 +20,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <folly/json.h>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -449,14 +450,8 @@ void IcebergDataSink::appendData(RowVectorPtr input) {
 
   computePartitionAndBucketIds(input);
 
-  vector_size_t runStart = 0;
-  while (runStart < input->size()) {
-    const auto partitionId = partitionIds_[runStart];
-    auto runEnd = runStart + 1;
-    while (runEnd < input->size() && partitionIds_[runEnd] == partitionId) {
-      ++runEnd;
-    }
-
+  for (const auto& run : partitionRuns_) {
+    const auto partitionId = run.partitionId;
     if (activeSortedPartitionId_.has_value() &&
         activeSortedPartitionId_.value() != partitionId &&
         activeSortedPartitionWriterIndex_.has_value()) {
@@ -468,12 +463,13 @@ void IcebergDataSink::appendData(RowVectorPtr input) {
       }
     }
 
-    const auto writerIndex = ensureWriter(getWriterId(runStart));
-    write(writerIndex, wrapInputRows(input, runStart, runEnd - runStart));
+    VELOX_CHECK_LT(partitionId, std::numeric_limits<uint32_t>::max());
+    const auto writerIndex = ensureWriter(WriterId{
+        static_cast<uint32_t>(partitionId), std::nullopt});
+    write(writerIndex, wrapInputRows(input, run.start, run.end - run.start));
 
     activeSortedPartitionId_ = partitionId;
     activeSortedPartitionWriterIndex_ = writerIndex;
-    runStart = runEnd;
   }
 }
 
@@ -491,7 +487,13 @@ void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
       nullptr,
       input->size(),
       std::move(transformedColumns));
-  partitionIdGenerator_->run(transformedRowVector, partitionIds_);
+  if (closePartitionWriterOnPartitionChange_ && !isBucketed()) {
+    partitionIdGenerator_->run(
+        transformedRowVector, partitionIds_, &partitionRuns_);
+  } else {
+    partitionRuns_.clear();
+    partitionIdGenerator_->run(transformedRowVector, partitionIds_);
+  }
 }
 
 std::string IcebergDataSink::getPartitionName(uint32_t partitionId) const {

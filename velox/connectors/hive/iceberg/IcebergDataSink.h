@@ -311,6 +311,7 @@ class IcebergDataSink : public HiveDataSink {
   const bool closePartitionWriterOnPartitionChange_;
   std::optional<uint64_t> activeSortedPartitionId_;
   std::optional<uint32_t> activeSortedPartitionWriterIndex_;
+  std::vector<PartitionRun> partitionRuns_;
 
   // Statistics for all data files written by this sink, organized by writer
   // index and file index within each writer. These statistics are populated
