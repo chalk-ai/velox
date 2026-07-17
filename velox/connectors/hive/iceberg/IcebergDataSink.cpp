@@ -291,6 +291,10 @@ RowVectorPtr wrapInputRows(
     const RowVectorPtr& input,
     vector_size_t begin,
     vector_size_t size) {
+  // Build a zero-copy view over a contiguous partition run. The sorted Iceberg
+  // write path already knows the row range for each partition, so it can wrap
+  // that range directly instead of using the generic arbitrary-row partition
+  // split path.
   if (begin == 0 && size == input->size()) {
     return input;
   }
