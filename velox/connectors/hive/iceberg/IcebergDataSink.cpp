@@ -450,6 +450,16 @@ void IcebergDataSink::appendData(RowVectorPtr input) {
 
   computePartitionAndBucketIds(input);
 
+  // This mode is intended for input that has already been clustered by the
+  // Iceberg partition key (for example, by an upstream ORDER BY). Under that
+  // contract, when the partition id changes, the previous partition's writer
+  // can be closed to avoid keeping one open writer per discovered partition.
+  //
+  // Correctness does not depend on perfect clustering: if the same partition
+  // appears again later, ensureWriter() will create a new writer for that
+  // partition and the commit will include multiple files for the same
+  // partition. The tradeoff is more, smaller files instead of unbounded open
+  // partition writers.
   for (const auto& run : partitionRuns_) {
     const auto partitionId = run.partitionId;
     if (activeSortedPartitionId_.has_value() &&
@@ -488,6 +498,9 @@ void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
       input->size(),
       std::move(transformedColumns));
   if (closePartitionWriterOnPartitionChange_ && !isBucketed()) {
+    // Request contiguous partition runs in addition to row-level partition ids.
+    // appendData() consumes these runs to rotate writers at partition
+    // boundaries without walking partitionIds_ a second time.
     partitionIdGenerator_->run(
         transformedRowVector, partitionIds_, &partitionRuns_);
   } else {

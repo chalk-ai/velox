@@ -78,9 +78,8 @@ void PartitionIdGenerator::run(
   for (vector_size_t i = 0; i < numRows; ++i) {
     auto valueId = result[i];
     auto it = partitionIds_.find(valueId);
-    uint64_t partitionId;
     if (it != partitionIds_.end()) {
-      partitionId = it->second;
+      result[i] = it->second;
     } else {
       uint64_t nextPartitionId = partitionIds_.size();
       VELOX_USER_CHECK_LT(
@@ -92,18 +91,17 @@ void PartitionIdGenerator::run(
       partitionIds_.emplace(valueId, nextPartitionId);
       savePartitionValues(nextPartitionId, input, i);
 
-      partitionId = nextPartitionId;
+      result[i] = nextPartitionId;
     }
-    result[i] = partitionId;
 
     if (runs != nullptr) {
       if (!hasRun) {
         hasRun = true;
-        runPartitionId = partitionId;
+        runPartitionId = result[i];
         runStart = i;
-      } else if (partitionId != runPartitionId) {
+      } else if (result[i] != runPartitionId) {
         runs->push_back({runPartitionId, runStart, i});
-        runPartitionId = partitionId;
+        runPartitionId = result[i];
         runStart = i;
       }
     }

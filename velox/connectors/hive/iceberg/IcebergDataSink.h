@@ -309,8 +309,17 @@ class IcebergDataSink : public HiveDataSink {
   // partition writer when rows for a new partition arrive. Repeated partitions
   // remain correct, but produce additional files.
   const bool closePartitionWriterOnPartitionChange_;
+
+  // Tracks the writer currently considered active by the partition-sorted
+  // write path. This state intentionally spans input batches: if batch N ends
+  // with partition A and batch N+1 starts with partition B, appendData() can
+  // rotate A before writing B.
   std::optional<uint64_t> activeSortedPartitionId_;
   std::optional<uint32_t> activeSortedPartitionWriterIndex_;
+
+  // Contiguous partition runs for the most recent input batch. Populated by
+  // PartitionIdGenerator only for the partition-sorted close-on-change path so
+  // appendData() can write one run at a time without rescanning partitionIds_.
   std::vector<PartitionRun> partitionRuns_;
 
   // Statistics for all data files written by this sink, organized by writer

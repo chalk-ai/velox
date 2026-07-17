@@ -22,6 +22,9 @@ namespace facebook::velox::connector::hive {
 
 struct PartitionRun {
   uint64_t partitionId;
+  // Half-open row range [start, end) in the input batch where every row maps
+  // to 'partitionId'. Runs describe input order; they are not a distinct
+  // partition list.
   vector_size_t start;
   vector_size_t end;
 };
@@ -45,7 +48,10 @@ class PartitionIdGenerator {
   /// Generate sequential partition IDs for input vector.
   /// @param input Input RowVector.
   /// @param result Generated integer IDs indexed by input row number.
-  /// @param runs Optional contiguous runs of generated partition IDs.
+  /// @param runs Optional contiguous runs of generated partition IDs in input
+  /// order. Callers that use runs to close writers must ensure their input is
+  /// clustered by partition, or be prepared to reopen a partition writer later
+  /// and produce additional files for the same partition.
   void run(
       const RowVectorPtr& input,
       raw_vector<uint64_t>& result,
