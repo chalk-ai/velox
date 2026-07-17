@@ -306,8 +306,9 @@ class IcebergDataSink : public HiveDataSink {
 
   // Enables a memory-saving write mode for partition-sorted inputs. The sink
   // keeps at most one partition writer active by rotating the previously active
-  // partition writer when rows for a new partition arrive. Repeated partitions
-  // remain correct, but produce additional files.
+  // partition writer when rows for a new partition arrive. If data is unsorted,
+  // and this mode is mis-applied, the output will still be correct, but
+  // will be inefficient since partition writers will be opened repeatedly.
   const bool closePartitionWriterOnPartitionChange_;
 
   // Tracks the writer currently considered active by the partition-sorted
