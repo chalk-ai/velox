@@ -16,8 +16,16 @@
 
 #include "velox/dwio/parquet/reader/ParquetData.h"
 
+#include <limits>
+#include <optional>
+#include <string_view>
+
 #include "velox/dwio/common/BufferedInput.h"
+#include "velox/dwio/common/SeekableInputStream.h"
+#include "velox/dwio/parquet/common/BloomFilter.h"
+#include "velox/dwio/parquet/common/XxHasher.h"
 #include "velox/dwio/parquet/reader/ParquetStatsContext.h"
+#include "velox/type/Filter.h"
 
 namespace facebook::velox::parquet {
 
@@ -25,7 +33,12 @@ std::unique_ptr<dwio::common::FormatData> ParquetParams::toFormatData(
     const std::shared_ptr<const dwio::common::TypeWithId>& type,
     const common::ScanSpec& /*scanSpec*/) {
   return std::make_unique<ParquetData>(
-      type, metaData_, pool(), runtimeStatistics(), sessionTimezone_);
+      type,
+      metaData_,
+      pool(),
+      runtimeStatistics(),
+      sessionTimezone_,
+      bufferedInput_);
 }
 
 void ParquetData::filterRowGroups(
@@ -94,9 +107,160 @@ bool ParquetData::rowGroupMatches(
   if (columnChunk.hasStatistics()) {
     auto columnStats =
         columnChunk.getColumnStatistics(type, rowGroup.numRows());
-    return testFilter(filter, columnStats.get(), rowGroup.numRows(), type);
+    if (!testFilter(filter, columnStats.get(), rowGroup.numRows(), type)) {
+      return false;
+    }
   }
-  return true;
+  return rowGroupBloomFilterMightMatch(rowGroupId, filter);
+}
+
+namespace {
+
+// Hashes of the values a point/IN equality filter accepts, computed with the
+// parquet bloom hash of the column's physical type. std::nullopt when the
+// filter shape or physical type is unsupported for bloom probing. An empty
+// vector means none of the accepted values are representable in the column's
+// physical type, so the filter cannot match at all.
+std::optional<std::vector<uint64_t>> bloomProbeHashes(
+    const common::Filter& filter,
+    thrift::Type physicalType) {
+  // A bloom filter can only prove that a value is absent. A filter that
+  // accepts nulls may pass on a row group whose matching rows are all null,
+  // so it cannot be used to prune.
+  if (filter.testNull()) {
+    return std::nullopt;
+  }
+
+  std::vector<int64_t> intValues;
+  std::vector<std::string_view> byteValues;
+  switch (filter.kind()) {
+    case common::FilterKind::kBigintRange: {
+      const auto& range = static_cast<const common::BigintRange&>(filter);
+      if (!range.isSingleValue()) {
+        return std::nullopt;
+      }
+      intValues.push_back(range.lower());
+      break;
+    }
+    case common::FilterKind::kBigintValuesUsingHashTable: {
+      intValues = static_cast<const common::BigintValuesUsingHashTable&>(filter)
+                      .values();
+      break;
+    }
+    case common::FilterKind::kBigintValuesUsingBitmask: {
+      intValues =
+          static_cast<const common::BigintValuesUsingBitmask&>(filter).values();
+      break;
+    }
+    case common::FilterKind::kBytesRange: {
+      const auto& range = static_cast<const common::BytesRange&>(filter);
+      if (!range.isSingleValue()) {
+        return std::nullopt;
+      }
+      byteValues.push_back(range.lower());
+      break;
+    }
+    case common::FilterKind::kBytesValues: {
+      const auto& values =
+          static_cast<const common::BytesValues&>(filter).values();
+      byteValues.reserve(values.size());
+      for (const auto& value : values) {
+        byteValues.push_back(value);
+      }
+      break;
+    }
+    default:
+      return std::nullopt;
+  }
+
+  XxHasher hasher;
+  std::vector<uint64_t> hashes;
+  if (!byteValues.empty()) {
+    if (physicalType != thrift::Type::BYTE_ARRAY) {
+      return std::nullopt;
+    }
+    hashes.reserve(byteValues.size());
+    for (const auto& value : byteValues) {
+      ByteArray byteArray{
+          static_cast<uint32_t>(value.size()),
+          reinterpret_cast<const uint8_t*>(value.data())};
+      hashes.push_back(hasher.hash(&byteArray));
+    }
+    return hashes;
+  }
+
+  switch (physicalType) {
+    case thrift::Type::INT32:
+      hashes.reserve(intValues.size());
+      for (auto value : intValues) {
+        // Values outside int32 cannot occur in an INT32 column; they
+        // contribute no probe (and no possible match).
+        if (value >= std::numeric_limits<int32_t>::min() &&
+            value <= std::numeric_limits<int32_t>::max()) {
+          hashes.push_back(hasher.hash(static_cast<int32_t>(value)));
+        }
+      }
+      return hashes;
+    case thrift::Type::INT64:
+      hashes.reserve(intValues.size());
+      for (auto value : intValues) {
+        hashes.push_back(hasher.hash(value));
+      }
+      return hashes;
+    default:
+      return std::nullopt;
+  }
+}
+
+} // namespace
+
+bool ParquetData::rowGroupBloomFilterMightMatch(
+    uint32_t rowGroupId,
+    const common::Filter* filter) {
+  if (filter == nullptr || bufferedInput_ == nullptr ||
+      !type_->parquetType_.has_value()) {
+    return true;
+  }
+  auto columnChunk =
+      fileMetaDataPtr_.rowGroup(rowGroupId).columnChunk(type_->column());
+  if (!columnChunk.hasBloomFilterOffset()) {
+    return true;
+  }
+  const auto hashes = bloomProbeHashes(*filter, type_->parquetType_.value());
+  if (!hashes.has_value()) {
+    return true;
+  }
+  try {
+    const auto offset = columnChunk.bloomFilterOffset();
+    const auto fileSize =
+        static_cast<int64_t>(bufferedInput_->getReadFile()->size());
+    if (offset <= 0 || offset >= fileSize) {
+      return true;
+    }
+    // Older writers do not record the length; bound the stream by end of file
+    // and let the deserializer stop after the header-declared bitset size.
+    const auto length = columnChunk.hasBloomFilterLength()
+        ? static_cast<uint64_t>(columnChunk.bloomFilterLength())
+        : static_cast<uint64_t>(fileSize - offset);
+    dwio::common::SeekableFileInputStream stream(
+        bufferedInput_->getInputStream(),
+        static_cast<uint64_t>(offset),
+        length,
+        pool_,
+        dwio::common::LogType::FILE);
+    const auto bloomFilter = BlockSplitBloomFilter::deserialize(&stream, pool_);
+    for (const auto hash : *hashes) {
+      if (bloomFilter.findHash(hash)) {
+        return true;
+      }
+    }
+    return false;
+  } catch (const std::exception& e) {
+    // Bloom filter probing is a best-effort pruning optimization; a
+    // malformed filter must not fail the scan.
+    LOG(WARNING) << "Failed to probe parquet bloom filter: " << e.what();
+    return true;
+  }
 }
 
 void ParquetData::enqueueRowGroup(
