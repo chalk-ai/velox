@@ -37,11 +37,13 @@ class ParquetParams : public dwio::common::FormatParams {
       dwio::common::ColumnReaderStatistics& stats,
       const FileMetaDataPtr metaData,
       const tz::TimeZone* sessionTimezone,
-      TimestampPrecision timestampPrecision)
+      TimestampPrecision timestampPrecision,
+      dwio::common::BufferedInput* bufferedInput = nullptr)
       : FormatParams(pool, stats),
         metaData_(metaData),
         sessionTimezone_(sessionTimezone),
-        timestampPrecision_(timestampPrecision) {}
+        timestampPrecision_(timestampPrecision),
+        bufferedInput_(bufferedInput) {}
   std::unique_ptr<dwio::common::FormatData> toFormatData(
       const std::shared_ptr<const dwio::common::TypeWithId>& type,
       const common::ScanSpec& scanSpec) override;
@@ -54,6 +56,9 @@ class ParquetParams : public dwio::common::FormatParams {
   const FileMetaDataPtr metaData_;
   const tz::TimeZone* sessionTimezone_;
   const TimestampPrecision timestampPrecision_;
+  // File input used to read bloom filters during row group filtering; may be
+  // nullptr, in which case bloom filters are not probed.
+  dwio::common::BufferedInput* const bufferedInput_ = nullptr;
 };
 
 /// Format-specific data created for each leaf column of a Parquet rowgroup.
@@ -64,7 +69,8 @@ class ParquetData : public dwio::common::FormatData {
       const FileMetaDataPtr fileMetadataPtr,
       memory::MemoryPool& pool,
       dwio::common::ColumnReaderStatistics& stats,
-      const tz::TimeZone* sessionTimezone)
+      const tz::TimeZone* sessionTimezone,
+      dwio::common::BufferedInput* bufferedInput = nullptr)
       : pool_(pool),
         type_(std::static_pointer_cast<const ParquetTypeWithId>(type)),
         fileMetaDataPtr_(fileMetadataPtr),
@@ -72,7 +78,8 @@ class ParquetData : public dwio::common::FormatData {
         maxRepeat_(type_->maxRepeat_),
         rowsInRowGroup_(-1),
         stats_(stats),
-        sessionTimezone_(sessionTimezone) {}
+        sessionTimezone_(sessionTimezone),
+        bufferedInput_(bufferedInput) {}
 
   /// Prepares to read data for 'index'th row group.
   void enqueueRowGroup(uint32_t index, dwio::common::BufferedInput& input);
@@ -216,6 +223,14 @@ class ParquetData : public dwio::common::FormatData {
   /// stats in 'rowGroup'.
   bool rowGroupMatches(uint32_t rowGroupId, const common::Filter* filter);
 
+  /// True unless the row group's parquet bloom filter proves that none of the
+  /// values accepted by 'filter' (a point/IN equality filter) can be present
+  /// in this column chunk. Conservatively true when no bloom filter exists,
+  /// the filter shape is unsupported, or no file input is available.
+  bool rowGroupBloomFilterMightMatch(
+      uint32_t rowGroupId,
+      const common::Filter* filter);
+
  protected:
   memory::MemoryPool& pool_;
   std::shared_ptr<const ParquetTypeWithId> type_;
@@ -229,6 +244,9 @@ class ParquetData : public dwio::common::FormatData {
   int64_t rowsInRowGroup_;
   dwio::common::ColumnReaderStatistics& stats_;
   const tz::TimeZone* sessionTimezone_;
+  // File input used to read bloom filters during row group filtering; may be
+  // nullptr, in which case bloom filters are not probed.
+  dwio::common::BufferedInput* const bufferedInput_;
   std::unique_ptr<PageReader> reader_;
 
   // Nulls derived from leaf repdefs for non-leaf readers.
