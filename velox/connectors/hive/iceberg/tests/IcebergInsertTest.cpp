@@ -126,36 +126,6 @@ TEST_F(IcebergInsertTest, singleColumnPartition) {
   }
 }
 
-TEST_F(IcebergInsertTest, closePartitionWriterOnPartitionChange) {
-  setConnectorSessionProperty(
-      IcebergConfig::kClosePartitionWriterOnPartitionChangeSession, "true");
-
-  const auto outputDirectory = TempDirectoryPath::create();
-  auto rowType = ROW({"part", "value"}, {INTEGER(), BIGINT()});
-  auto input = makeRowVector(
-      {"part", "value"},
-      {makeFlatVector<int32_t>({0, 0, 1, 1, 0, 0}),
-       makeFlatVector<int64_t>({10, 11, 20, 21, 12, 13})});
-
-  std::vector<test::PartitionField> partitionTransforms = {
-      {0, TransformType::kIdentity, std::nullopt}};
-  const auto dataSink = createDataSinkAndAppendData(
-      {input}, outputDirectory->getPath(), partitionTransforms);
-  const auto commitTasks = dataSink->close();
-
-  ASSERT_EQ(commitTasks.size(), 3);
-  auto splits = createSplitsForDirectory(outputDirectory->getPath());
-  ASSERT_EQ(splits.size(), commitTasks.size());
-
-  auto plan = exec::test::PlanBuilder()
-                  .startTableScan(test::kIcebergConnectorId)
-                  .outputType(rowType)
-                  .endTableScan()
-                  .planNode();
-  std::vector<RowVectorPtr> expected = {input};
-  exec::test::AssertQueryBuilder(plan).splits(splits).assertResults(expected);
-}
-
 TEST_F(IcebergInsertTest, partitionNullColumn) {
   struct TestCase {
     std::string name;

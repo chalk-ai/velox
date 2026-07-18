@@ -19,16 +19,6 @@
 #include "velox/exec/VectorHasher.h"
 
 namespace facebook::velox::connector::hive {
-
-// Tracks a stretch of identical partition ids in input data. Optimization that is
-// currently only used for iceberg feat_ table writes, where data is already sorted 
-// by partition key. (See: IcebergDataSink.cpp::AppendData for usage)
-struct PartitionRun {
-  uint64_t partitionId;
-  vector_size_t start;
-  vector_size_t end;
-};
-
 /// Generate sequential integer IDs for distinct partition values, which could
 /// be used as vector index.
 class PartitionIdGenerator {
@@ -48,11 +38,7 @@ class PartitionIdGenerator {
   /// Generate sequential partition IDs for input vector.
   /// @param input Input RowVector.
   /// @param result Generated integer IDs indexed by input row number.
-  /// @param runs Optional contiguous runs of generated partition IDs in input
-  void run(
-      const RowVectorPtr& input,
-      raw_vector<uint64_t>& result,
-      std::vector<PartitionRun>* runs = nullptr);
+  void run(const RowVectorPtr& input, raw_vector<uint64_t>& result);
 
   /// Return the total number of distinct partitions processed so far.
   uint64_t numPartitions() const {

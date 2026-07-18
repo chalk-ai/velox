@@ -20,9 +20,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <folly/json.h>
-#include <limits>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
@@ -287,24 +285,6 @@ folly::dynamic buildIcebergCommitData(
   return commitData;
 }
 
-RowVectorPtr wrapInputRows(
-    const RowVectorPtr& input,
-    vector_size_t begin,
-    vector_size_t size) {
-  // Build a zero-copy view over a contiguous partition run. The sorted Iceberg
-  // write path already knows the row range for each partition, so it can wrap
-  // that range directly instead of using the generic arbitrary-row partition
-  // split path.
-  if (begin == 0 && size == input->size()) {
-    return input;
-  }
-
-  auto indices = allocateIndices(size, input->pool());
-  auto* rawIndices = indices->asMutable<vector_size_t>();
-  std::iota(rawIndices, rawIndices + size, begin);
-  return exec::wrap(size, std::move(indices), input);
-}
-
 } // namespace
 
 IcebergDataSink::IcebergDataSink(
@@ -378,9 +358,6 @@ IcebergDataSink::IcebergDataSink(
               ? std::make_unique<IcebergPartitionName>(partitionSpec_)
               : nullptr),
       partitionRowType_(std::move(partitionRowType)),
-      closePartitionWriterOnPartitionChange_(
-          icebergConfig->closePartitionWriterOnPartitionChange(
-              connectorQueryCtx->sessionProperties())),
       icebergInsertTableHandle_(insertTableHandle) {
   commitPartitionValue_.resize(maxOpenWriters_);
 
@@ -438,48 +415,6 @@ std::vector<std::string> IcebergDataSink::commitMessage() const {
   return commitTasks;
 }
 
-void IcebergDataSink::appendData(RowVectorPtr input) {
-  if (!closePartitionWriterOnPartitionChange_ || !isPartitioned() ||
-      isBucketed()) {
-    HiveDataSink::appendData(std::move(input));
-    return;
-  }
-
-  checkRunning();
-  input->loadedVector();
-
-  if (input->size() == 0) {
-    return;
-  }
-
-  computePartitionAndBucketIds(input);
-
-  // This mode is intended for input that has already been clustered by the
-  // Iceberg partition key. See: IcebergDataSink.h comments on the relevant 
-  // fields and structs for a more detailed explanation.
-  for (const auto& run : partitionRuns_) {
-    const auto partitionId = run.partitionId;
-    if (activeSortedPartitionId_.has_value() &&
-        activeSortedPartitionId_.value() != partitionId &&
-        activeSortedPartitionWriterIndex_.has_value()) {
-      const auto previousWriterIndex =
-          activeSortedPartitionWriterIndex_.value();
-      if (previousWriterIndex < writers_.size() &&
-          writers_[previousWriterIndex] != nullptr) {
-        rotateWriter(previousWriterIndex);
-      }
-    }
-
-    VELOX_CHECK_LT(partitionId, std::numeric_limits<uint32_t>::max());
-    const auto writerIndex = ensureWriter(WriterId{
-        static_cast<uint32_t>(partitionId), std::nullopt});
-    write(writerIndex, wrapInputRows(input, run.start, run.end - run.start));
-
-    activeSortedPartitionId_ = partitionId;
-    activeSortedPartitionWriterIndex_ = writerIndex;
-  }
-}
-
 void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
   VELOX_CHECK(isPartitioned());
   VELOX_CHECK_NOT_NULL(transformEvaluator_);
@@ -494,16 +429,7 @@ void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
       nullptr,
       input->size(),
       std::move(transformedColumns));
-  if (closePartitionWriterOnPartitionChange_ && !isBucketed()) {
-    // Request contiguous partition runs in addition to row-level partition ids.
-    // appendData() consumes these runs to rotate writers at partition
-    // boundaries without walking partitionIds_ a second time.
-    partitionIdGenerator_->run(
-        transformedRowVector, partitionIds_, &partitionRuns_);
-  } else {
-    partitionRuns_.clear();
-    partitionIdGenerator_->run(transformedRowVector, partitionIds_);
-  }
+  partitionIdGenerator_->run(transformedRowVector, partitionIds_);
 }
 
 std::string IcebergDataSink::getPartitionName(uint32_t partitionId) const {

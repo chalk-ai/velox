@@ -35,14 +35,6 @@ class IcebergConfig {
   /// connector config override is provided.
   static constexpr const char* kDefaultFunctionPrefix = "$internal$.iceberg.";
 
-  /// When enabled, Iceberg data writes assume the input is sorted by partition
-  /// and rotate the active partition writer as soon as rows for a new
-  /// partition are observed.
-  static constexpr const char* kClosePartitionWriterOnPartitionChangeSession =
-      "iceberg_close_partition_writer_on_partition_change";
-  static constexpr const char* kClosePartitionWriterOnPartitionChangeConfig =
-      "iceberg.close-partition-writer-on-partition-change";
-
   explicit IcebergConfig(
       const std::shared_ptr<const config::ConfigBase>& config);
 
@@ -51,9 +43,6 @@ class IcebergConfig {
   }
 
   std::string functionPrefix() const;
-
-  bool closePartitionWriterOnPartitionChange(
-      const config::ConfigBase* session) const;
 
  private:
   const std::shared_ptr<const config::ConfigBase> config_;

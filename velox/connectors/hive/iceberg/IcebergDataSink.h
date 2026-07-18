@@ -17,7 +17,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -174,20 +173,7 @@ class IcebergDataSink : public HiveDataSink {
   /// Presto and Spark Iceberg commit protocol.
   std::vector<std::string> commitMessage() const override;
 
-  void appendData(RowVectorPtr input) override;
-
- private:
-  IcebergDataSink(
-      RowTypePtr inputType,
-      IcebergInsertTableHandlePtr insertTableHandle,
-      const ConnectorQueryCtx* connectorQueryCtx,
-      CommitStrategy commitStrategy,
-      const std::shared_ptr<const HiveConfig>& hiveConfig,
-      const std::vector<column_index_t>& partitionChannels,
-      const std::vector<column_index_t>& dataChannels,
-      RowTypePtr partitionRowType,
-      const IcebergConfigPtr& icebergConfig);
-
+ protected:
   // Computes partition IDs for each row in the input batch by applying Iceberg
   // partition transforms and generating unique partition identifiers.
   //
@@ -209,18 +195,38 @@ class IcebergDataSink : public HiveDataSink {
   // @param input The input RowVector containing rows to be partitioned.
   void computePartitionAndBucketIds(const RowVectorPtr& input) override;
 
-  // Returns the Iceberg partition directory name for the given partition ID.
-  // Converts the transformed partition values associated with the partition ID
-  // into an Iceberg compliant directory path
-  // (e.g., "date_year=2023/id_bucket=5").
-  std::string getPartitionName(uint32_t partitionId) const override;
-
   // Ensures a writer exists for the given writer ID and returns its index.
   // If the writer doesn't exist, creates it by calling appendWriter().
   // Additionally, extracts and stores the transformed partition values for
   // the writer in commitPartitionValue_ if not already set, which will be
   // included in the commit message as "partitionDataJson".
   uint32_t ensureWriter(const WriterId& id) override;
+
+  // Closes the active writer at 'index' to flush its file footer, captures
+  // the file metadata for Iceberg stats aggregation (via
+  // closeWriterAndCollectStats), then resets the writer so a new one is
+  // created lazily on the next write. Differs from the base
+  // FileDataSink::rotateWriter by also collecting per-file Iceberg stats
+  // before discarding the writer.
+  void rotateWriter(size_t index) override;
+
+ private:
+  IcebergDataSink(
+      RowTypePtr inputType,
+      IcebergInsertTableHandlePtr insertTableHandle,
+      const ConnectorQueryCtx* connectorQueryCtx,
+      CommitStrategy commitStrategy,
+      const std::shared_ptr<const HiveConfig>& hiveConfig,
+      const std::vector<column_index_t>& partitionChannels,
+      const std::vector<column_index_t>& dataChannels,
+      RowTypePtr partitionRowType,
+      const IcebergConfigPtr& icebergConfig);
+
+  // Returns the Iceberg partition directory name for the given partition ID.
+  // Converts the transformed partition values associated with the partition ID
+  // into an Iceberg compliant directory path
+  // (e.g., "date_year=2023/id_bucket=5").
+  std::string getPartitionName(uint32_t partitionId) const override;
 
   // Creates writer options configured for Iceberg table writes. Extends the
   // base HiveDataSink writer options with Iceberg-specific settings:
@@ -236,14 +242,6 @@ class IcebergDataSink : public HiveDataSink {
   // values for the given writer index) for JSON serialization.
   // Returns nullptr for null partition values.
   folly::dynamic makeCommitPartitionValue(uint32_t writerIndex) const;
-
-  // Closes the active writer at 'index' to flush its file footer, captures
-  // the file metadata for Iceberg stats aggregation (via
-  // closeWriterAndCollectStats), then resets the writer so a new one is
-  // created lazily on the next write. Differs from the base
-  // FileDataSink::rotateWriter by also collecting per-file Iceberg stats
-  // before discarding the writer.
-  void rotateWriter(size_t index) override;
 
   // Closes all remaining writers and aggregates their file metadata into
   // per-writer Iceberg stats (when state == kClosed). On any other state,
@@ -303,25 +301,6 @@ class IcebergDataSink : public HiveDataSink {
   // folly::dynamic array of values across all partition fields), ready for JSON
   // serialization.
   std::vector<folly::dynamic> commitPartitionValue_;
-
-  // Enables a memory-saving write mode for partition-sorted inputs. The sink
-  // keeps at most one partition writer active by rotating the previously active
-  // partition writer when rows for a new partition arrive. If data is unsorted,
-  // and this mode is mis-applied, the output will still be correct, but
-  // will be inefficient since partition writers will be opened repeatedly.
-  const bool closePartitionWriterOnPartitionChange_;
-
-  // Tracks the writer currently considered active by the partition-sorted
-  // write path. This state intentionally spans input batches: if batch N ends
-  // with partition A and batch N+1 starts with partition B, appendData() can
-  // rotate A before writing B.
-  std::optional<uint64_t> activeSortedPartitionId_;
-  std::optional<uint32_t> activeSortedPartitionWriterIndex_;
-
-  // Contiguous partition runs for the most recent input batch. Populated by
-  // PartitionIdGenerator only for the partition-sorted close-on-change path so
-  // appendData() can write one run at a time without rescanning partitionIds_.
-  std::vector<PartitionRun> partitionRuns_;
 
   // Statistics for all data files written by this sink, organized by writer
   // index and file index within each writer. These statistics are populated
