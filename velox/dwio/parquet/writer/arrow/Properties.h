@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -219,6 +220,19 @@ static constexpr Compression::type DEFAULT_COMPRESSION_TYPE =
     Compression::UNCOMPRESSED;
 static constexpr bool DEFAULT_IS_PAGE_INDEX_ENABLED = false;
 
+/// Options for the parquet bloom filter of a column.
+struct PARQUET_EXPORT BloomFilterOptions {
+  /// Expected number of distinct values (NDV) in the bloom filter. Bloom
+  /// filters are most effective for high-cardinality columns; a good value is
+  /// the expected number of rows per row group. Increasing ndv (without
+  /// increasing fpp) increases disk and memory usage.
+  int32_t ndv = 1 << 20;
+
+  /// False-positive probability of the bloom filter. Lower values require more
+  /// disk and memory space; recommended values are 0.1, 0.05 or 0.01.
+  double fpp = 0.05;
+};
+
 class PARQUET_EXPORT ColumnProperties {
  public:
   ColumnProperties(
@@ -270,6 +284,15 @@ class PARQUET_EXPORT ColumnProperties {
     pageIndexEnabled_ = pageIndexEnabled;
   }
 
+  void setBloomFilterOptions(const BloomFilterOptions& bloomFilterOptions) {
+    if (bloomFilterOptions.fpp >= 1.0 || bloomFilterOptions.fpp <= 0.0) {
+      throw ParquetException(
+          "Bloom filter false positive probability must be in (0.0, 1.0), got " +
+          std::to_string(bloomFilterOptions.fpp));
+    }
+    bloomFilterOptions_ = bloomFilterOptions;
+  }
+
   Encoding::type encoding() const {
     return encoding_;
   }
@@ -302,6 +325,10 @@ class PARQUET_EXPORT ColumnProperties {
     return pageIndexEnabled_;
   }
 
+  std::optional<BloomFilterOptions> bloomFilterOptions() const {
+    return bloomFilterOptions_;
+  }
+
  private:
   Encoding::type encoding_;
   Compression::type codec_;
@@ -310,6 +337,7 @@ class PARQUET_EXPORT ColumnProperties {
   size_t maxStatsSize_;
   std::shared_ptr<CodecOptions> codecOptions_;
   bool pageIndexEnabled_;
+  std::optional<BloomFilterOptions> bloomFilterOptions_;
 };
 
 class PARQUET_EXPORT WriterProperties {
@@ -731,6 +759,24 @@ class PARQUET_EXPORT WriterProperties {
       return this->disableWritePageIndex(path->toDotString());
     }
 
+    /// Enable writing a bloom filter for the column specified by `path` with
+    /// the given options.
+    ///
+    /// Default disabled. Not supported for boolean columns (the writer throws
+    /// at write time).
+    Builder* enableBloomFilter(
+        const std::string& path,
+        const BloomFilterOptions& bloomFilterOptions) {
+      bloomFilterOptions_[path] = bloomFilterOptions;
+      return this;
+    }
+
+    Builder* enableBloomFilter(
+        const std::shared_ptr<schema::ColumnPath>& path,
+        const BloomFilterOptions& bloomFilterOptions) {
+      return this->enableBloomFilter(path->toDotString(), bloomFilterOptions);
+    }
+
     /// \brief Build the WriterProperties with the builder parameters.
     /// \return The WriterProperties defined by the builder.
     std::shared_ptr<WriterProperties> build() {
@@ -755,6 +801,8 @@ class PARQUET_EXPORT WriterProperties {
         get(item.first).setStatisticsEnabled(item.second);
       for (const auto& item : pageIndexEnabled_)
         get(item.first).setPageIndexEnabled(item.second);
+      for (const auto& item : bloomFilterOptions_)
+        get(item.first).setBloomFilterOptions(item.second);
 
       return std::shared_ptr<WriterProperties>(new WriterProperties(
           pool_,
@@ -799,6 +847,7 @@ class PARQUET_EXPORT WriterProperties {
     std::unordered_map<std::string, bool> dictionaryEnabled_;
     std::unordered_map<std::string, bool> statisticsEnabled_;
     std::unordered_map<std::string, bool> pageIndexEnabled_;
+    std::unordered_map<std::string, BloomFilterOptions> bloomFilterOptions_;
   };
 
   inline MemoryPool* memoryPool() const {
@@ -896,6 +945,24 @@ class PARQUET_EXPORT WriterProperties {
   bool statisticsEnabled(
       const std::shared_ptr<schema::ColumnPath>& path) const {
     return columnProperties(path).statisticsEnabled();
+  }
+
+  std::optional<BloomFilterOptions> bloomFilterOptions(
+      const std::shared_ptr<schema::ColumnPath>& path) const {
+    return columnProperties(path).bloomFilterOptions();
+  }
+
+  /// True if a bloom filter is enabled for any column of the file.
+  bool bloomFilterEnabled() const {
+    if (defaultColumnProperties_.bloomFilterOptions().has_value()) {
+      return true;
+    }
+    for (const auto& item : columnProperties_) {
+      if (item.second.bloomFilterOptions().has_value()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   size_t maxStatisticsSize(

@@ -242,6 +242,23 @@ class ParquetConfig {
   static constexpr std::string_view kWriterSerdeTimestampTimezone =
       "parquet.writer.timestamp.timezone";
 
+  /// Serde parameter key holding a comma-separated list of column dot-paths
+  /// to write parquet bloom filters for.
+  static constexpr std::string_view kWriterSerdeBloomFilterColumns =
+      "parquet.writer.bloom.filter.columns";
+
+  /// Serde parameter key for the bloom filter false positive probability,
+  /// in (0, 1). Applies to every column listed in
+  /// kWriterSerdeBloomFilterColumns.
+  static constexpr std::string_view kWriterSerdeBloomFilterFpp =
+      "parquet.writer.bloom.filter.fpp";
+
+  /// Serde parameter key for the bloom filter expected number of distinct
+  /// values. Applies to every column listed in
+  /// kWriterSerdeBloomFilterColumns.
+  static constexpr std::string_view kWriterSerdeBloomFilterNdv =
+      "parquet.writer.bloom.filter.ndv";
+
   /// Registers Parquet session properties with a config provider.
   static void registerProperties(
       std::vector<config::ConfigProperty>& properties,
