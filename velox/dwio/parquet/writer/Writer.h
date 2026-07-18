@@ -28,6 +28,7 @@
 #include "velox/dwio/common/Writer.h"
 #include "velox/dwio/common/WriterFactory.h"
 #include "velox/dwio/parquet/writer/arrow/Metadata.h"
+#include "velox/dwio/parquet/writer/arrow/Properties.h"
 #include "velox/dwio/parquet/writer/arrow/Types.h"
 #include "velox/dwio/parquet/writer/arrow/util/Compression.h"
 #include "velox/vector/ComplexVector.h"
@@ -149,6 +150,12 @@ struct ParquetWriterOptions : public dwio::common::FormatSpecificOptions {
   std::optional<std::string> createdBy;
 
   std::shared_ptr<arrow::MemoryPool> arrowMemoryPool;
+
+  /// Per-column parquet bloom filter options, keyed by column dot-path.
+  /// Columns not present in the map do not get a bloom filter. Boolean
+  /// columns do not support bloom filters.
+  std::unordered_map<std::string, arrow::BloomFilterOptions>
+      columnBloomFilterOptions;
 
   /// Optional field IDs to assign to columns in the Parquet schema.
   /// If provided, the writer will use these IDs for the schema fields.

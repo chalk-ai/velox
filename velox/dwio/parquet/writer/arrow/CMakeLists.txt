@@ -21,6 +21,8 @@ endif()
 velox_add_library(
   velox_dwio_arrow_parquet_writer_lib
   ArrowSchema.cpp
+  BloomFilter.cpp
+  BloomFilterWriter.cpp
   ArrowSchemaInternal.cpp
   ColumnWriter.cpp
   Encoding.cpp
@@ -39,6 +41,7 @@ velox_add_library(
   Statistics.cpp
   StringTruncation.cpp
   Types.cpp
+  XxHasher.cpp
   Writer.cpp
   HEADERS
   ArrowSchema.h
