@@ -429,6 +429,20 @@ bool ColumnChunkMetaDataPtr::hasIndexPage() const {
           .has_value();
 }
 
+bool ColumnChunkMetaDataPtr::hasBloomFilterOffset() const {
+  return hasMetadata() &&
+      apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+          ->bloom_filter_offset()
+          .has_value();
+}
+
+bool ColumnChunkMetaDataPtr::hasBloomFilterLength() const {
+  return hasMetadata() &&
+      apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+          ->bloom_filter_length()
+          .has_value();
+}
+
 std::unique_ptr<dwio::common::ColumnStatistics>
 ColumnChunkMetaDataPtr::getColumnStatistics(
     const TypePtr type,
@@ -493,6 +507,20 @@ bool ColumnChunkMetaDataPtr::hasColumnIndex() const {
 
 bool ColumnChunkMetaDataPtr::hasOffsetIndex() const {
   return thriftColumnChunkPtr(ptr_)->offset_index_offset().has_value();
+}
+
+int64_t ColumnChunkMetaDataPtr::bloomFilterOffset() const {
+  VELOX_CHECK(hasBloomFilterOffset());
+  return apache::thrift::can_throw(
+      *apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+           ->bloom_filter_offset());
+}
+
+int32_t ColumnChunkMetaDataPtr::bloomFilterLength() const {
+  VELOX_CHECK(hasBloomFilterLength());
+  return apache::thrift::can_throw(
+      *apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+           ->bloom_filter_length());
 }
 
 common::CompressionKind ColumnChunkMetaDataPtr::compression() const {

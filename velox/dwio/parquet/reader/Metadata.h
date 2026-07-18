@@ -38,6 +38,12 @@ class ColumnChunkMetaDataPtr {
   /// Check the presence of the dictionary page offset in ColumnChunk metadata.
   bool hasDictionaryPageOffset() const;
 
+  /// Check the presence of the bloom filter offset in ColumnChunk metadata.
+  bool hasBloomFilterOffset() const;
+
+  /// Check the presence of the bloom filter length in ColumnChunk metadata.
+  bool hasBloomFilterLength() const;
+
   /// Check the presence of the column index (per-page min/max/null-count
   /// statistics) for this column chunk.
   bool hasColumnIndex() const;
@@ -75,6 +81,14 @@ class ColumnChunkMetaDataPtr {
   /// The dictionary page offset.
   /// Must check for its presence using hasDictionaryPageOffset().
   int64_t dictionaryPageOffset() const;
+
+  /// File offset of this column chunk's bloom filter.
+  /// Must check for its presence using hasBloomFilterOffset().
+  int64_t bloomFilterOffset() const;
+
+  /// Size of this column chunk's bloom filter (header + bitset) in bytes.
+  /// Only written by newer writers; must check hasBloomFilterLength().
+  int32_t bloomFilterLength() const;
 
   /// The compression.
   common::CompressionKind compression() const;
