@@ -57,6 +57,10 @@ class ParquetReaderOptions : public dwio::common::FormatSpecificOptions {
   /// Maps table fields to Parquet file fields by position or name.
   dwio::common::ColumnMappingMode columnMappingMode{
       dwio::common::ColumnMappingMode::kPosition};
+
+  /// Prune row groups using parquet bloom filters for point-equality filters.
+  bool bloomFilterPruningEnabled{
+      ParquetConfig::kBloomFilterPruningEnabledSessionProperty::defaultValue};
 };
 
 /// Implements the RowReader interface for Parquet.
