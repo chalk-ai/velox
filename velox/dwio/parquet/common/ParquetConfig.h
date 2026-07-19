@@ -70,6 +70,18 @@ class ParquetConfig {
       "Map Parquet table field names to file field names using names, not indices.")
 
   VELOX_PARQUET_CONFIG(
+      kBloomFilterPruningEnabledSession,
+      kBloomFilterPruningEnabled,
+      bloomFilterPruningEnabled,
+      "bloom_filter_pruning_enabled",
+      "bloom-filter-pruning-enabled",
+      bool,
+      false,
+      "Prune row groups using parquet bloom filters for point-equality "
+      "filters that statistics could not exclude. Each probe issues one "
+      "extra small read per candidate (row group, column).")
+
+  VELOX_PARQUET_CONFIG(
       kFooterSpeculativeIoSizeSession,
       kFooterSpeculativeIoSize,
       footerSpeculativeIoSize,
@@ -264,6 +276,8 @@ class ParquetConfig {
       std::vector<config::ConfigProperty>& properties,
       std::string_view sessionPrefix) {
     registerProperty<kUseColumnNamesSessionProperty>(properties, sessionPrefix);
+    registerProperty<kBloomFilterPruningEnabledSessionProperty>(
+        properties, sessionPrefix);
     registerProperty<kFooterSpeculativeIoSizeSessionProperty>(
         properties, sessionPrefix);
     registerProperty<kAllowInt32NarrowingSessionProperty>(
