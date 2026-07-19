@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/String.h>
+
 #include "velox/dwio/parquet/writer/Writer.h"
 
 #include <algorithm>
@@ -204,6 +206,45 @@ std::shared_ptr<WriterProperties> getArrowParquetWriterOptions(
   }
   if (parquetOptions.createdBy.has_value()) {
     properties = properties->createdBy(parquetOptions.createdBy.value());
+  }
+  // Per-column bloom filters: explicit format options first, then the
+  // serde-parameter spelling used by Hive table writes.
+  for (const auto& columnBloomFilterOptions :
+       parquetOptions.columnBloomFilterOptions) {
+    properties = properties->enableBloomFilter(
+        columnBloomFilterOptions.first, columnBloomFilterOptions.second);
+  }
+  if (const auto columnsIt = options.serdeParameters.find(
+          std::string(ParquetConfig::kWriterSerdeBloomFilterColumns));
+      columnsIt != options.serdeParameters.end() &&
+      !columnsIt->second.empty()) {
+    facebook::velox::parquet::arrow::BloomFilterOptions bloomFilterOptions;
+    if (const auto fppIt = options.serdeParameters.find(
+            std::string(ParquetConfig::kWriterSerdeBloomFilterFpp));
+        fppIt != options.serdeParameters.end()) {
+      bloomFilterOptions.fpp = folly::to<double>(fppIt->second);
+      VELOX_USER_CHECK(
+          bloomFilterOptions.fpp > 0.0 && bloomFilterOptions.fpp < 1.0,
+          "Parquet bloom filter fpp must be in (0, 1), got {}",
+          bloomFilterOptions.fpp);
+    }
+    if (const auto ndvIt = options.serdeParameters.find(
+            std::string(ParquetConfig::kWriterSerdeBloomFilterNdv));
+        ndvIt != options.serdeParameters.end()) {
+      bloomFilterOptions.ndv = folly::to<int32_t>(ndvIt->second);
+      VELOX_USER_CHECK_GT(
+          bloomFilterOptions.ndv,
+          0,
+          "Parquet bloom filter ndv must be positive");
+    }
+    std::vector<std::string> bloomFilterColumns;
+    folly::split(',', columnsIt->second, bloomFilterColumns);
+    for (auto& column : bloomFilterColumns) {
+      auto trimmed = folly::trimWhitespace(column).str();
+      if (!trimmed.empty()) {
+        properties = properties->enableBloomFilter(trimmed, bloomFilterOptions);
+      }
+    }
   }
   return properties->build();
 }

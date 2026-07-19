@@ -45,24 +45,21 @@ target_link_libraries(
 
 add_library(
   velox_dwio_arrow_parquet_writer_test_lib
-  BloomFilter.cpp
+
   BloomFilterReader.cpp
   ColumnReader.cpp
   ColumnScanner.cpp
   FileReader.cpp
   TestUtil.cpp
-  XxHasher.cpp
+
 )
 velox_add_test_headers(
   velox_dwio_arrow_parquet_writer_test_lib
-  BloomFilter.h
   BloomFilterReader.h
   ColumnReader.h
   ColumnScanner.h
   FileReader.h
-  Hasher.h
   TestUtil.h
-  XxHasher.h
 )
 
 target_link_libraries(
