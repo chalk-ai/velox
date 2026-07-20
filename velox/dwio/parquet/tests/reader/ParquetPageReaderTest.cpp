@@ -591,3 +591,54 @@ TEST_F(ParquetPageReaderTest, refillSpansMultipleStreamChunks) {
   EXPECT_EQ(*second.type(), thrift::PageType::DATA_PAGE);
   EXPECT_EQ(*second.data_page_header()->num_values(), 11);
 }
+
+TEST_F(ParquetPageReaderTest, refillReportsCumulativeHeaderBytes) {
+  auto header =
+      createDataPageV1Header(/*uncompressedSize=*/4, /*compressedSize=*/4, 1);
+  auto headerBytes = serializePageHeader(header);
+  std::string fullData = headerBytes + "data";
+
+  // A header spans several replacement buffers. FBThrift reports bytes read
+  // relative to each replacement buffer, so the refiller must accumulate the
+  // bytes consumed before the final buffer.
+  constexpr uint64_t kBlockSize = 4;
+  auto inputStream = std::make_unique<SeekableArrayInputStream>(
+      fullData.data(), fullData.size(), kBlockSize);
+
+  thrift::PageHeader decodedHeader;
+  auto result = thrift::deserialize(
+      &decodedHeader, inputStream.get(), /*initialData=*/nullptr, 0);
+
+  EXPECT_TRUE(result.usedRefiller);
+  EXPECT_EQ(result.readBytes, headerBytes.size());
+  ASSERT_GT(result.remainedDataBytes, 0);
+  EXPECT_EQ(result.remainedData[0], static_cast<uint8_t>('d'));
+  EXPECT_EQ(*decodedHeader.type(), thrift::PageType::DATA_PAGE);
+  ASSERT_TRUE(decodedHeader.data_page_header());
+}
+
+TEST_F(ParquetPageReaderTest, refillKeepsPageReaderAtChunkEnd) {
+  constexpr int32_t kPageSize = sizeof(int32_t);
+  auto header = createDataPageV1Header(kPageSize, kPageSize, 1);
+  std::string fullData =
+      serializePageHeader(header) + std::string(kPageSize, '\0');
+
+  // With an undercounted header size, PageReader believes it is still inside
+  // the column chunk after this page and attempts to parse a phantom header.
+  constexpr uint64_t kBlockSize = 4;
+  auto inputStream = std::make_unique<SeekableArrayInputStream>(
+      fullData.data(), fullData.size(), kBlockSize);
+
+  dwio::common::ColumnReaderStatistics stats;
+  auto pageReader = std::make_unique<PageReader>(
+      std::move(inputStream),
+      *leafPool_,
+      common::CompressionKind::CompressionKind_NONE,
+      fullData.size(),
+      stats,
+      nullptr,
+      /*maxRepeat=*/0,
+      /*maxDefine=*/0);
+
+  EXPECT_NO_THROW(pageReader->skip(1));
+}

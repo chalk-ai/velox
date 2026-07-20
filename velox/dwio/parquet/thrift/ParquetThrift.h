@@ -121,7 +121,7 @@ inline std::pair<const uint8_t*, size_t> ensureInitialData(
 inline size_t calculateConsumedBytes(
     bool usedRefiller,
     size_t readBytes,
-    int32_t totalBytesReadBeforeRefill,
+    int32_t bytesConsumedBeforeCurrentBuffer,
     const uint8_t* coalescedBufferStart,
     size_t coalescedBufferSize,
     const uint8_t* remainedData) {
@@ -142,7 +142,7 @@ inline size_t calculateConsumedBytes(
 
   size_t bytesConsumedFromCoalesced = remainedData - coalescedBufferStart;
 
-  return totalBytesReadBeforeRefill + bytesConsumedFromCoalesced;
+  return bytesConsumedBeforeCurrentBuffer + bytesConsumedFromCoalesced;
 }
 
 // Manages buffer refilling for Thrift deserialization with
@@ -158,7 +158,7 @@ inline size_t calculateConsumedBytes(
 // pointers into the buffer that must remain valid throughout deserialization.
 //
 // Tracks metrics to calculate total bytes consumed from the stream:
-// - totalBytesReadBeforeRefill: Bytes consumed from initial buffer
+// - bytesConsumedBeforeCurrentBuffer: Bytes consumed from prior buffers
 // - currentDataBytesInRefill: Unconsumed bytes when refiller was called
 // - coalescedBufferStart/Size: Address range of the coalesced buffer
 class ThriftStreamRefiller {
@@ -166,14 +166,14 @@ class ThriftStreamRefiller {
   ThriftStreamRefiller(
       StreamReader& streamReader,
       bool& usedRefiller,
-      int32_t& totalBytesReadBeforeRefill,
+      int32_t& bytesConsumedBeforeCurrentBuffer,
       int32_t& currentDataBytesInRefill,
       const uint8_t*& coalescedBufferStart,
       size_t& coalescedBufferSize,
       std::unique_ptr<folly::IOBuf>& lastRefillBuffer)
       : streamReader_(streamReader),
         usedRefiller_(usedRefiller),
-        totalBytesReadBeforeRefill_(totalBytesReadBeforeRefill),
+        bytesConsumedBeforeCurrentBuffer_(bytesConsumedBeforeCurrentBuffer),
         currentDataBytesInRefill_(currentDataBytesInRefill),
         coalescedBufferStart_(coalescedBufferStart),
         coalescedBufferSize_(coalescedBufferSize),
@@ -182,10 +182,10 @@ class ThriftStreamRefiller {
   std::unique_ptr<folly::IOBuf> operator()(
       const uint8_t* currentData,
       int32_t currentDataBytes,
-      int32_t totalBytesRead,
+      int32_t bytesConsumedFromCurrentBuffer,
       int32_t requestedBytes) {
     usedRefiller_ = true;
-    totalBytesReadBeforeRefill_ = totalBytesRead;
+    bytesConsumedBeforeCurrentBuffer_ += bytesConsumedFromCurrentBuffer;
     currentDataBytesInRefill_ = currentDataBytes;
 
     const void* data;
@@ -253,7 +253,7 @@ class ThriftStreamRefiller {
 
   StreamReader& streamReader_;
   bool& usedRefiller_;
-  int32_t& totalBytesReadBeforeRefill_;
+  int32_t& bytesConsumedBeforeCurrentBuffer_;
   int32_t& currentDataBytesInRefill_;
   const uint8_t*& coalescedBufferStart_;
   size_t& coalescedBufferSize_;
@@ -270,7 +270,7 @@ DeserializeResult deserialize(
   std::unique_ptr<folly::IOBuf> lastRefillBuffer;
   bool usedRefiller = false;
   const void* lastStreamData = initialData;
-  int totalBytesReadBeforeRefill = 0;
+  int32_t bytesConsumedBeforeCurrentBuffer = 0;
   int currentDataBytesInRefill = 0;
   const uint8_t* coalescedBufferStart = nullptr;
   size_t coalescedBufferSize = 0;
@@ -289,7 +289,7 @@ DeserializeResult deserialize(
   ThriftStreamRefiller refiller(
       streamReader,
       usedRefiller,
-      totalBytesReadBeforeRefill,
+      bytesConsumedBeforeCurrentBuffer,
       currentDataBytesInRefill,
       coalescedBufferStart,
       coalescedBufferSize,
@@ -316,7 +316,7 @@ DeserializeResult deserialize(
     result.readBytes = calculateConsumedBytes(
         usedRefiller,
         result.readBytes,
-        totalBytesReadBeforeRefill,
+        bytesConsumedBeforeCurrentBuffer,
         coalescedBufferStart,
         coalescedBufferSize,
         result.remainedData);
