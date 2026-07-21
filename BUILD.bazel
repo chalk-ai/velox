@@ -609,6 +609,7 @@ cc_library(
         "velox/dwio/orc/test/ReaderFilterTest.cpp",
         "velox/dwio/orc/test/ReaderTest.cpp",
         "velox/dwio/parquet/tests/ParquetTpchTest.cpp",
+        "velox/dwio/parquet/tests/common/BitStreamUtilsTest.cpp",
         "velox/dwio/parquet/tests/common/LevelConversionTest.cpp",
         "velox/dwio/parquet/tests/reader/BloomFilterTest.cpp",
         "velox/dwio/parquet/tests/reader/E2EFilterTest.cpp",
