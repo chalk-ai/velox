@@ -547,8 +547,10 @@ struct MakeOpaqueFunc {
     out = std::make_shared<int64_t>(1);
   }
 };
+// TODO(jaroeichler): The duckdb parse path cannot round-trip OPAQUE types
+// by name.
 
-TEST_F(NullableArrayViewTest, materializeArrayWithOpaque) {
+TEST_F(NullableArrayViewTest, DISABLED_materializeArrayWithOpaque) {
   registerFunction<MakeOpaqueFunc, std::shared_ptr<int64_t>>({"make_opaque"});
 
   auto result = evaluate(
