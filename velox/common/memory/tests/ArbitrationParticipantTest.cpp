@@ -1630,7 +1630,9 @@ TEST_F(ArbitrationParticipantTest, arbitrationCandidate) {
   ASSERT_EQ(candidateWithFreeCapacityOnly.reclaimableFreeCapacity, 31 << 20);
   ASSERT_EQ(
       candidateWithFreeCapacityOnly.toString(),
-      "TaskPool-0 RECLAIMABLE_USED_CAPACITY 0B RECLAIMABLE_FREE_CAPACITY 31.00MB");
+      fmt::format(
+          "{} RECLAIMABLE_USED_CAPACITY 0B RECLAIMABLE_FREE_CAPACITY 31.00MB",
+          scopedParticipant->name()));
 
   ArbitrationCandidate candidate(
       participant->lock().value(), /*freeCapacityOnly=*/false);
@@ -1639,7 +1641,9 @@ TEST_F(ArbitrationParticipantTest, arbitrationCandidate) {
   ASSERT_EQ(candidate.reclaimableFreeCapacity, 31 << 20);
   ASSERT_EQ(
       candidate.toString(),
-      "TaskPool-0 RECLAIMABLE_USED_CAPACITY 1.00MB RECLAIMABLE_FREE_CAPACITY 31.00MB");
+      fmt::format(
+          "{} RECLAIMABLE_USED_CAPACITY 1.00MB RECLAIMABLE_FREE_CAPACITY 31.00MB",
+          scopedParticipant->name()));
 }
 
 TEST_F(ArbitrationParticipantTest, arbitrationOperation) {
