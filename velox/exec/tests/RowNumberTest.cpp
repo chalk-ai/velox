@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+#include <unordered_map>
+
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
@@ -40,6 +43,29 @@ class RowNumberTest : public OperatorTestBase {
     fuzzerOpts_.stringVariableLength = false;
     fuzzerOpts_.stringLength = 1024;
     fuzzerOpts_.allowLazyVector = false;
+  }
+
+  // Expects the last child of 'results' to hold row numbers that form
+  // exactly the sequence 1..n within each partition keyed on the first
+  // child. Spill restore changes which payload row gets which number, so
+  // this is the strongest check that holds under spill.
+  void verifyRowNumbers(const RowVector& results) {
+    const auto& keys = results.childAt(0);
+    const auto* rowNumbers =
+        results.children().back()->as<SimpleVector<int64_t>>();
+    ASSERT_NE(rowNumbers, nullptr);
+    std::unordered_map<std::string, std::vector<int64_t>> numbersPerPartition;
+    for (auto row = 0; row < results.size(); ++row) {
+      numbersPerPartition[keys->toString(row)].push_back(
+          rowNumbers->valueAt(row));
+    }
+    for (auto& [partition, numbers] : numbersPerPartition) {
+      std::sort(numbers.begin(), numbers.end());
+      for (size_t i = 0; i < numbers.size(); ++i) {
+        ASSERT_EQ(numbers[i], static_cast<int64_t>(i) + 1)
+            << "partition " << partition;
+      }
+    }
   }
 
   RowTypePtr rowType_;
@@ -146,42 +172,48 @@ TEST_F(RowNumberTest, largeInput) {
       makeFlatVector<int64_t>(10'000, [](auto row) { return row % 7; }),
       makeFlatVector<int64_t>(10'000, [](auto row) { return row; }),
   });
+  // Distinct c1 across the two copies makes the arrival order within each
+  // partition equal to c1 order, so the reference row numbers are exact.
+  auto data2 = makeRowVector({
+      makeFlatVector<int64_t>(10'000, [](auto row) { return row % 7; }),
+      makeFlatVector<int64_t>(10'000, [](auto row) { return row + 10'000; }),
+  });
 
-  createDuckDbTable({data, data});
+  createDuckDbTable({data, data2});
 
   // No limit, emit row numbers.
-  auto plan = PlanBuilder().values({data, data}).rowNumber({"c0"}).planNode();
-  assertQuery(plan, "SELECT *, row_number() over (partition by c0) FROM tmp");
+  auto plan = PlanBuilder().values({data, data2}).rowNumber({"c0"}).planNode();
+  assertQuery(plan, "SELECT *, row_number() over (partition by c0 order by c1) FROM tmp");
 
   // No limit, don't emit row numbers.
   plan = PlanBuilder()
-             .values({data, data})
+             .values({data, data2})
              .rowNumber({"c0"}, std::nullopt, false)
              .planNode();
   assertQuery(
       plan,
-      "SELECT c0, c1 FROM (SELECT *, row_number() over (partition by c0) as rn FROM tmp)");
+      "SELECT c0, c1 FROM (SELECT *, row_number() over (partition by c0 order by c1) as rn FROM tmp)");
 
   auto testLimit = [&](int32_t limit) {
     // Emit row numbers.
     auto plan =
-        PlanBuilder().values({data, data}).rowNumber({"c0"}, limit).planNode();
+        PlanBuilder().values({data, data2}).rowNumber({"c0"}, limit).planNode();
     assertQuery(
         plan,
         fmt::format(
-            "SELECT * FROM (SELECT *, row_number() over (partition by c0) as rn FROM tmp) "
+            "SELECT * FROM (SELECT *, row_number() over (partition by c0 order by c1) as rn FROM tmp) "
             "WHERE rn <= {}",
             limit));
 
     // Don't emit row numbers.
     plan = PlanBuilder()
-               .values({data, data})
+               .values({data, data2})
                .rowNumber({"c0"}, limit, false)
                .planNode();
     assertQuery(
         plan,
         fmt::format(
-            "SELECT c0, c1 FROM (SELECT *, row_number() over (partition by c0) as rn FROM tmp) "
+            "SELECT c0, c1 FROM (SELECT *, row_number() over (partition by c0 order by c1) as rn FROM tmp) "
             "WHERE rn <= {}",
             limit));
   };
@@ -211,7 +243,8 @@ TEST_F(RowNumberTest, spill) {
     TestScopedSpillInjection scopedSpillInjection(100, ".*", 1);
 
     core::PlanNodeId rowNumberPlanNodeId;
-    auto task =
+    std::shared_ptr<Task> task;
+    auto results =
         AssertQueryBuilder(duckDbQueryRunner_)
             .spillDirectory(spillDirectory->getPath())
             .config(core::QueryConfig::kSpillEnabled, true)
@@ -226,8 +259,18 @@ TEST_F(RowNumberTest, spill) {
                     .rowNumber({"c0"})
                     .capturePlanNodeId(rowNumberPlanNodeId)
                     .planNode())
-            .assertResults(
-                "SELECT *, row_number() over (partition by c0) FROM tmp");
+            .copyResults(pool(), task);
+    // Spill restore changes the pairing of payload rows and row numbers, so
+    // compare the payload against DuckDB and check the row numbers per
+    // partition.
+    auto payload = makeRowVector(std::vector<VectorPtr>(
+        results->children().begin(), results->children().end() - 1));
+    exec::test::assertResults(
+        {payload},
+        asRowType(payload->type()),
+        "SELECT * FROM tmp",
+        duckDbQueryRunner_);
+    verifyRowNumbers(*results);
     auto taskStats = toPlanStats(task->taskStats());
     auto& planStats = taskStats.at(rowNumberPlanNodeId);
     ASSERT_GT(planStats.spilledBytes, 0);
@@ -548,7 +591,8 @@ TEST_F(RowNumberTest, spillWithYield) {
     auto queryCtx = core::QueryCtx::create(executor_.get());
 
     core::PlanNodeId rowNumberPlanNodeId;
-    auto task =
+    std::shared_ptr<Task> task;
+    auto results =
         AssertQueryBuilder(duckDbQueryRunner_)
             .spillDirectory(spillDirectory->getPath())
             .config(core::QueryConfig::kSpillEnabled, true)
@@ -563,8 +607,18 @@ TEST_F(RowNumberTest, spillWithYield) {
                     .rowNumber({"c0"})
                     .capturePlanNodeId(rowNumberPlanNodeId)
                     .planNode())
-            .assertResults(
-                "SELECT *, row_number() over (partition by c0) FROM tmp");
+            .copyResults(pool(), task);
+    // Spill restore changes the pairing of payload rows and row numbers, so
+    // compare the payload against DuckDB and check the row numbers per
+    // partition.
+    auto payload = makeRowVector(std::vector<VectorPtr>(
+        results->children().begin(), results->children().end() - 1));
+    exec::test::assertResults(
+        {payload},
+        asRowType(payload->type()),
+        "SELECT * FROM tmp",
+        duckDbQueryRunner_);
+    verifyRowNumbers(*results);
     auto taskStats = toPlanStats(task->taskStats());
     auto& planStats = taskStats.at(rowNumberPlanNodeId);
     ASSERT_GT(planStats.spilledBytes, 0);

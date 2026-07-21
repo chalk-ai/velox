@@ -584,8 +584,10 @@ TEST_F(E2EWriterTest, MemoryPoolBasedFlushPolicyDictionaryEncoding) {
       FlushPolicyTestCase{
           .stripeSize = std::numeric_limits<int64_t>::max(),
           .dictSize = 200 * kSizeKB,
-          .numStripesLower = 319,
-          .numStripesUpper = 319,
+          // Slack around the historic 319 stripes: dictionary memory usage
+          // depends on the allocator, which shifts the flush points slightly.
+          .numStripesLower = 317,
+          .numStripesUpper = 323,
           .seed = dictionaryFlushSeed},
       FlushPolicyTestCase{
           .stripeSize = std::numeric_limits<int64_t>::max(),

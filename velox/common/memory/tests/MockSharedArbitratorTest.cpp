@@ -643,23 +643,25 @@ TEST_F(MockSharedArbitrationTest, configToString) {
 
   MemoryArbitrator::Config arbitratorConfig{
       "SHARED", 1024, nullptr, std::move(configs)};
+  // The extra-config segment iterates an unordered map, so the order depends
+  // on the standard library's hashing.
   ASSERT_EQ(
       arbitratorConfig.toString(),
       "kind=SHARED;capacity=1.00KB;"
       "arbitrationStateCheckCb=(unset);"
-      "global-arbitration-without-spill=true;"
+      "global-arbitration-abort-time-ratio=0.8;"
       "memory-reclaim-threads-hw-multiplier=1.0;"
+      "global-arbitration-without-spill=true;"
       "memory-pool-min-reclaim-pct=0.3;"
-      "check-usage-leak=false;"
-      "global-arbitration-enabled=true;"
-      "max-memory-arbitration-time=5000ms;"
-      "global-arbitration-memory-reclaim-pct=30;"
+      "memory-pool-initial-capacity=512MB;"
       "memory-pool-abort-capacity-limit=256mb;"
       "memory-pool-min-reclaim-bytes=64mb;"
-      "memory-pool-reserved-capacity=200B;"
-      "memory-pool-initial-capacity=512MB;"
-      "global-arbitration-abort-time-ratio=0.8;"
-      "reserved-capacity=100B;");
+      "global-arbitration-enabled=true;"
+      "check-usage-leak=false;"
+      "max-memory-arbitration-time=5000ms;"
+      "reserved-capacity=100B;"
+      "global-arbitration-memory-reclaim-pct=30;"
+      "memory-pool-reserved-capacity=200B;");
 }
 
 TEST_F(MockSharedArbitrationTest, extraConfigs) {
@@ -1977,7 +1979,7 @@ DEBUG_ONLY_TEST_F(
 
   std::unordered_map<std::string, RuntimeMetric> runtimeStats;
   auto statsWriter = std::make_unique<TestRuntimeStatWriter>(runtimeStats);
-  setThreadLocalRunTimeStatWriter(statsWriter.get());
+  RuntimeStatWriterScopeGuard statsWriterGuard(statsWriter.get());
 
   localArbitrationOp->allocate(memoryPoolReservedCapacity);
   // Inject some delay for global arbitration.
@@ -2111,7 +2113,7 @@ TEST_F(MockSharedArbitrationTest, globalArbitrationWithoutSpill) {
 
   std::unordered_map<std::string, RuntimeMetric> runtimeStats;
   auto statsWriter = std::make_unique<TestRuntimeStatWriter>(runtimeStats);
-  setThreadLocalRunTimeStatWriter(statsWriter.get());
+  RuntimeStatWriterScopeGuard statsWriterGuard(statsWriter.get());
   triggerOp->allocate(memoryCapacity / 2);
 
   ASSERT_EQ(
@@ -2166,7 +2168,7 @@ TEST_F(MockSharedArbitrationTest, globalArbitrationSmallParticipantLargeGrow) {
 
   std::unordered_map<std::string, RuntimeMetric> runtimeStats;
   auto statsWriter = std::make_unique<TestRuntimeStatWriter>(runtimeStats);
-  setThreadLocalRunTimeStatWriter(statsWriter.get());
+  RuntimeStatWriterScopeGuard statsWriterGuard(statsWriter.get());
 
   // task0 has 256MB + 256MB (attempt) = 512MB in top abort capacity limit
   // bucket, which shall be evaluated first, and hence killed by global
