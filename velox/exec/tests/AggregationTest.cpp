@@ -3804,13 +3804,36 @@ TEST_F(AggregationTest, distinctWithConstantInput) {
   auto plan =
       PlanBuilder()
           .values({data})
+          // The comparator is the value itself because with an all-constant
+          // comparator the winning row is implementation defined and DuckDB
+          // picks a different one.
           .singleAggregation(
-              {"c0"}, {"max_by(DISTINCT c1, 1)", "corr(DISTINCT 0.5, c2)"})
+              {"c0"}, {"max_by(DISTINCT c1, c1)", "corr(DISTINCT 0.5, c2)"})
           .planNode();
 
   assertQuery(
       plan,
-      "SELECT c0, max_by(DISTINCT c1, 1), corr(DISTINCT 0.5, c2) FROM tmp GROUP BY c0");
+      "SELECT c0, max_by(DISTINCT c1, c1), "
+      "NULLIF(corr(DISTINCT 0.5, c2), CAST('NaN' AS DOUBLE)) "
+      "FROM tmp GROUP BY c0");
+
+  // Constant comparator. With an all-constant comparator the winning row is
+  // implementation defined, so use groups with a single distinct value and
+  // assert explicit results instead of a DuckDB reference.
+  auto singleValueGroups = makeRowVector({
+      makeFlatVector<int64_t>({1, 1, 2, 3}),
+      makeFlatVector<int64_t>({10, 10, 30, 50}),
+  });
+  plan = PlanBuilder()
+             .values({singleValueGroups})
+             .singleAggregation({"c0"}, {"max_by(DISTINCT c1, 1)"})
+             .planNode();
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({1, 2, 3}),
+      makeFlatVector<int64_t>({10, 30, 50}),
+  });
+  AssertQueryBuilder(plan).assertResults({expected});
 
   // All-constant distinct inputs.
   plan = PlanBuilder()
@@ -3846,7 +3869,7 @@ TEST_F(AggregationTest, distinctWithConstantInput) {
              .project({"c0", "c1", "c2", "c1 > 1 as mask"})
              .singleAggregation(
                  {},
-                 {"max_by(DISTINCT c1, 1)",
+                 {"max_by(DISTINCT c1, c1)",
                   "sum(DISTINCT 3)",
                   "sum(DISTINCT 3)",
                   "count(c1)"},
@@ -3855,7 +3878,7 @@ TEST_F(AggregationTest, distinctWithConstantInput) {
 
   assertQuery(
       plan,
-      "SELECT max_by(DISTINCT c1, 1), sum(DISTINCT 3), sum(DISTINCT 3) FILTER (WHERE c1 > 1), count(c1) FROM tmp");
+      "SELECT max_by(DISTINCT c1, c1), sum(DISTINCT 3), sum(DISTINCT 3) FILTER (WHERE c1 > 1), count(c1) FROM tmp");
 
   // Mixed empty and non-empty groups.
   plan = PlanBuilder()

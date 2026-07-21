@@ -30,17 +30,23 @@ class CovarianceAggregationTest
     AggregationTestBase::SetUp();
   }
 
+  // DuckDB returns NaN where velox returns null, so mask NaN in the
+  // reference query.
+  static std::string nanToNull(const std::string& aggregateSql) {
+    return fmt::format("NULLIF({}, CAST('NaN' AS DOUBLE))", aggregateSql);
+  }
+
   void testGroupBy(const std::string& aggName, const RowVectorPtr& data) {
     auto partialAgg = fmt::format("{}(c1, c2)", aggName);
-    auto sql =
-        fmt::format("SELECT c0, {}(c1, c2) FROM tmp GROUP BY 1", aggName);
+    auto sql = fmt::format(
+        "SELECT c0, {} FROM tmp GROUP BY 1", nanToNull(partialAgg));
 
     testAggregations({data}, {"c0"}, {partialAgg}, sql);
   }
 
   void testGlobalAgg(const std::string& aggName, const RowVectorPtr& data) {
     auto partialAgg = fmt::format("{}(c1, c2)", aggName);
-    auto sql = fmt::format("SELECT {}(c1, c2) FROM tmp", aggName);
+    auto sql = fmt::format("SELECT {} FROM tmp", nanToNull(partialAgg));
 
     testAggregations({data}, {}, {partialAgg}, sql);
   }
@@ -50,7 +56,7 @@ class CovarianceAggregationTest
       const RowVectorPtr& data) {
     auto singleAgg = fmt::format("{}(distinct c1, c2)", aggName);
     auto sql = fmt::format(
-        "SELECT c0, {}(distinct c1, c2) FROM tmp GROUP BY 1", aggName);
+        "SELECT c0, {} FROM tmp GROUP BY 1", nanToNull(singleAgg));
     auto plan = PlanBuilder()
                     .values({data})
                     .singleAggregation({"c0"}, {singleAgg})
@@ -62,7 +68,7 @@ class CovarianceAggregationTest
       const std::string& aggName,
       const RowVectorPtr& data) {
     auto singleAgg = fmt::format("{}(distinct c1, c2)", aggName);
-    auto sql = fmt::format("SELECT {}(distinct c1, c2) FROM tmp", aggName);
+    auto sql = fmt::format("SELECT {} FROM tmp", nanToNull(singleAgg));
     auto plan = PlanBuilder()
                     .values({data})
                     .singleAggregation({}, {singleAgg})
