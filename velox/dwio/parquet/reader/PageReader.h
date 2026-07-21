@@ -564,12 +564,13 @@ getParquetDecompressionOptions(common::CompressionKind kind) {
       kind == common::CompressionKind_GZIP) {
     options.format.zlib.windowBits =
         dwio::common::compression::Compressor::PARQUET_ZLIB_WINDOW_BITS;
-  } else if (
-      kind == common::CompressionKind_LZ4 ||
-      kind == common::CompressionKind_LZO) {
+  } else if (kind == common::CompressionKind_LZ4) {
     // LZ4F is supposed to be deprecated!
     options.format.lz4_lzo.isHadoopFrameFormat = false;
-    // options.format.lz4_lzo.isHadoopFrameFormat = true;
+  } else if (kind == common::CompressionKind_LZO) {
+    // Parquet LZO pages use the Hadoop frame format. Velox never writes LZO,
+    // so this only affects reads.
+    options.format.lz4_lzo.isHadoopFrameFormat = true;
   }
   return options;
 }
