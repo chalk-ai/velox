@@ -390,11 +390,16 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     }
   }
 
+  // Bulk-unpack only a multiple of 8 values so the consumed bits end on a
+  // byte boundary. The byteOffset advance below would otherwise truncate
+  // sub-byte bit positions. The tail goes through the bit-exact GetValue_
+  // loop at the end.
+  const int alignedSize = (batchSize - i) / 8 * 8;
   if (sizeof(T) == 4) {
     int numUnpacked = ::arrow::internal::unpack32(
         reinterpret_cast<const uint32_t*>(buffer + byteOffset),
         reinterpret_cast<uint32_t*>(v + i),
-        batchSize - i,
+        alignedSize,
         numBits);
     i += numUnpacked;
     byteOffset += numUnpacked * numBits / 8;
@@ -405,7 +410,7 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     int numUnpacked = ::arrow::internal::unpack64(
         buffer + byteOffset,
         reinterpret_cast<uint64_t*>(v + i),
-        batchSize - i,
+        alignedSize,
         numBits);
     i += numUnpacked;
     byteOffset += numUnpacked * numBits / 8;
@@ -414,8 +419,9 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     VELOX_DCHECK_LE(numBits, 32);
     const int bufferSize = 1024;
     uint32_t unpackBuffer[bufferSize];
-    while (i < batchSize) {
-      int unpack_size = std::min(bufferSize, batchSize - i);
+    const int bulkEnd = i + alignedSize;
+    while (i < bulkEnd) {
+      int unpack_size = std::min(bufferSize, bulkEnd - i);
       int numUnpacked = ::arrow::internal::unpack32(
           reinterpret_cast<const uint32_t*>(buffer + byteOffset),
           unpackBuffer,
