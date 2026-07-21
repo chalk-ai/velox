@@ -167,7 +167,10 @@ class AbfsFileSystemTest : public testing::Test {
   }
 
   void TearDown() override {
-    azuriteServer_->stop();
+    // SetUp() throws before assigning the server when azurite is unavailable.
+    if (azuriteServer_) {
+      azuriteServer_->stop();
+    }
   }
 
   static std::string generateRandomData(int size) {
