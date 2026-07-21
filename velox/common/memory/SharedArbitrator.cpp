@@ -629,6 +629,13 @@ SharedArbitrator::sortAndGroupSpillCandidates(
                 rhs.participant->name());
           }
           if (lhsReclaimer->priority() == rhsReclaimer->priority()) {
+            if (lhs.reclaimableUsedCapacity == rhs.reclaimableUsedCapacity) {
+              // Favor spilling the youngest participant to let long running
+              // queries proceed, matching the abort candidate selection. The
+              // tie break also keeps victim selection deterministic because
+              // candidates arrive in hash iteration order.
+              return lhs.participant->id() > rhs.participant->id();
+            }
             return lhs.reclaimableUsedCapacity > rhs.reclaimableUsedCapacity;
           }
           return lhsReclaimer->priority() > rhsReclaimer->priority();
