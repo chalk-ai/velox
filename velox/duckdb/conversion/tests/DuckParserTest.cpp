@@ -847,6 +847,37 @@ TEST(DuckParserTest, arrayLiteral) {
     EXPECT_EQ("{{1, 2}, {3, 4}}", expr->toString());
   }
 
+  // Boolean literals arrive as cast('t'/'f' as BOOLEAN) and fold back to
+  // constants.
+  {
+    auto expr = parseExpr("[true, false]");
+    EXPECT_TRUE(expr->is(core::IExpr::Kind::kConstant));
+    auto* constant = expr->as<core::ConstantExpr>();
+    VELOX_EXPECT_EQ_TYPES(constant->type(), ARRAY(BOOLEAN()));
+    EXPECT_EQ(
+        constant->value(), Variant::array({Variant(true), Variant(false)}));
+  }
+
+  // A cast in an array constructor is not folded and stays a runtime cast.
+  {
+    auto expr = parseExpr("['true'::boolean]");
+    EXPECT_TRUE(expr->is(core::IExpr::Kind::kCall));
+    EXPECT_EQ(
+        "list_value(cast(true as BOOLEAN))",
+        expr->toString());
+  }
+
+  // An IN list folds its elements, including string-to-boolean casts, with
+  // the same spellings as the velox runtime cast.
+  EXPECT_EQ(
+      "in(\"c0\",{true, false})",
+      parseExpr("c0 in ('true'::boolean, '0'::boolean)")->toString());
+
+  // A string that does not spell a boolean still fails.
+  VELOX_ASSERT_THROW(
+      parseExpr("c0 in ('nope'::boolean)"),
+      "Cannot cast string to boolean in array literal");
+
   // Non-constant argument stays a function call.
   {
     auto expr = parseExpr("[a, 1, 2]");
@@ -917,4 +948,15 @@ TEST(DuckParserTest, dateLiteral) {
   VELOX_ASSERT_THROW(
       parseExpr("DATE 'not-a-date'"),
       "Unable to parse date value: \"not-a-date\"");
+}
+
+TEST(DuckParserTest, varbinaryLiteral) {
+  auto expr = parseExpr("'\\x41'::varbinary");
+  EXPECT_TRUE(expr->is(core::IExpr::Kind::kConstant));
+
+  auto* constant = expr->as<core::ConstantExpr>();
+  VELOX_EXPECT_EQ_TYPES(constant->type(), VARBINARY());
+  // The literal is copied byte for byte matching the velox runtime cast; blob
+  // escapes are not interpreted.
+  EXPECT_EQ(constant->value().value<TypeKind::VARBINARY>(), "\\x41");
 }
