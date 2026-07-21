@@ -393,32 +393,36 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     }
   }
 
+  // Bulk-unpack only a multiple of 8 values so the consumed bits end on a
+  // byte boundary. The byteOffset advance below would otherwise truncate
+  // sub-byte bit positions. The tail goes through the bit-exact GetValue_
+  // loop at the end.
+  const int alignedSize = (batchSize - i) / 8 * 8;
   if (sizeof(T) == 4) {
-    const int unpackSize = batchSize - i;
     ::arrow::internal::unpack<uint32_t>(
         buffer + byteOffset,
         reinterpret_cast<uint32_t*>(v + i),
-        {unpackSize, numBits});
-    i += unpackSize;
-    byteOffset += unpackSize * numBits / 8;
+        {alignedSize, numBits});
+    i += alignedSize;
+    byteOffset += alignedSize * numBits / 8;
   } else if (sizeof(T) == 8 && numBits > 32) {
     // Use unpack64 only if numBits is larger than 32
     // TODO (ARROW-13677): improve the performance of internal::unpack64
     // and remove the restriction of numBits
-    const int unpackSize = batchSize - i;
     ::arrow::internal::unpack<uint64_t>(
         buffer + byteOffset,
         reinterpret_cast<uint64_t*>(v + i),
-        {unpackSize, numBits});
-    i += unpackSize;
-    byteOffset += unpackSize * numBits / 8;
+        {alignedSize, numBits});
+    i += alignedSize;
+    byteOffset += alignedSize * numBits / 8;
   } else {
     // TODO: revisit this limit if necessary
     VELOX_DCHECK_LE(numBits, 32);
     const int bufferSize = 1024;
     uint32_t unpackBuffer[bufferSize];
-    while (i < batchSize) {
-      const int unpackSize = std::min(bufferSize, batchSize - i);
+    const int bulkEnd = i + alignedSize;
+    while (i < bulkEnd) {
+      const int unpackSize = std::min(bufferSize, bulkEnd - i);
       ::arrow::internal::unpack<uint32_t>(
           buffer + byteOffset,
           unpackBuffer,
