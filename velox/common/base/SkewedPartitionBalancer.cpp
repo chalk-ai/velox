@@ -102,8 +102,11 @@ void SkewedPartitionRebalancer::rebalancePartitions(int64_t processedBytes) {
       "facebook::velox::common::SkewedPartitionRebalancer::rebalancePartitions",
       this);
 
-  // Updates the processed bytes for each partition.
-  calculatePartitionProcessedBytes();
+  // Updates the processed bytes for each partition. Keep all rebalance state
+  // unchanged until rows arrive.
+  if (!calculatePartitionProcessedBytes()) {
+    return;
+  }
 
   // Updates 'partitionBytesSinceLastRebalancePerTask_'.
   for (auto partition = 0; partition < numPartitions_; ++partition) {
@@ -235,12 +238,14 @@ bool SkewedPartitionRebalancer::rebalancePartition(
   return true;
 }
 
-void SkewedPartitionRebalancer::calculatePartitionProcessedBytes() {
+bool SkewedPartitionRebalancer::calculatePartitionProcessedBytes() {
   uint64_t totalPartitionRowCount{0};
   for (auto partition = 0; partition < numPartitions_; ++partition) {
     totalPartitionRowCount += partitionRowCount_[partition];
   }
-  VELOX_CHECK_GT(totalPartitionRowCount, 0);
+  if (totalPartitionRowCount == 0) {
+    return false;
+  }
 
   for (auto partition = 0; partition < numPartitions_; ++partition) {
     // Since we estimate 'partitionBytes_' based on 'partitionRowCount_' and
@@ -257,6 +262,7 @@ void SkewedPartitionRebalancer::calculatePartitionProcessedBytes() {
             totalPartitionRowCount,
         partitionBytes_[partition]);
   }
+  return true;
 }
 
 std::vector<uint32_t> SkewedPartitionRebalancer::findSkewedMinTasks(
