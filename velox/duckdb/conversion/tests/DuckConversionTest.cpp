@@ -94,6 +94,9 @@ TEST(DuckConversionTest, duckValueToVariantUnsupported) {
   ::duckdb::Connection con(db);
   auto& context = *con.context;
 
+  // TransformStringToLogicalType binds the type name in the catalog, which
+  // requires an active transaction.
+  con.BeginTransaction();
   std::vector<LogicalType> unsupported = {
       ::duckdb::TransformStringToLogicalType("interval", context),
       LogicalType::LIST(
@@ -101,6 +104,7 @@ TEST(DuckConversionTest, duckValueToVariantUnsupported) {
       LogicalType::STRUCT(
           {{"a", ::duckdb::TransformStringToLogicalType("integer", context)},
            {"b", ::duckdb::TransformStringToLogicalType("tinyint", context)}})};
+  con.Commit();
 
   for (const auto& i : unsupported) {
     EXPECT_THROW(duckValueToVariant(Value(i)), std::runtime_error);

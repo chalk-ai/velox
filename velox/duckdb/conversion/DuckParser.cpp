@@ -17,9 +17,11 @@
 #include "velox/common/base/Exceptions.h"
 #include "velox/duckdb/conversion/DuckConversion.h"
 #include "velox/parse/Expressions.h"
+#include "velox/type/Conversions.h"
 #include "velox/type/Variant.h"
 
 #include <duckdb.hpp> // @manual
+#include <duckdb/common/error_data.hpp> // @manual
 #include <duckdb/parser/expression/between_expression.hpp> // @manual
 #include <duckdb/parser/expression/case_expression.hpp> // @manual
 #include <duckdb/parser/expression/cast_expression.hpp> // @manual
@@ -105,6 +107,8 @@ std::string duckOperatorToVelox(ExpressionType type) {
       return "in";
     case ExpressionType::OPERATOR_NOT:
       return "not";
+    case ExpressionType::OPERATOR_TRY:
+      return "try";
     default:
       return normalizeFuncName(ExpressionTypeToOperator(type));
   }
@@ -222,18 +226,27 @@ std::shared_ptr<const core::ConstantExpr> tryParseInterval(
     const std::string& functionName,
     const core::ExprPtr& input,
     std::optional<std::string> alias) {
-  std::optional<int64_t> value;
-
-  if (auto constInput = dynamic_cast<const core::ConstantExpr*>(input.get())) {
-    value = extractInteger(*constInput);
-  } else if (
-      auto castInput = dynamic_cast<const core::CastExpr*>(input.get())) {
-    if (auto constInput =
-            dynamic_cast<const core::ConstantExpr*>(castInput->input().get())) {
-      value = extractInteger(*constInput);
+  // DuckDB lowers "INTERVAL <n> <unit>" to <to_unit>(CAST(n AS DOUBLE)) for
+  // second and millisecond units (target type DOUBLE), and to
+  // <to_unit>(CAST(trunc(CAST(n AS DOUBLE)) AS INTEGER|BIGINT)) for all other
+  // units.
+  const core::IExpr* valueExpr = input.get();
+  if (auto* castInput = dynamic_cast<const core::CastExpr*>(valueExpr)) {
+    valueExpr = castInput->input().get();
+  }
+  if (auto* callInput = dynamic_cast<const core::CallExpr*>(valueExpr);
+      callInput && callInput->name() == "trunc" &&
+      callInput->inputs().size() == 1) {
+    valueExpr = callInput->inputs()[0].get();
+    if (auto* castInput = dynamic_cast<const core::CastExpr*>(valueExpr)) {
+      valueExpr = castInput->input().get();
     }
   }
 
+  std::optional<int64_t> value;
+  if (auto* constInput = dynamic_cast<const core::ConstantExpr*>(valueExpr)) {
+    value = extractInteger(*constInput);
+  }
   if (!value.has_value()) {
     return nullptr;
   }
@@ -452,16 +465,36 @@ void appendConstantArrayElement(
     if (castExpr->child->GetExpressionType() ==
         ExpressionType::VALUE_CONSTANT) {
       auto constExpr = dynamic_cast<ConstantExpression*>(castExpr->child.get());
+      // Parse-time type names are unbound, so bind before inspecting.
+      auto castType = castExpr->cast_type;
+      if (castType.id() == LogicalTypeId::UNBOUND) {
+        castType = ::duckdb::UnboundType::TryDefaultBind(castType);
+      }
       if (constExpr->value.IsNull()) {
         // A typed NULL (e.g. CAST(NULL AS BIGINT)) has no value to cast;
         // represent it as an UNKNOWN null and let the non-null elements
         // determine the array element type.
         values.emplace_back(Variant(TypeKind::UNKNOWN));
+      } else if (
+          castType.id() == LogicalTypeId::BOOLEAN &&
+          constExpr->value.type().id() == LogicalTypeId::VARCHAR) {
+        // DuckDB no longer implements context-free VARCHAR casts, which
+        // boolean literals rely on (they parse as cast('t'/'f' as BOOLEAN)).
+        // Fold with the velox cast to match runtime semantics.
+        const auto& text = ::duckdb::StringValue::Get(constExpr->value);
+        const auto parsed =
+            util::castToBoolean<util::PrestoCastPolicy>(text.data(), text.size());
+        VELOX_USER_CHECK(
+            parsed.hasValue(),
+            "Cannot cast string to boolean in array literal: {}",
+            text);
+        values.emplace_back(Variant(parsed.value()));
+        valueType = BOOLEAN();
       } else {
-        auto value = constExpr->value.DefaultCastAs(
-            castExpr->cast_type, !castExpr->try_cast);
+        auto value =
+            constExpr->value.DefaultCastAs(castType, !castExpr->try_cast);
         values.emplace_back(duckValueToVariant(value));
-        valueType = toVeloxType(castExpr->cast_type);
+        valueType = toVeloxType(castType);
       }
       return;
     }
@@ -768,6 +801,15 @@ core::ExprPtr parseCastExpr(
       }
     }
 
+    // DuckDB no longer folds string literals cast to blob in the parser.
+    // Fold into a VARBINARY constant to keep literal semantics.
+    if (targetType->isVarbinary() && constant->type()->isVarchar()) {
+      return std::make_shared<const core::ConstantExpr>(
+          VARBINARY(),
+          Variant::binary(constant->value().value<TypeKind::VARCHAR>()),
+          getAlias(expr));
+    }
+
     // DuckDB parses DATE '...' and '...'::date as cast(varchar as DATE).
     // Fold into a DATE constant.
     if (targetType->isDate() && constant->type()->isVarchar()) {
@@ -873,7 +915,12 @@ parseExpression(const std::string& exprString) {
   try {
     return Parser::ParseExpressionList(exprString, options);
   } catch (const std::exception& e) {
-    VELOX_FAIL("Cannot parse expression: {}. {}", exprString, e.what());
+    // DuckDB renders exception messages as JSON envelopes. ErrorData restores
+    // the readable "<type> Error: <message>" form.
+    ::duckdb::ErrorData errorData(e);
+    errorData.FinalizeError();
+    VELOX_FAIL(
+        "Cannot parse expression: {}. {}", exprString, errorData.Message());
   }
 }
 
