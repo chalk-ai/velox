@@ -110,6 +110,28 @@ TEST_F(ParquetReaderTest, parseSample) {
       sampleSchema(), *readerBundle.rowReader, expected, *leafPool_);
 }
 
+TEST_F(ParquetReaderTest, logicalNullInt32) {
+  auto outputRowType = ROW("all_null", UNKNOWN());
+  auto readerBundle = readerBuilder("all_null.parquet", outputRowType).build();
+  auto expected =
+      makeRowVector({BaseVector::createNullConstant(UNKNOWN(), 3, pool())});
+
+  assertReadWithReaderAndExpected(
+      outputRowType, *readerBundle.rowReader, expected, *leafPool_);
+}
+
+TEST_F(ParquetReaderTest, logicalNullBoolean) {
+  auto outputRowType = ROW({"id", "void_col"}, {INTEGER(), UNKNOWN()});
+  auto readerBundle =
+      readerBuilder("all_null_boolean.parquet", outputRowType).build();
+  auto expected = makeRowVector(
+      {makeFlatVector<int32_t>({2, 3}),
+       BaseVector::createNullConstant(UNKNOWN(), 2, pool())});
+
+  assertReadWithReaderAndExpected(
+      outputRowType, *readerBundle.rowReader, expected, *leafPool_);
+}
+
 TEST_F(ParquetReaderTest, parquetFieldIdColumnMappingNotImplemented) {
   auto readerOptions = makeDefaultReaderOptions();
   readerOptions.setColumnMappingMode(ColumnMappingMode::kParquetFieldId);
