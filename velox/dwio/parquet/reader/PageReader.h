@@ -530,7 +530,7 @@ class PageReader {
   // Manages concatenating null flags read from multiple pages. If a
   // readWithVisitor is contined in one page, the visitor places the
   // nulls in the reader. If many pages are covered, some with and
-  // some without nulls, we must make a a concatenated null flags to
+  // some without nulls, we must make a concatenated null flags to
   // return to the caller.
   dwio::common::BitConcatenation nullConcatenation_;
 
@@ -564,12 +564,11 @@ getParquetDecompressionOptions(common::CompressionKind kind) {
       kind == common::CompressionKind_GZIP) {
     options.format.zlib.windowBits =
         dwio::common::compression::Compressor::PARQUET_ZLIB_WINDOW_BITS;
-  } else if (
-      kind == common::CompressionKind_LZ4 ||
-      kind == common::CompressionKind_LZO) {
-    // LZ4F is supposed to be deprecated!
+  } else if (kind == common::CompressionKind_LZ4_HADOOP) {
+    options.format.lz4_lzo.isHadoopFrameFormat = true;
+  } else if (kind == common::CompressionKind_LZO) {
+    // Preserve Chalk's existing non-Hadoop LZO behavior.
     options.format.lz4_lzo.isHadoopFrameFormat = false;
-    // options.format.lz4_lzo.isHadoopFrameFormat = true;
   }
   return options;
 }

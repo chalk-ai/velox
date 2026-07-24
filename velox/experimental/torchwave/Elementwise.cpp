@@ -143,7 +143,8 @@ void CompileCtx::generateElementwise(
     const std::vector<Subgraph>& subgraphs,
     const std::vector<ResultSpec>& resultSpecs,
     const std::string& resultStmt,
-    bool fullBlockResult) {
+    bool fullBlockResult,
+    ValueCP FOLLY_NULLABLE shapeSetOnDeviceResult) {
   auto& op = *generatingOp_;
 
   // Scalar-elementwise ops (isScalarElementwise, e.g. _operator.* / sym_size /
@@ -726,6 +727,20 @@ void CompileCtx::generateElementwise(
   }
   // Wait for all warps to finish before size in shared memory is reused.
   code_ << "  __syncthreads();\n";
+
+  // A data-dependent scan output (shapeSetOnDevice, e.g. masked_select) writes
+  // its length inside the element loop, at the last element. When the input is
+  // empty the loop runs zero iterations, so no thread writes the length and the
+  // output keeps its reserved (upper-bound) size. Zero it here, still inside
+  // this op's block (size is in scope) so a fused consumer reading the length
+  // next (e.g. cat summing its inputs' dims[0]) sees 0.
+  if (shapeSetOnDeviceResult != nullptr &&
+      shapeSetOnDeviceResult->type().kind() == nativert::Type::Kind::Tensor) {
+    code_
+        << "  if (size == 0 && threadIdx.x == 0 && blockInfo.blockInOp == 0) {\n"
+        << "    " << param(shapeSetOnDeviceResult, op) << "->dims[0] = 0;\n"
+        << "  }\n";
+  }
   code_ << "  }\n";
 
   for (auto& ee : newExprs) {
@@ -771,7 +786,7 @@ std::string CompileCtx::formatLeafAccess(
 std::string CompileCtx::buildElementwiseCall(
     const Metadata& meta,
     NodeCP node,
-    const KernelOperation& /*op*/,
+    const KernelOperation& op,
     const std::vector<std::string>& argTexts) {
   const auto& ew = *meta.elementwise;
   std::stringstream ss;
@@ -780,7 +795,7 @@ std::string CompileCtx::buildElementwiseCall(
       ? presentTemplateParams(meta, node)
       : std::string();
   if (!meta.typeTemplateParams.empty() || meta.hasDtypeTemplateParam ||
-      !ewPresenceParams.empty()) {
+      !meta.templateAttrs.empty() || !ewPresenceParams.empty()) {
     ss << "<";
     const auto& nodeInputs = node->inputs();
     bool firstTp = true;
@@ -795,9 +810,20 @@ std::string CompileCtx::buildElementwiseCall(
       if (!firstTp) {
         ss << ", ";
       }
+      firstTp = false;
       const auto* dtypeAttr = node->tryGetAttribute("dtype");
       TORCH_CHECK(dtypeAttr, node->target(), ": missing dtype attribute");
       ss << cudaTypeFromDtype(*dtypeAttr);
+    }
+    for (const auto& attrName : meta.templateAttrs) {
+      if (!firstTp) {
+        ss << ", ";
+      }
+      firstTp = false;
+      const auto* attr = node->tryGetAttribute(attrName);
+      TORCH_CHECK(
+          attr, node->target(), ": missing template attribute ", attrName);
+      ss << constantToString(attr->value);
     }
     if (!ewPresenceParams.empty()) {
       if (!firstTp) {
@@ -826,6 +852,17 @@ std::string CompileCtx::buildElementwiseCall(
     }
     first = false;
     ss << arg;
+  }
+  if (ew.hasOutputArg) {
+    TORCH_CHECK(
+        currentRootOutput_,
+        "hasOutputArg requires a root output; none set for ",
+        node->target());
+    if (!first) {
+      ss << ", ";
+    }
+    first = false;
+    ss << param(currentRootOutput_, op);
   }
   if (ew.hasBlockInfo) {
     if (!first) {
@@ -1042,6 +1079,14 @@ void CompileCtx::elementwiseExprImpl(
               meta->argumentMeta[schemaIdx].wholeTensor;
           bool isReg = schemaIdx < meta->argumentMeta.size() &&
               meta->argumentMeta[schemaIdx].isRegister;
+          // A gather op (hasOutputArg) reads its whole-tensor operands via
+          // computed offsets and, for repeat, wraps by their own dims. Force
+          // an own-dims index calculator so those reads (and __repeat's
+          // self->sizes[].mod) never see a broadcast or uninitialized sizes[].
+          if (isWhole && meta->elementwise && meta->elementwise->hasOutputArg &&
+              v->type().kind() == nativert::Type::Kind::Tensor) {
+            generatingOp_->addOwnDimsCalcOffset(op.paramOffset(v));
+          }
           processValue(v, isWhole, isReg);
         } else if (attr) {
           ++emittedArgs;
@@ -1055,6 +1100,15 @@ void CompileCtx::elementwiseExprImpl(
           }
         }
       });
+  // A gather op (hasOutputArg) decomposes the enclosing output's linear index
+  // by the output's own dims (out->sizes[]). Force an own-dims calculator for
+  // that output tensor; the contiguous fast path would otherwise leave its
+  // sizes[] uninitialized.
+  if (meta->elementwise && meta->elementwise->hasOutputArg &&
+      currentRootOutput_ &&
+      currentRootOutput_->type().kind() == nativert::Type::Kind::Tensor) {
+    generatingOp_->addOwnDimsCalcOffset(op.paramOffset(currentRootOutput_));
+  }
   if (meta->generateCall) {
     std::stringstream callSs;
     meta->generateCall(callSs, node, std::move(argTexts));
@@ -1079,6 +1133,10 @@ void CompileCtx::elementwiseExpr(
     const std::vector<ValueCP>& inputs,
     bool slowPath) {
   addInclude("velox/experimental/torchwave/Elementwise.cuh");
+  // 'value' is the subgraph root output the loop stores at 'idx'; record it so
+  // buildElementwiseCall can pass it to ops with hasOutputArg (e.g.
+  // index_select needs the enclosing expression's output shape).
+  currentRootOutput_ = value;
   std::unordered_set<ValueCP> inputSet(inputs.begin(), inputs.end());
   inputSet.erase(value);
   elementwiseExprImpl(value, resultName, inputSet, inputs, op, slowPath);
