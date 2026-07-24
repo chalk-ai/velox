@@ -15,8 +15,7 @@
  */
 
 #include "velox/dwio/common/compression/Compression.h"
-// *DISABLED* due to dependency on lzo2
-// #include "velox/common/compression/LzoDecompressor.h"
+#include "velox/common/compression/LzoDecompressor.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/dwio/common/IntCodecCommon.h"
 #include "velox/dwio/common/Statistics.h"
@@ -344,28 +343,27 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
   return decompressedTotalSize;
 }
 
-// *DISABLED* due to dependency on lzo2
-// class LzoDecompressor : public LzoAndLz4DecompressorCommon {
-//  public:
-//   explicit LzoDecompressor(
-//       uint64_t blockSize,
-//       bool isHadoopFrameFormat,
-//       const std::string& streamDebugInfo)
-//       : LzoAndLz4DecompressorCommon{
-//             blockSize,
-//             velox::common::CompressionKind_LZO,
-//             isHadoopFrameFormat,
-//             streamDebugInfo} {}
-// 
-//   uint64_t decompressInternal(
-//       const char* src,
-//       uint64_t srcLength,
-//       char* dest,
-//       uint64_t destLength) override {
-//     return ::facebook::velox::common::compression::lzoDecompress(
-//         src, src + srcLength, dest, dest + destLength);
-//   }
-// };
+class LzoDecompressor : public LzoAndLz4DecompressorCommon {
+ public:
+  explicit LzoDecompressor(
+      uint64_t blockSize,
+      bool isHadoopFrameFormat,
+      const std::string& streamDebugInfo)
+      : LzoAndLz4DecompressorCommon{
+            blockSize,
+            velox::common::CompressionKind_LZO,
+            isHadoopFrameFormat,
+            streamDebugInfo} {}
+
+  uint64_t decompressInternal(
+      const char* src,
+      uint64_t srcLength,
+      char* dest,
+      uint64_t destLength) override {
+    return ::facebook::velox::common::compression::lzoDecompress(
+        src, src + srcLength, dest, dest + destLength);
+  }
+};
 
 class Lz4Decompressor : public LzoAndLz4DecompressorCommon {
  public:
@@ -734,13 +732,11 @@ std::unique_ptr<dwio::common::SeekableInputStream> createDecompressor(
       decompressor =
           std::make_unique<SnappyDecompressor>(blockSize, streamDebugInfo);
       break;
-// *DISABLED* due to dependency on lzo2
     case CompressionKind::CompressionKind_LZO:
-      DWIO_RAISE("Unsupported compression codec ", kind);
-//       decompressor = std::make_unique<LzoDecompressor>(
-//           blockSize,
-//           options.format.lz4_lzo.isHadoopFrameFormat,
-//           streamDebugInfo);
+      decompressor = std::make_unique<LzoDecompressor>(
+          blockSize,
+          options.format.lz4_lzo.isHadoopFrameFormat,
+          streamDebugInfo);
       break;
     case CompressionKind::CompressionKind_LZ4:
       decompressor = std::make_unique<Lz4Decompressor>(

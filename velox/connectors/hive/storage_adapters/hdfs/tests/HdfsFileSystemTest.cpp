@@ -79,7 +79,10 @@ class HdfsFileSystemTest : public testing::Test {
       filesystem->close();
     }
 
-    miniCluster->stop();
+    // Setup throws before assigning the cluster when hadoop is unavailable.
+    if (miniCluster) {
+      miniCluster->stop();
+    }
   }
 
   static std::unique_ptr<WriteFile> openFileForWrite(std::string_view path) {
