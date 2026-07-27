@@ -48,6 +48,13 @@ PartitionIdGenerator::PartitionIdGenerator(
       ROW(std::move(partitionKeyNames), std::move(partitionKeyTypes)), 0, pool);
 }
 
+void PartitionIdGenerator::disableDistinctPartitionLimit() {
+  VELOX_CHECK(
+      partitionIds_.empty(),
+      "The distinct partition limit must be disabled before processing input.");
+  maxDistinctPartitions_.reset();
+}
+
 void PartitionIdGenerator::run(
     const RowVectorPtr& input,
     raw_vector<uint64_t>& result,

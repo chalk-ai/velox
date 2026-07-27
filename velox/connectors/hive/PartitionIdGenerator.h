@@ -57,6 +57,10 @@ class PartitionIdGenerator {
       raw_vector<uint64_t>& result,
       std::vector<PartitionRun>* partitionRuns = nullptr);
 
+  /// Removes the lifetime distinct-partition limit. Must be called before the
+  /// generator has processed any input.
+  void disableDistinctPartitionLimit();
+
   /// Return the total number of distinct partitions processed so far.
   uint64_t numPartitions() const {
     return partitionIds_.size();
@@ -98,7 +102,7 @@ class PartitionIdGenerator {
 
   const std::vector<column_index_t> partitionChannels_;
 
-  const std::optional<uint32_t> maxDistinctPartitions_;
+  std::optional<uint32_t> maxDistinctPartitions_;
 
   std::vector<std::unique_ptr<exec::VectorHasher>> hashers_;
   bool hasMultiplierSet_ = false;

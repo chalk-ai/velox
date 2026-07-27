@@ -300,31 +300,12 @@ IcebergDataSink::IcebergDataSink(
           connectorQueryCtx,
           commitStrategy,
           hiveConfig,
-          icebergConfig,
-          hiveConfig->maxPartitionsPerWriters(
-              connectorQueryCtx->sessionProperties())) {}
-
-IcebergDataSink::IcebergDataSink(
-    RowTypePtr inputType,
-    IcebergInsertTableHandlePtr insertTableHandle,
-    const ConnectorQueryCtx* connectorQueryCtx,
-    CommitStrategy commitStrategy,
-    const std::shared_ptr<const HiveConfig>& hiveConfig,
-    const IcebergConfigPtr& icebergConfig,
-    std::optional<uint32_t> maxDistinctPartitions)
-    : IcebergDataSink(
-          std::move(inputType),
-          insertTableHandle,
-          connectorQueryCtx,
-          commitStrategy,
-          hiveConfig,
           createPartitionChannels(
               insertTableHandle->inputColumns(),
               insertTableHandle->partitionSpec()),
           createDataChannels(insertTableHandle),
           createPartitionRowType(insertTableHandle->partitionSpec()),
-          icebergConfig,
-          maxDistinctPartitions) {}
+          icebergConfig) {}
 
 IcebergDataSink::IcebergDataSink(
     RowTypePtr inputType,
@@ -335,8 +316,7 @@ IcebergDataSink::IcebergDataSink(
     const std::vector<column_index_t>& partitionChannels,
     const std::vector<column_index_t>& dataChannels,
     RowTypePtr partitionRowType,
-    const IcebergConfigPtr& icebergConfig,
-    std::optional<uint32_t> maxDistinctPartitions)
+    const IcebergConfigPtr& icebergConfig)
     : HiveDataSink(
           inputType,
           insertTableHandle,
@@ -359,7 +339,8 @@ IcebergDataSink::IcebergDataSink(
                           0);
                       return transformedChannels;
                     }(),
-                    maxDistinctPartitions,
+                    hiveConfig->maxPartitionsPerWriters(
+                        connectorQueryCtx->sessionProperties()),
                     connectorQueryCtx->memoryPool())
               : nullptr),
       partitionSpec_(insertTableHandle->partitionSpec()),

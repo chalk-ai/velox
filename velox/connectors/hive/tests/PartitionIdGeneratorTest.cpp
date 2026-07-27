@@ -174,9 +174,10 @@ TEST_F(PartitionIdGeneratorTest, stableIdsMultipleKeys) {
   }
 }
 
-TEST_F(PartitionIdGeneratorTest, noDistinctPartitionLimit) {
+TEST_F(PartitionIdGeneratorTest, disabledDistinctPartitionLimit) {
   constexpr vector_size_t kNumPartitions = 256;
-  PartitionIdGenerator idGenerator(ROW({BIGINT()}), {0}, std::nullopt, pool());
+  PartitionIdGenerator idGenerator(ROW({BIGINT()}), {0}, 128, pool());
+  idGenerator.disableDistinctPartitionLimit();
 
   auto firstInput = makeRowVector({
       makeFlatVector<int64_t>(kNumPartitions / 2, [](auto row) { return row; }),
@@ -205,6 +206,10 @@ TEST_F(PartitionIdGeneratorTest, noDistinctPartitionLimit) {
   for (vector_size_t i = 0; i < repeatedIds.size(); ++i) {
     EXPECT_EQ(repeatedIds[i], firstIds[i]);
   }
+
+  VELOX_ASSERT_THROW(
+      idGenerator.disableDistinctPartitionLimit(),
+      "The distinct partition limit must be disabled before processing input.");
 }
 
 TEST_F(PartitionIdGeneratorTest, contiguousPartitionRuns) {
