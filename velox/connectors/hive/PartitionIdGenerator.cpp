@@ -21,11 +21,11 @@ namespace facebook::velox::connector::hive {
 PartitionIdGenerator::PartitionIdGenerator(
     const RowTypePtr& inputType,
     std::vector<column_index_t> partitionChannels,
-    uint32_t maxPartitions,
+    std::optional<uint32_t> maxDistinctPartitions,
     memory::MemoryPool* pool)
     : pool_(pool),
       partitionChannels_(std::move(partitionChannels)),
-      maxPartitions_(maxPartitions) {
+      maxDistinctPartitions_(maxDistinctPartitions) {
   VELOX_USER_CHECK(
       !partitionChannels_.empty(), "There must be at least one partition key.");
   for (auto channel : partitionChannels_) {
@@ -45,19 +45,18 @@ PartitionIdGenerator::PartitionIdGenerator(
   }
 
   partitionValues_ = BaseVector::create<RowVector>(
-      ROW(std::move(partitionKeyNames), std::move(partitionKeyTypes)),
-      maxPartitions_,
-      pool);
-  for (auto& key : partitionValues_->children()) {
-    key->resize(maxPartitions_);
-  }
+      ROW(std::move(partitionKeyNames), std::move(partitionKeyTypes)), 0, pool);
 }
 
 void PartitionIdGenerator::run(
     const RowVectorPtr& input,
-    raw_vector<uint64_t>& result) {
+    raw_vector<uint64_t>& result,
+    std::vector<PartitionRun>* partitionRuns) {
   const auto numRows = input->size();
   result.resize(numRows);
+  if (partitionRuns != nullptr) {
+    partitionRuns->clear();
+  }
 
   // Compute value IDs using VectorHashers and store these in 'result'.
   computeValueIds(input, result);
@@ -68,23 +67,38 @@ void PartitionIdGenerator::run(
   // TODO Optimize common use case where all records belong to the same
   // partition. VectorHashers keep track of the number of unique values, hence,
   // we can find out if there is only one unique value for each partition key.
-  for (auto i = 0; i < numRows; ++i) {
+  for (vector_size_t i = 0; i < numRows; ++i) {
     auto valueId = result[i];
     auto it = partitionIds_.find(valueId);
+    uint64_t partitionId;
     if (it != partitionIds_.end()) {
-      result[i] = it->second;
+      partitionId = it->second;
     } else {
       uint64_t nextPartitionId = partitionIds_.size();
-      VELOX_USER_CHECK_LT(
-          nextPartitionId,
-          maxPartitions_,
-          "Exceeded limit of {} distinct partitions.",
-          maxPartitions_);
+      if (maxDistinctPartitions_.has_value()) {
+        VELOX_USER_CHECK_LT(
+            nextPartitionId,
+            *maxDistinctPartitions_,
+            "Exceeded limit of {} distinct partitions.",
+            *maxDistinctPartitions_);
+      }
 
+      partitionValues_->resize(nextPartitionId + 1);
       partitionIds_.emplace(valueId, nextPartitionId);
       savePartitionValues(nextPartitionId, input, i);
 
-      result[i] = nextPartitionId;
+      partitionId = nextPartitionId;
+    }
+    result[i] = partitionId;
+
+    if (partitionRuns == nullptr) {
+      continue;
+    }
+    if (partitionRuns->empty() ||
+        partitionRuns->back().partitionId != partitionId) {
+      partitionRuns->push_back({partitionId, i, i + 1});
+    } else {
+      partitionRuns->back().end = i + 1;
     }
   }
 }
