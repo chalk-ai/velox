@@ -300,12 +300,31 @@ IcebergDataSink::IcebergDataSink(
           connectorQueryCtx,
           commitStrategy,
           hiveConfig,
+          icebergConfig,
+          hiveConfig->maxPartitionsPerWriters(
+              connectorQueryCtx->sessionProperties())) {}
+
+IcebergDataSink::IcebergDataSink(
+    RowTypePtr inputType,
+    IcebergInsertTableHandlePtr insertTableHandle,
+    const ConnectorQueryCtx* connectorQueryCtx,
+    CommitStrategy commitStrategy,
+    const std::shared_ptr<const HiveConfig>& hiveConfig,
+    const IcebergConfigPtr& icebergConfig,
+    std::optional<uint32_t> maxDistinctPartitions)
+    : IcebergDataSink(
+          std::move(inputType),
+          insertTableHandle,
+          connectorQueryCtx,
+          commitStrategy,
+          hiveConfig,
           createPartitionChannels(
               insertTableHandle->inputColumns(),
               insertTableHandle->partitionSpec()),
           createDataChannels(insertTableHandle),
           createPartitionRowType(insertTableHandle->partitionSpec()),
-          icebergConfig) {}
+          icebergConfig,
+          maxDistinctPartitions) {}
 
 IcebergDataSink::IcebergDataSink(
     RowTypePtr inputType,
@@ -316,7 +335,8 @@ IcebergDataSink::IcebergDataSink(
     const std::vector<column_index_t>& partitionChannels,
     const std::vector<column_index_t>& dataChannels,
     RowTypePtr partitionRowType,
-    const IcebergConfigPtr& icebergConfig)
+    const IcebergConfigPtr& icebergConfig,
+    std::optional<uint32_t> maxDistinctPartitions)
     : HiveDataSink(
           inputType,
           insertTableHandle,
@@ -339,8 +359,7 @@ IcebergDataSink::IcebergDataSink(
                           0);
                       return transformedChannels;
                     }(),
-                    hiveConfig->maxPartitionsPerWriters(
-                        connectorQueryCtx->sessionProperties()),
+                    maxDistinctPartitions,
                     connectorQueryCtx->memoryPool())
               : nullptr),
       partitionSpec_(insertTableHandle->partitionSpec()),
@@ -359,8 +378,6 @@ IcebergDataSink::IcebergDataSink(
               : nullptr),
       partitionRowType_(std::move(partitionRowType)),
       icebergInsertTableHandle_(insertTableHandle) {
-  commitPartitionValue_.resize(maxOpenWriters_);
-
   // Build the column handle list once for whichever format-specific stats
   // collector applies.
   std::vector<IcebergColumnHandlePtr> columnHandles;
@@ -402,7 +419,7 @@ std::vector<std::string> IcebergDataSink::commitMessage() const {
           toManifestFormatString(icebergInsertTableHandle_->storageFormat()),
           icebergInsertTableHandle_->writeKind() ==
               IcebergInsertTableHandle::WriteKind::kDeletionVector);
-      if (!commitPartitionValue_.empty() &&
+      if (i < commitPartitionValue_.size() &&
           !commitPartitionValue_[i].isNull()) {
         commitData["partitionDataJson"] = folly::toJson(
             folly::dynamic::object(
@@ -416,6 +433,12 @@ std::vector<std::string> IcebergDataSink::commitMessage() const {
 }
 
 void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
+  computePartitionAndBucketIds(input, nullptr);
+}
+
+void IcebergDataSink::computePartitionAndBucketIds(
+    const RowVectorPtr& input,
+    std::vector<PartitionRun>* partitionRuns) {
   VELOX_CHECK(isPartitioned());
   VELOX_CHECK_NOT_NULL(transformEvaluator_);
   VELOX_CHECK_NOT_NULL(partitionIdGenerator_);
@@ -429,7 +452,8 @@ void IcebergDataSink::computePartitionAndBucketIds(const RowVectorPtr& input) {
       nullptr,
       input->size(),
       std::move(transformedColumns));
-  partitionIdGenerator_->run(transformedRowVector, partitionIds_);
+  partitionIdGenerator_->run(
+      transformedRowVector, partitionIds_, partitionRuns);
 }
 
 std::string IcebergDataSink::getPartitionName(uint32_t partitionId) const {
@@ -443,8 +467,13 @@ std::string IcebergDataSink::getPartitionName(uint32_t partitionId) const {
 
 uint32_t IcebergDataSink::ensureWriter(const WriterId& id) {
   auto writerId = HiveDataSink::ensureWriter(id);
-  if (isPartitioned() && commitPartitionValue_[writerId].isNull()) {
-    commitPartitionValue_[writerId] = makeCommitPartitionValue(writerId);
+  if (isPartitioned()) {
+    if (commitPartitionValue_.size() <= writerId) {
+      commitPartitionValue_.resize(writerId + 1);
+    }
+    if (commitPartitionValue_[writerId].isNull()) {
+      commitPartitionValue_[writerId] = makeCommitPartitionValue(writerId);
+    }
   }
   return writerId;
 }
@@ -593,9 +622,9 @@ void IcebergDataSink::rotateWriter(size_t index) {
     closeWriterAndCollectStats(index);
   }
 
-  // Release old writer. The new writer will be created lazily on the next
+  // Release the old writer. A new writer will be created lazily on the next
   // write call.
-  writers_[index].reset();
+  releaseWriter(index);
 
   ++writerInfo_[index]->fileSequenceNumber;
 }
@@ -620,6 +649,7 @@ void IcebergDataSink::closeInternal() {
       const memory::NonReclaimableSectionGuard nonReclaimableGuard(
           writerInfo_[i]->nonReclaimableSectionHolder.get());
       closeWriterAndCollectStats(i);
+      releaseWriter(i);
     }
   } else {
     for (auto i = 0; i < writers_.size(); ++i) {
@@ -629,8 +659,10 @@ void IcebergDataSink::closeInternal() {
       memory::NonReclaimableSectionGuard nonReclaimableGuard(
           writerInfo_[i]->nonReclaimableSectionHolder.get());
       writers_[i]->abort();
+      releaseWriter(i);
     }
   }
+  VELOX_CHECK_EQ(numOpenWriters_, 0);
 }
 
 } // namespace facebook::velox::connector::hive::iceberg

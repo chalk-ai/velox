@@ -174,6 +174,67 @@ TEST_F(PartitionIdGeneratorTest, stableIdsMultipleKeys) {
   }
 }
 
+TEST_F(PartitionIdGeneratorTest, noDistinctPartitionLimit) {
+  constexpr vector_size_t kNumPartitions = 256;
+  PartitionIdGenerator idGenerator(ROW({BIGINT()}), {0}, std::nullopt, pool());
+
+  auto firstInput = makeRowVector({
+      makeFlatVector<int64_t>(kNumPartitions / 2, [](auto row) { return row; }),
+  });
+  auto secondInput = makeRowVector({
+      makeFlatVector<int64_t>(
+          kNumPartitions / 2,
+          [](auto row) { return row + kNumPartitions / 2; }),
+  });
+
+  raw_vector<uint64_t> firstIds;
+  raw_vector<uint64_t> secondIds;
+  idGenerator.run(firstInput, firstIds);
+  idGenerator.run(secondInput, secondIds);
+
+  EXPECT_EQ(idGenerator.numPartitions(), kNumPartitions);
+  ASSERT_EQ(idGenerator.partitionValues()->size(), kNumPartitions);
+  for (vector_size_t i = 0; i < kNumPartitions / 2; ++i) {
+    EXPECT_EQ(firstIds[i], i);
+    EXPECT_EQ(secondIds[i], i + kNumPartitions / 2);
+  }
+
+  raw_vector<uint64_t> repeatedIds;
+  idGenerator.run(firstInput, repeatedIds);
+  ASSERT_EQ(repeatedIds.size(), firstIds.size());
+  for (vector_size_t i = 0; i < repeatedIds.size(); ++i) {
+    EXPECT_EQ(repeatedIds[i], firstIds[i]);
+  }
+}
+
+TEST_F(PartitionIdGeneratorTest, contiguousPartitionRuns) {
+  PartitionIdGenerator idGenerator(ROW({BIGINT()}), {0}, 100, pool());
+  auto input =
+      makeRowVector({makeFlatVector<int64_t>({1, 1, 2, 2, 1, 3, 3, 3})});
+
+  raw_vector<uint64_t> ids;
+  std::vector<PartitionRun> runs;
+  idGenerator.run(input, ids, &runs);
+
+  ASSERT_EQ(runs.size(), 4);
+  EXPECT_EQ(runs[0].partitionId, 0);
+  EXPECT_EQ(runs[0].begin, 0);
+  EXPECT_EQ(runs[0].end, 2);
+  EXPECT_EQ(runs[1].partitionId, 1);
+  EXPECT_EQ(runs[1].begin, 2);
+  EXPECT_EQ(runs[1].end, 4);
+  EXPECT_EQ(runs[2].partitionId, 0);
+  EXPECT_EQ(runs[2].begin, 4);
+  EXPECT_EQ(runs[2].end, 5);
+  EXPECT_EQ(runs[3].partitionId, 2);
+  EXPECT_EQ(runs[3].begin, 5);
+  EXPECT_EQ(runs[3].end, 8);
+
+  auto emptyInput = makeRowVector({makeFlatVector<int64_t>({})});
+  idGenerator.run(emptyInput, ids, &runs);
+  EXPECT_TRUE(runs.empty());
+}
+
 TEST_F(PartitionIdGeneratorTest, partitionKeysCaseSensitive) {
   PartitionIdGenerator idGenerator(
       ROW({"cc0", "Cc+1"}, {BIGINT(), VARCHAR()}), {1}, 100, pool());
@@ -243,6 +304,20 @@ TEST_F(PartitionIdGeneratorTest, limitOfPartitionNumber) {
   VELOX_ASSERT_THROW(
       idGenerator.run(input, ids),
       fmt::format("Exceeded limit of {} distinct partitions.", maxPartitions));
+  EXPECT_EQ(idGenerator.numPartitions(), maxPartitions);
+  EXPECT_EQ(idGenerator.partitionValues()->size(), maxPartitions);
+}
+
+TEST_F(PartitionIdGeneratorTest, zeroDistinctPartitionLimit) {
+  PartitionIdGenerator idGenerator(
+      ROW({INTEGER()}), {0}, std::optional<uint32_t>{0}, pool());
+  auto input = makeRowVector({makeFlatVector<int32_t>({1})});
+
+  raw_vector<uint64_t> ids;
+  VELOX_ASSERT_THROW(
+      idGenerator.run(input, ids), "Exceeded limit of 0 distinct partitions.");
+  EXPECT_EQ(idGenerator.numPartitions(), 0);
+  EXPECT_EQ(idGenerator.partitionValues()->size(), 0);
 }
 
 TEST_F(PartitionIdGeneratorTest, timestampPartitionKeyComparasion) {

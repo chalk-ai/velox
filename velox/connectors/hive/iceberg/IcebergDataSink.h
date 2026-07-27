@@ -17,6 +17,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -174,6 +175,18 @@ class IcebergDataSink : public HiveDataSink {
   std::vector<std::string> commitMessage() const override;
 
  protected:
+  /// Creates an Iceberg data sink with an explicit lifetime limit for logical
+  /// partition IDs. Subclasses that release physical writers while retaining
+  /// logical partition IDs may pass nullopt.
+  IcebergDataSink(
+      RowTypePtr inputType,
+      IcebergInsertTableHandlePtr insertTableHandle,
+      const ConnectorQueryCtx* connectorQueryCtx,
+      CommitStrategy commitStrategy,
+      const std::shared_ptr<const HiveConfig>& hiveConfig,
+      const IcebergConfigPtr& icebergConfig,
+      std::optional<uint32_t> maxDistinctPartitions);
+
   // Computes partition IDs for each row in the input batch by applying Iceberg
   // partition transforms and generating unique partition identifiers.
   //
@@ -194,6 +207,12 @@ class IcebergDataSink : public HiveDataSink {
   //
   // @param input The input RowVector containing rows to be partitioned.
   void computePartitionAndBucketIds(const RowVectorPtr& input) override;
+
+  // Also returns contiguous runs of generated partition IDs when partitionRuns
+  // is non-null.
+  void computePartitionAndBucketIds(
+      const RowVectorPtr& input,
+      std::vector<PartitionRun>* partitionRuns);
 
   // Ensures a writer exists for the given writer ID and returns its index.
   // If the writer doesn't exist, creates it by calling appendWriter().
@@ -220,7 +239,8 @@ class IcebergDataSink : public HiveDataSink {
       const std::vector<column_index_t>& partitionChannels,
       const std::vector<column_index_t>& dataChannels,
       RowTypePtr partitionRowType,
-      const IcebergConfigPtr& icebergConfig);
+      const IcebergConfigPtr& icebergConfig,
+      std::optional<uint32_t> maxDistinctPartitions);
 
   // Returns the Iceberg partition directory name for the given partition ID.
   // Converts the transformed partition values associated with the partition ID

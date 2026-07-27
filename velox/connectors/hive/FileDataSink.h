@@ -367,6 +367,15 @@ class FileDataSink : public DataSink {
   // Invoked to write 'input' to the specified file writer.
   void write(size_t index, RowVectorPtr input);
 
+  // Creates the physical writer for an existing logical writer slot. Enforces
+  // maxOpenWriters_ against physical writers that are currently open.
+  void openWriter(size_t index);
+
+  // Collects runtime stats and releases the physical writer for a logical
+  // writer slot. The slot and its accumulated metadata remain available so the
+  // same partition can be reopened later.
+  void releaseWriter(size_t index);
+
   // Rotates the writer at the given index to a new file.
   virtual void rotateWriter(size_t index);
 
@@ -410,8 +419,13 @@ class FileDataSink : public DataSink {
   folly::F14FastMap<WriterId, uint32_t, WriterIdHasher, WriterIdEq>
       writerIndexMap_;
 
+  // Number of non-null physical writer objects in writers_.
+  uint32_t numOpenWriters_{0};
+
   // Below are structures for partitions from all inputs. writerInfo_ and
-  // writers_ are both indexed by partitionId.
+  // writers_ use stable logical writer indices and grow as new WriterIds are
+  // encountered. A null entry in writers_ is a closed writer that can be
+  // reopened without changing its logical index.
   std::vector<std::shared_ptr<WriterInfo>> writerInfo_;
   std::vector<std::unique_ptr<dwio::common::Writer>> writers_;
   folly::F14FastMap<std::string, RuntimeMetric> closedWriterStats_;
