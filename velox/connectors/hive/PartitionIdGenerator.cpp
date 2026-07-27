@@ -77,9 +77,8 @@ void PartitionIdGenerator::run(
   for (vector_size_t i = 0; i < numRows; ++i) {
     auto valueId = result[i];
     auto it = partitionIds_.find(valueId);
-    uint64_t partitionId;
     if (it != partitionIds_.end()) {
-      partitionId = it->second;
+      result[i] = it->second;
     } else {
       uint64_t nextPartitionId = partitionIds_.size();
       if (maxDistinctPartitions_.has_value()) {
@@ -94,16 +93,15 @@ void PartitionIdGenerator::run(
       partitionIds_.emplace(valueId, nextPartitionId);
       savePartitionValues(nextPartitionId, input, i);
 
-      partitionId = nextPartitionId;
+      result[i] = nextPartitionId;
     }
-    result[i] = partitionId;
 
     if (partitionRuns == nullptr) {
       continue;
     }
     if (partitionRuns->empty() ||
-        partitionRuns->back().partitionId != partitionId) {
-      partitionRuns->push_back({partitionId, i, i + 1});
+        partitionRuns->back().partitionId != result[i]) {
+      partitionRuns->push_back({result[i], i, i + 1});
     } else {
       partitionRuns->back().end = i + 1;
     }
