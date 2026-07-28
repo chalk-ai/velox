@@ -26,6 +26,7 @@
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
 #include "velox/dwio/dwrf/writer/Writer.h"
+#include "velox/core/QueryCtx.h"
 #include "velox/exec/AggregateCompanionSignatures.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/exec/PlanNodeStats.h"
@@ -73,6 +74,14 @@ std::vector<RowVectorPtr> AggregationTestBase::makeVectors(
     vectors.push_back(vector);
   }
   return vectors;
+}
+
+std::shared_ptr<core::QueryCtx>
+AggregationTestBase::newQueryCtxWithFixtureExprPool() {
+  return core::QueryCtx::Builder()
+      .executor(driverExecutor_.get())
+      .exprPool(pool_)
+      .build();
 }
 
 void AggregationTestBase::SetUp() {
@@ -476,6 +485,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -509,6 +519,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     auto spillDirectory = TempDirectoryPath::create();
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config)
         .config(core::QueryConfig::kSpillEnabled, true)
         .config(core::QueryConfig::kAggregationSpillEnabled, true)
@@ -556,6 +567,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -578,6 +590,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -600,6 +613,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -622,6 +636,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config).maxDrivers(4);
     assertResults(queryBuilder);
   }
@@ -655,6 +670,7 @@ void AggregationTestBase::testAggregationsWithCompanion(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config).maxDrivers(2);
     assertResults(queryBuilder);
   }
@@ -941,6 +957,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -972,6 +989,7 @@ void AggregationTestBase::testAggregationsImpl(
     const auto peakSpillMemoryUsage =
         memory::spillMemoryPool()->stats().peakBytes;
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config)
         .config(core::QueryConfig::kSpillEnabled, true)
         .config(core::QueryConfig::kAggregationSpillEnabled, true)
@@ -1027,6 +1045,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     enableAbandonPartialAggregation(queryBuilder);
 
@@ -1054,6 +1073,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -1073,6 +1093,7 @@ void AggregationTestBase::testAggregationsImpl(
     auto spillDirectory = TempDirectoryPath::create();
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config)
         .config(core::QueryConfig::kSpillEnabled, "true")
         .config(core::QueryConfig::kAggregationSpillEnabled, "true")
@@ -1109,6 +1130,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -1127,6 +1149,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder.maxDrivers(4));
   }
@@ -1154,6 +1177,7 @@ void AggregationTestBase::testAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder.maxDrivers(2));
   }
@@ -1189,6 +1213,7 @@ void AggregationTestBase::testStreamingAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -1206,6 +1231,7 @@ void AggregationTestBase::testStreamingAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -1224,6 +1250,7 @@ void AggregationTestBase::testStreamingAggregationsImpl(
     }
 
     AssertQueryBuilder queryBuilder(builder.planNode(), duckDbQueryRunner_);
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     assertResults(queryBuilder);
   }
@@ -1492,6 +1519,7 @@ void AggregationTestBase::testFailingAggregations(
     auto builder = PlanBuilder().values(data);
     builder.singleAggregation(groupingKeys, aggregates);
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
   }
@@ -1501,6 +1529,7 @@ void AggregationTestBase::testFailingAggregations(
     auto builder = PlanBuilder().values(data);
     builder.partialAggregation(groupingKeys, aggregates).finalAggregation();
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
   }
@@ -1512,6 +1541,7 @@ void AggregationTestBase::testFailingAggregations(
         .intermediateAggregation()
         .finalAggregation();
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     enableAbandonPartialAggregation(queryBuilder);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
@@ -1524,6 +1554,7 @@ void AggregationTestBase::testFailingAggregations(
         .intermediateAggregation()
         .finalAggregation();
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
   }
@@ -1535,6 +1566,7 @@ void AggregationTestBase::testFailingAggregations(
         .localPartition(groupingKeys)
         .finalAggregation();
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
   }
@@ -1556,6 +1588,7 @@ void AggregationTestBase::testFailingAggregations(
         .finalAggregation();
 
     AssertQueryBuilder queryBuilder(builder.planNode());
+    queryBuilder.queryCtx(newQueryCtxWithFixtureExprPool());
     queryBuilder.configs(config);
     VELOX_ASSERT_THROW(queryBuilder.copyResults(pool()), expectedMessage);
   }

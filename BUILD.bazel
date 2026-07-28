@@ -275,10 +275,10 @@ cc_library(
             "velox/functions/lib/tests/data/**",
         ]),
         features = [
-            "-build_test_dwp",
-            "-per_object_debug_info",
+            # "-build_test_dwp",
+            # "-per_object_debug_info",
         ],
-        linkopts = ["-s"],
+        # linkopts = ["-s"],
         tags = ["no-dwyu"],  # Declare each test with explicit srcs to enable dwyu again
         deps = [
             ":date",
