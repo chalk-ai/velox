@@ -824,6 +824,7 @@ TEST_P(UnnestTest, batchSize) {
                       core::QueryConfig::kPreferredOutputBatchRows,
                       std::to_string(batchSize_))
                   .assertResults({expected});
+  plan.reset();
   auto stats = exec::toPlanStats(task->taskStats());
 
   ASSERT_EQ(3'000, stats.at(unnestId).outputRows);
@@ -848,20 +849,6 @@ TEST_P(UnnestTest, barrier) {
   }
   writeToFiles(toFilePaths(tempFiles), vectors);
   createDuckDbTable(vectors);
-
-  // Unnest 1K rows into 3K rows.
-  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-  core::PlanNodeId unnestPlanNodeId;
-  const auto plan =
-      PlanBuilder(planNodeIdGenerator)
-          .startTableScan()
-          .outputType(
-              std::dynamic_pointer_cast<const RowType>(vectors[0]->type()))
-          .endTableScan()
-          .project({"sequence(1, 3) as s"})
-          .unnest({}, {"s"})
-          .capturePlanNodeId(unnestPlanNodeId)
-          .planNode();
 
   const auto expectedResult = makeRowVector({
       makeFlatVector<int64_t>(
@@ -892,6 +879,21 @@ TEST_P(UnnestTest, barrier) {
     const int numExpectedOutputVectors =
         bits::divRoundUp(numRowsPerSplit * 3, testData.numOutputRows) *
         numSplits;
+    // Build the plan inside the loop so its constant expressions (folded from
+    // the query's expression pool) can be released before the per-iteration
+    // task, and thus that expression pool, is destroyed.
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    core::PlanNodeId unnestPlanNodeId;
+    auto plan =
+        PlanBuilder(planNodeIdGenerator)
+            .startTableScan()
+            .outputType(
+                std::dynamic_pointer_cast<const RowType>(vectors[0]->type()))
+            .endTableScan()
+            .project({"sequence(1, 3) as s"})
+            .unnest({}, {"s"})
+            .capturePlanNodeId(unnestPlanNodeId)
+            .planNode();
     auto task =
         AssertQueryBuilder(plan)
             .config(
@@ -918,6 +920,7 @@ TEST_P(UnnestTest, barrier) {
     ASSERT_EQ(
         exec::toPlanStats(taskStats).at(unnestPlanNodeId).outputVectors,
         numExpectedOutputVectors);
+    plan.reset();
   }
 }
 
@@ -932,16 +935,6 @@ TEST_P(UnnestTest, spiltOutput) {
     vectors.push_back(vector);
   }
   createDuckDbTable(vectors);
-
-  // Unnest 256 rows into 768 rows.
-  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-  core::PlanNodeId unnestPlanNodeId;
-  const auto plan = PlanBuilder(planNodeIdGenerator)
-                        .values(vectors)
-                        .project({"sequence(1, 3) as s"})
-                        .unnest({}, {"s"})
-                        .capturePlanNodeId(unnestPlanNodeId)
-                        .planNode();
 
   const auto expectedResult = makeRowVector({
       makeFlatVector<int64_t>(
@@ -964,6 +957,17 @@ TEST_P(UnnestTest, spiltOutput) {
       {false, bits::divRoundUp(inputBatchSize * 3, GetParam()) * numBatches}};
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.toString());
+    // Build the plan inside the loop so its constant expressions (folded from
+    // the query's expression pool) can be released before the per-iteration
+    // task, and thus that expression pool, is destroyed.
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    core::PlanNodeId unnestPlanNodeId;
+    auto plan = PlanBuilder(planNodeIdGenerator)
+                    .values(vectors)
+                    .project({"sequence(1, 3) as s"})
+                    .unnest({}, {"s"})
+                    .capturePlanNodeId(unnestPlanNodeId)
+                    .planNode();
     auto task = AssertQueryBuilder(plan)
                     .config(
                         core::QueryConfig::kPreferredOutputBatchRows,
@@ -976,6 +980,7 @@ TEST_P(UnnestTest, spiltOutput) {
     ASSERT_EQ(
         exec::toPlanStats(taskStats).at(unnestPlanNodeId).outputVectors,
         testData.expectedNumOutputVectors);
+    plan.reset();
   }
 }
 
@@ -996,21 +1001,6 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
           numBatches * 3 * inputBatchSize,
           [](auto row) { return 1 + row % 3; }),
   });
-
-  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-
-  // Create a plan with project node to generate the sequence.
-  auto projectPlan = PlanBuilder(planNodeIdGenerator)
-                         .values(vectors)
-                         .project({"sequence(1, 3) as s"})
-                         .planNode();
-
-  // Get the output type from the project node.
-  auto projectOutput = projectPlan->outputType();
-  std::vector<std::shared_ptr<const core::FieldAccessTypedExpr>> unnestFields;
-  unnestFields.emplace_back(
-      std::make_shared<core::FieldAccessTypedExpr>(
-          projectOutput->childAt(0), "s"));
 
   struct {
     std::optional<bool> nodeSplitOutput;
@@ -1041,6 +1031,24 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.toString());
 
+    // Build the plan inside the loop so its constant expressions (folded from
+    // the query's expression pool) can be released before the per-iteration
+    // task, and thus that expression pool, is destroyed.
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+
+    // Create a plan with project node to generate the sequence.
+    auto projectPlan = PlanBuilder(planNodeIdGenerator)
+                           .values(vectors)
+                           .project({"sequence(1, 3) as s"})
+                           .planNode();
+
+    // Get the output type from the project node.
+    auto projectOutput = projectPlan->outputType();
+    std::vector<std::shared_ptr<const core::FieldAccessTypedExpr>> unnestFields;
+    unnestFields.emplace_back(
+        std::make_shared<core::FieldAccessTypedExpr>(
+            projectOutput->childAt(0), "s"));
+
     core::PlanNodeId unnestPlanNodeId;
     auto unnestNode = std::make_shared<core::UnnestNode>(
         planNodeIdGenerator->next(),
@@ -1069,6 +1077,8 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
     ASSERT_EQ(
         exec::toPlanStats(taskStats).at(unnestPlanNodeId).outputVectors,
         expectedNumOutputVectors);
+    unnestNode.reset();
+    projectPlan.reset();
   }
 }
 

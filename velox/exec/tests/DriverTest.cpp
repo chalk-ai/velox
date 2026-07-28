@@ -622,6 +622,16 @@ TEST_F(DriverTest, yield) {
         [](int64_t num) { return num % 10 > 0; },
         &hits);
     params[i].maxDrivers = kThreadsPerTask;
+    // Route each task's expression pool to the non-arbitrated fixture pool.
+    // Expression evaluation allocates from the query-scoped expression pool
+    // directly on the driver thread (without the driver entering a suspended
+    // arbitration section), so leaving it under the arbitrated query pool trips
+    // the arbitration state check once these 20 tasks oversubscribe the shared
+    // arbitrator. This test exercises yielding, not memory arbitration.
+    params[i].queryCtx = core::QueryCtx::Builder()
+                             .executor(driverExecutor_.get())
+                             .exprPool(pool_)
+                             .build();
   }
   std::vector<int32_t> counters(kNumTasks, 0);
   std::vector<std::thread> threads;
@@ -809,7 +819,17 @@ TEST_F(DriverTest, pauserNode) {
   std::vector<CursorParameters> params(kNumTasks);
   int32_t hits{0};
   for (int32_t i = 0; i < kNumTasks; ++i) {
-    params[i].queryCtx = core::QueryCtx::create(executor.get());
+    // Route each task's expression pool to the non-arbitrated fixture pool.
+    // Expression evaluation allocates from the query-scoped expression pool
+    // directly on the driver thread (without the driver entering a suspended
+    // arbitration section), so leaving it under the arbitrated query pool trips
+    // the arbitration state check once these 20 tasks oversubscribe the shared
+    // arbitrator. This test exercises inter-task pausing, not memory
+    // arbitration.
+    params[i].queryCtx = core::QueryCtx::Builder()
+                             .executor(executor.get())
+                             .exprPool(pool_)
+                             .build();
     params[i].planNode = makeValuesFilterProject(
         rowType_,
         "m1 % 10 > 0",
