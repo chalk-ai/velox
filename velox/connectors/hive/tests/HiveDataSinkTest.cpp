@@ -56,6 +56,19 @@ using namespace facebook::velox::exec::test;
 using namespace facebook::velox::common::testutil;
 using namespace facebook::velox::dwio::common::test;
 
+class TestingHiveDataSink : public HiveDataSink {
+ public:
+  using HiveDataSink::HiveDataSink;
+
+  void rotateWriterForTest(size_t index) {
+    rotateWriter(index);
+  }
+
+  uint32_t numOpenWritersForTest() const {
+    return numOpenWriters_;
+  }
+};
+
 class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
  protected:
   void SetUp() override {
@@ -253,6 +266,63 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
   std::shared_ptr<velox::io::IoStatistics> metadataIoStats_ =
       std::make_shared<velox::io::IoStatistics>();
 };
+
+TEST_F(HiveDataSinkTest, openWriterLimitCountsPhysicalWriters) {
+  const auto outputDirectory = TempDirectoryPath::create();
+  auto partitionedRowType =
+      ROW({"value", "partition_key"}, {BIGINT(), BIGINT()});
+
+  std::unordered_map<std::string, std::string> connectorConfig = {
+      {HiveConfig::kMaxPartitionsPerWriters, "1"}};
+  connectorConfig_ = std::make_shared<HiveConfig>(
+      std::make_shared<config::ConfigBase>(std::move(connectorConfig)));
+
+  auto createSink = [&](const std::string& outputPath) {
+    auto insertTableHandle = createHiveInsertTableHandle(
+        partitionedRowType,
+        outputPath,
+        dwio::common::FileFormat::DWRF,
+        {"partition_key"});
+    return std::make_shared<TestingHiveDataSink>(
+        partitionedRowType,
+        std::move(insertTableHandle),
+        connectorQueryCtx_.get(),
+        CommitStrategy::kNoCommit,
+        connectorConfig_,
+        0,
+        nullptr,
+        std::vector<column_index_t>{1},
+        std::vector<column_index_t>{0},
+        std::make_unique<PartitionIdGenerator>(
+            partitionedRowType,
+            std::vector<column_index_t>{1},
+            std::nullopt,
+            pool()));
+  };
+  auto makePartition = [&](int64_t partition) {
+    return makeRowVector(
+        {makeFlatVector<int64_t>({partition}),
+         makeFlatVector<int64_t>({partition})});
+  };
+
+  auto sequentialSink = createSink(outputDirectory->getPath());
+  for (uint32_t partition = 0; partition < 3; ++partition) {
+    sequentialSink->appendData(makePartition(partition));
+    EXPECT_EQ(sequentialSink->numOpenWritersForTest(), 1);
+    sequentialSink->rotateWriterForTest(partition);
+    EXPECT_EQ(sequentialSink->numOpenWritersForTest(), 0);
+  }
+  ASSERT_TRUE(sequentialSink->finish());
+  EXPECT_EQ(sequentialSink->close().size(), 3);
+  EXPECT_EQ(listFiles(outputDirectory->getPath()).size(), 3);
+
+  const auto limitedOutputDirectory = TempDirectoryPath::create();
+  auto limitedSink = createSink(limitedOutputDirectory->getPath());
+  limitedSink->appendData(makePartition(0));
+  VELOX_ASSERT_THROW(
+      limitedSink->appendData(makePartition(1)), "Exceeded open writer limit");
+  limitedSink->abort();
+}
 
 TEST_F(HiveDataSinkTest, hiveSortingColumn) {
   struct {

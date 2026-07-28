@@ -186,7 +186,7 @@ void FileDataSink::write(size_t index, RowVectorPtr input) {
   auto dataInput = makeDataInput(dataChannels_, input);
 
   if (writers_[index] == nullptr) {
-    writers_[index] = createWriterForIndex(index);
+    openWriter(index);
   }
 
   writers_[index]->write(dataInput);
@@ -205,6 +205,27 @@ void FileDataSink::write(size_t index, RowVectorPtr input) {
   if (currentFileBytes >= maxTargetFileBytes_) {
     rotateWriter(index);
   }
+}
+
+void FileDataSink::openWriter(size_t index) {
+  VELOX_CHECK_LT(index, writers_.size());
+  VELOX_CHECK_NULL(writers_[index]);
+  VELOX_USER_CHECK_LT(
+      numOpenWriters_, maxOpenWriters_, "Exceeded open writer limit");
+
+  auto writer = createWriterForIndex(index);
+  writers_[index] = std::move(writer);
+  ++numOpenWriters_;
+}
+
+void FileDataSink::releaseWriter(size_t index) {
+  VELOX_CHECK_LT(index, writers_.size());
+  VELOX_CHECK_NOT_NULL(writers_[index]);
+  VELOX_CHECK_GT(numOpenWriters_, 0);
+
+  mergeWriterStats(closedWriterStats_, writers_[index]->runtimeStats());
+  writers_[index].reset();
+  --numOpenWriters_;
 }
 
 uint64_t FileDataSink::getCurrentFileBytes(size_t writerIndex) const {
@@ -256,11 +277,9 @@ void FileDataSink::rotateWriter(size_t index) {
   // Finalize the current file state.
   finalizeWriterFile(index);
 
-  mergeWriterStats(closedWriterStats_, writers_[index]->runtimeStats());
-
   // Release old writer's memory pools. The new writer will be created lazily
   // on the next write to avoid creating empty files.
-  writers_[index].reset();
+  releaseWriter(index);
 
   ++info->fileSequenceNumber;
 }
@@ -297,7 +316,7 @@ DataSink::Stats FileDataSink::stats() const {
 
   stats.writerRuntimeStats = closedWriterStats_;
   for (const auto& writer : writers_) {
-    // Null entries are rotated writers whose stats are already in
+    // Null entries are released writers whose stats are already in
     // closedWriterStats_.
     if (writer != nullptr) {
       mergeWriterStats(stats.writerRuntimeStats, writer->runtimeStats());
@@ -424,6 +443,7 @@ void FileDataSink::closeInternal() {
       WRITER_NON_RECLAIMABLE_SECTION_GUARD(i);
       writers_[i]->close();
       finalizeWriterFile(i);
+      releaseWriter(i);
     }
   } else {
     for (int i = 0; i < writers_.size(); ++i) {
@@ -432,8 +452,10 @@ void FileDataSink::closeInternal() {
       }
       WRITER_NON_RECLAIMABLE_SECTION_GUARD(i);
       writers_[i]->abort();
+      releaseWriter(i);
     }
   }
+  VELOX_CHECK_EQ(numOpenWriters_, 0);
 }
 
 uint32_t FileDataSink::ensureWriter(const WriterId& id) {
@@ -445,9 +467,8 @@ uint32_t FileDataSink::ensureWriter(const WriterId& id) {
 }
 
 uint32_t FileDataSink::appendWriter(const WriterId& id) {
-  // Check max open writers.
-  VELOX_USER_CHECK_LE(
-      writers_.size(), maxOpenWriters_, "Exceeded open writer limit");
+  VELOX_USER_CHECK_LT(
+      numOpenWriters_, maxOpenWriters_, "Exceeded open writer limit");
   VELOX_CHECK_EQ(writers_.size(), writerInfo_.size());
   VELOX_CHECK_EQ(writerIndexMap_.size(), writerInfo_.size());
 
@@ -474,7 +495,9 @@ uint32_t FileDataSink::appendWriter(const WriterId& id) {
   ioStats_.emplace_back(std::make_unique<io::IoStatistics>());
 
   setMemoryReclaimers(writerInfo_.back().get(), ioStats_.back().get());
-  writers_.emplace_back(createWriterForIndex(writerInfo_.size() - 1));
+  writers_.emplace_back(nullptr);
+  const auto writerIndex = writers_.size() - 1;
+  openWriter(writerIndex);
   addThreadLocalRuntimeStat(
       fmt::format(
           "{}WriterCount",
@@ -485,7 +508,7 @@ uint32_t FileDataSink::appendWriter(const WriterId& id) {
   partitionRows_.emplace_back(nullptr);
   rawPartitionRows_.emplace_back(nullptr);
 
-  writerIndexMap_.emplace(id, writers_.size() - 1);
+  writerIndexMap_.emplace(id, writerIndex);
   return writerIndexMap_[id];
 }
 

@@ -195,6 +195,12 @@ class IcebergDataSink : public HiveDataSink {
   // @param input The input RowVector containing rows to be partitioned.
   void computePartitionAndBucketIds(const RowVectorPtr& input) override;
 
+  // Also returns contiguous runs of generated partition IDs when partitionRuns
+  // is non-null.
+  void computePartitionAndBucketIds(
+      const RowVectorPtr& input,
+      std::vector<PartitionRun>* partitionRuns);
+
   // Ensures a writer exists for the given writer ID and returns its index.
   // If the writer doesn't exist, creates it by calling appendWriter().
   // Additionally, extracts and stores the transformed partition values for

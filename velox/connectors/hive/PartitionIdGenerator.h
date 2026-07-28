@@ -16,9 +16,19 @@
 
 #pragma once
 
+#include <optional>
+
 #include "velox/exec/VectorHasher.h"
 
 namespace facebook::velox::connector::hive {
+
+/// A half-open range of input rows that have the same partition ID.
+struct PartitionRun {
+  uint64_t partitionId;
+  vector_size_t begin;
+  vector_size_t end;
+};
+
 /// Generate sequential integer IDs for distinct partition values, which could
 /// be used as vector index.
 class PartitionIdGenerator {
@@ -26,19 +36,30 @@ class PartitionIdGenerator {
   /// @param inputType RowType of the input.
   /// @param partitionChannels Channels of partition keys in the input
   /// RowVector.
-  /// @param maxPartitions The max number of distinct partitions.
+  /// @param maxDistinctPartitions The max number of distinct partitions, or
+  /// nullopt to allow the set of logical partitions to grow without a
+  /// configured limit.
   /// @param pool Memory pool. Used to allocate memory for storing unique
   /// partition key values.
   PartitionIdGenerator(
       const RowTypePtr& inputType,
       std::vector<column_index_t> partitionChannels,
-      uint32_t maxPartitions,
+      std::optional<uint32_t> maxDistinctPartitions,
       memory::MemoryPool* pool);
 
   /// Generate sequential partition IDs for input vector.
   /// @param input Input RowVector.
   /// @param result Generated integer IDs indexed by input row number.
-  void run(const RowVectorPtr& input, raw_vector<uint64_t>& result);
+  /// @param partitionRuns Optional output populated with contiguous runs of
+  /// generated partition IDs. Existing contents are cleared.
+  void run(
+      const RowVectorPtr& input,
+      raw_vector<uint64_t>& result,
+      std::vector<PartitionRun>* partitionRuns = nullptr);
+
+  /// Removes the lifetime distinct-partition limit. Must be called before the
+  /// generator has processed any input.
+  void disableDistinctPartitionLimit();
 
   /// Return the total number of distinct partitions processed so far.
   uint64_t numPartitions() const {
@@ -81,7 +102,7 @@ class PartitionIdGenerator {
 
   const std::vector<column_index_t> partitionChannels_;
 
-  const uint32_t maxPartitions_;
+  std::optional<uint32_t> maxDistinctPartitions_;
 
   std::vector<std::unique_ptr<exec::VectorHasher>> hashers_;
   bool hasMultiplierSet_ = false;
