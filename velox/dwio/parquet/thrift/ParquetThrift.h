@@ -150,8 +150,8 @@ inline size_t calculateConsumedBytes(
 // single contiguous buffer by coalescing unconsumed bytes with newly read data.
 //
 // When the protocol reader needs more data, this refiller:
-// 1. Reads new data from the stream
-// 2. Creates a contiguous buffer containing unconsumed bytes + new data
+// 1. Copies unconsumed bytes before advancing the stream
+// 2. Reads and appends new data from the stream
 // 3. Continues reading until requested bytes are available
 //
 // The coalesced buffer is necessary because Thrift deserialization may create
@@ -188,6 +188,15 @@ class ThriftStreamRefiller {
     bytesConsumedBeforeCurrentBuffer_ += bytesConsumedFromCurrentBuffer;
     currentDataBytesInRefill_ = currentDataBytes;
 
+    // ZeroCopyInputStream only guarantees the buffer returned by Next() until
+    // the next stream method call. Preserve the unconsumed tail before
+    // readNext() advances an input that may unpin or reuse its current buffer.
+    std::unique_ptr<folly::IOBuf> currentDataBuffer;
+    if (currentDataBytes > 0) {
+      currentDataBuffer =
+          folly::IOBuf::copyBuffer(currentData, currentDataBytes);
+    }
+
     const void* data;
     int32_t dataBytes{0};
     if (!streamReader_.readNext(&data, &dataBytes) || dataBytes == 0) {
@@ -196,7 +205,7 @@ class ThriftStreamRefiller {
     }
 
     auto coalescedBuffer = createCoalescedBuffer(
-        currentData, currentDataBytes, data, dataBytes, requestedBytes);
+        std::move(currentDataBuffer), data, dataBytes, requestedBytes);
 
     coalescedBufferStart_ = coalescedBuffer->data();
     coalescedBufferSize_ = coalescedBuffer->length();
@@ -221,16 +230,16 @@ class ThriftStreamRefiller {
   // 3. Additional data read until requestedBytes is satisfied
   // This ensures all deserialized data points to a single stable buffer.
   std::unique_ptr<folly::IOBuf> createCoalescedBuffer(
-      const uint8_t* currentData,
-      int32_t currentDataBytes,
+      std::unique_ptr<folly::IOBuf> currentDataBuffer,
       const void* initialData,
       int32_t initialDataBytes,
       int32_t requestedBytes) {
     std::unique_ptr<folly::IOBuf> coalescedBuffer;
-    size_t totalSize = currentDataBytes + initialDataBytes;
+    size_t totalSize = initialDataBytes;
 
-    if (currentDataBytes > 0) {
-      coalescedBuffer = folly::IOBuf::copyBuffer(currentData, currentDataBytes);
+    if (currentDataBuffer != nullptr) {
+      totalSize += currentDataBuffer->length();
+      coalescedBuffer = std::move(currentDataBuffer);
       appendToContiguousBuffer(
           coalescedBuffer.get(), initialData, initialDataBytes);
     } else {
