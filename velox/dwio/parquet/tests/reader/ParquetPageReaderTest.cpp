@@ -16,8 +16,15 @@
 
 #include "velox/dwio/parquet/reader/PageReader.h"
 
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <vector>
+
 #include <thrift/lib/cpp2/protocol/Serializer.h>
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/dwio/parquet/tests/ParquetTestBase.h"
 #include "velox/dwio/parquet/thrift/ParquetThrift.h"
 
@@ -122,6 +129,82 @@ TEST(CompressionOptionsTest, testCompressionOptions) {
 }
 
 namespace {
+
+// ZeroCopyInputStream allows the next stream method call to invalidate the
+// buffer returned by Next(). Reusing one allocation makes stale reads
+// deterministic in refill tests.
+class ReusingBufferInputStream final : public SeekableInputStream {
+ public:
+  ReusingBufferInputStream(std::string data, size_t blockSize)
+      : data_(std::move(data)), blockSize_(blockSize), buffer_(blockSize) {
+    VELOX_CHECK_GT(blockSize_, 0);
+    VELOX_CHECK_LE(blockSize_, std::numeric_limits<int32_t>::max());
+  }
+
+  bool Next(const void** data, int32_t* size) override {
+    const auto bytes = std::min(blockSize_, data_.size() - position_);
+    if (bytes == 0) {
+      *data = nullptr;
+      *size = 0;
+      lastReturned_ = 0;
+      return false;
+    }
+
+    std::fill(buffer_.begin(), buffer_.end(), static_cast<char>(0xa5));
+    std::memcpy(buffer_.data(), data_.data() + position_, bytes);
+    *data = buffer_.data();
+    *size = static_cast<int32_t>(bytes);
+    position_ += bytes;
+    lastReturned_ = bytes;
+    return true;
+  }
+
+  void BackUp(int32_t count) override {
+    VELOX_CHECK_GE(count, 0);
+    VELOX_CHECK_LE(static_cast<size_t>(count), lastReturned_);
+    position_ -= count;
+    lastReturned_ = 0;
+  }
+
+  bool SkipInt64(int64_t count) override {
+    if (count < 0) {
+      return false;
+    }
+    if (static_cast<uint64_t>(count) > data_.size() - position_) {
+      position_ = data_.size();
+      lastReturned_ = 0;
+      return false;
+    }
+    position_ += count;
+    lastReturned_ = 0;
+    return true;
+  }
+
+  int64_t ByteCount() const override {
+    return static_cast<int64_t>(position_);
+  }
+
+  void seekToPosition(PositionProvider& position) override {
+    position_ = position.next();
+    VELOX_CHECK_LE(position_, data_.size());
+    lastReturned_ = 0;
+  }
+
+  std::string getName() const override {
+    return "ReusingBufferInputStream";
+  }
+
+  size_t positionSize() const override {
+    return 1;
+  }
+
+ private:
+  const std::string data_;
+  const size_t blockSize_;
+  std::vector<char> buffer_;
+  size_t position_{0};
+  size_t lastReturned_{0};
+};
 
 // Helper to serialize a PageHeader using Thrift compact protocol.
 std::string serializePageHeader(const thrift::PageHeader& header) {
@@ -590,6 +673,88 @@ TEST_F(ParquetPageReaderTest, refillSpansMultipleStreamChunks) {
   auto second = pageReader->readPageHeader();
   EXPECT_EQ(*second.type(), thrift::PageType::DATA_PAGE);
   EXPECT_EQ(*second.data_page_header()->num_values(), 11);
+}
+
+TEST_F(ParquetPageReaderTest, refillPreservesPreviousStreamBuffer) {
+  ReusingBufferInputStream input("ABCDEFGH", 4);
+  const void* firstBlock = nullptr;
+  int32_t firstBlockBytes = 0;
+  ASSERT_TRUE(input.Next(&firstBlock, &firstBlockBytes));
+  ASSERT_EQ(firstBlockBytes, 4);
+
+  uint64_t totalReadUs = 0;
+  const void* lastStreamData = nullptr;
+  int32_t lastStreamDataBytes = 0;
+  thrift::StreamReader streamReader{
+      &input, totalReadUs, lastStreamData, lastStreamDataBytes};
+  bool usedRefiller = false;
+  int32_t bytesConsumedBeforeCurrentBuffer = 0;
+  int32_t currentDataBytesInRefill = 0;
+  const uint8_t* coalescedBufferStart = nullptr;
+  size_t coalescedBufferSize = 0;
+  std::unique_ptr<folly::IOBuf> lastRefillBuffer;
+  thrift::ThriftStreamRefiller refiller(
+      streamReader,
+      usedRefiller,
+      bytesConsumedBeforeCurrentBuffer,
+      currentDataBytesInRefill,
+      coalescedBufferStart,
+      coalescedBufferSize,
+      lastRefillBuffer);
+
+  const auto* unconsumed = static_cast<const uint8_t*>(firstBlock) + 2;
+  auto refilled = refiller(unconsumed, 2, 2, 6);
+
+  ASSERT_NE(refilled, nullptr);
+  EXPECT_EQ(
+      std::string_view(
+          reinterpret_cast<const char*>(refilled->data()), refilled->length()),
+      "CDEFGH");
+}
+
+TEST_F(ParquetPageReaderTest, refillFromDirectInputStream) {
+  constexpr int32_t kPageSize = 128;
+  auto header = createDataPageV1Header(kPageSize, kPageSize, /*numValues=*/1);
+  auto headerBytes = serializePageHeader(header);
+
+  // The first four compact-protocol bytes end in the first byte of a
+  // two-byte varint. DirectInputStream reuses its Allocation for the next
+  // four-byte load, so the refiller must preserve the trailing byte first.
+  ASSERT_GT(headerBytes.size(), 4);
+  ASSERT_NE(static_cast<uint8_t>(headerBytes[3]) & 0x80, 0);
+  ASSERT_EQ(static_cast<uint8_t>(headerBytes[4]) & 0x80, 0);
+  std::string fileData = headerBytes;
+  fileData.resize(DirectBufferedInput::kTinySize + 1, '\0');
+  const auto fileSize = fileData.size();
+
+  auto readerOptions = makeDefaultReaderOptions();
+  readerOptions.setLoadQuantum(4);
+  DirectBufferedInput bufferedInput(
+      std::make_shared<InMemoryReadFile>(std::move(fileData)),
+      MetricsLog::voidLog(),
+      StringIdLease{},
+      /*tracker=*/nullptr,
+      StringIdLease{},
+      dataIoStats_,
+      /*ioStats=*/nullptr,
+      /*executor=*/nullptr,
+      readerOptions);
+
+  auto input = bufferedInput.read(0, fileSize, LogType::TEST);
+  dwio::common::ColumnReaderStatistics stats;
+  PageReader pageReader(
+      std::move(input),
+      *leafPool_,
+      common::CompressionKind::CompressionKind_NONE,
+      fileSize,
+      stats);
+
+  auto decoded = pageReader.readPageHeader();
+  EXPECT_EQ(*decoded.type(), thrift::PageType::DATA_PAGE);
+  EXPECT_EQ(*decoded.uncompressed_page_size(), kPageSize);
+  EXPECT_EQ(*decoded.compressed_page_size(), kPageSize);
+  ASSERT_TRUE(decoded.data_page_header());
+  EXPECT_EQ(*decoded.data_page_header()->num_values(), 1);
 }
 
 TEST_F(ParquetPageReaderTest, refillReportsCumulativeHeaderBytes) {
