@@ -1061,9 +1061,6 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
         : numBatches;
 
     auto task = AssertQueryBuilder(unnestNode)
-                    // The plan is reused across iterations, so route the
-                    // query's expression pool to the fixture pool that outlives
-                    // it.
                     .exprPool(pool_)
                     .config(
                         core::QueryConfig::kPreferredOutputBatchRows,
