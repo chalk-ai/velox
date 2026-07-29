@@ -578,10 +578,6 @@ TEST_F(ApproxPercentileTest, noInput) {
                   {"m1", "m1", "m1", "m1", "m1", "m1", "m1", "m1", "m1", "m1"})
               .planNode();
 
-      // Route the query's expression pool to the fixture-lived pool so the
-      // constants folded into it during expression compilation (e.g.
-      // "array_constructor(0.5)") outlive the task; otherwise the task's own
-      // expression pool trips the leak check when destroyed before them.
       AssertQueryBuilder(plan).exprPool(pool_).assertResults(expected);
     };
 

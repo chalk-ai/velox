@@ -676,12 +676,6 @@ class HashJoinBuilder {
         builder.splits(splitEntry.first, splitEntry.second);
       }
     }
-    // Route the query's expression pool to the non-arbitrated fixture pool.
-    // Join filter expressions are evaluated on the driver thread during
-    // getOutput and allocate from the query-scoped expression pool without the
-    // driver entering a suspended arbitration section; leaving that pool under
-    // the arbitrated query pool trips the arbitration state check when spilling
-    // forces the query pool to reclaim.
     auto queryCtx = core::QueryCtx::Builder()
                         .executor(executor_)
                         .pool(
