@@ -474,11 +474,9 @@ TEST_F(ApproxPercentileAggregateTest, noInput) {
       // constants folded into it during expression compilation (e.g.
       // "array_constructor(0.5)") outlive the task; otherwise the task's own
       // expression pool trips the leak check when destroyed before them.
-      auto queryCtx = core::QueryCtx::Builder()
-                          .executor(driverExecutor_.get())
-                          .exprPool(pool()->shared_from_this())
-                          .build();
-      AssertQueryBuilder(plan).queryCtx(queryCtx).assertResults(expected);
+      AssertQueryBuilder(plan)
+          .queryCtx(newQueryCtxWithFixtureExprPool())
+          .assertResults(expected);
     };
 
     // Global aggregation with mask.
