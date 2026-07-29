@@ -65,10 +65,7 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
   vector_size_t size = 1'024;
   // This limit ensures that only the Aggregation Operator fails.
   constexpr int64_t kMaxBytes = 5LL << 20; // 5MB
-  // We look for these lines separately, since their order can change (not sure
-  // why). Each entry is matched independently as a substring; we intentionally
-  // do not pin the full ARBITRATOR CONFIG[...] blob because its key ordering is
-  // build/environment dependent and not part of what this test verifies.
+  // We look for these lines separately, since their order can change.
   //
   // Note on the memory figures below: with the query-scoped expression pool,
   // the FilterProject's "c0 + c1" result is allocated from the query's
@@ -82,7 +79,18 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
       "capacity with 2.00MB. This will exceed its memory pool capacity 5.00MB, "
       "current capacity 4.00MB.",
       "ARBITRATOR[SHARED CAPACITY[6.00GB] STATS[numRequests 1 numRunning 1 "
-      "numSucceded 0 numAborted 0 numFailures 0 numNonReclaimableAttempts 0",
+      "numSucceded 0 numAborted 0 numFailures 0 numNonReclaimableAttempts 0 "
+      "reclaimedFreeCapacity 1.00MB reclaimedUsedCapacity 0B maxCapacity 6.00GB "
+      "freeCapacity 5.00GB freeReservedCapacity 0B]",
+      // CONFIG[...] pairs, matched individually so key order does not matter.
+      "CONFIG[kind=SHARED;capacity=6.00GB;arbitrationStateCheckCb=(set);",
+      "memory-pool-abort-capacity-limit=0B;",
+      "memory-pool-min-reclaim-pct=0;",
+      "memory-pool-reserved-capacity=0B;",
+      "memory-pool-initial-capacity=536870912B;",
+      "global-arbitration-enabled=true;",
+      "memory-pool-min-reclaim-bytes=0B;",
+      "reserved-capacity=0B;",
       " AGGREGATE root[",
       "] parent[null] MALLOC track-usage thread-safe]<max capacity 5.00MB "
       "capacity 4.00MB used 3.74MB available 0B reservation [used 0B, reserved "
