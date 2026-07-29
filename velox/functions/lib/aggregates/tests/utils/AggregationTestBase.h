@@ -30,16 +30,6 @@ class AggregationTestBase : public exec::test::OperatorTestBase {
   void SetUp() override;
   void TearDown() override;
 
-  // Builds a QueryCtx whose expression pool is the fixture-lived, non-arbitrated
-  // 'pool()'. Expression evaluation (e.g. lambda bodies in reduce_agg) allocates
-  // from the query-scoped expression pool directly on the driver thread without
-  // entering a suspended arbitration section. Keeping that pool under the
-  // arbitrated query pool would trip the arbitration state check under memory
-  // pressure, and would also outlive-check-fail when the query's own expression
-  // pool is destroyed before the constants folded into it are released. Routing
-  // it to the fixture pool sidesteps both.
-  std::shared_ptr<core::QueryCtx> newQueryCtxWithFixtureExprPool();
-
   std::vector<RowVectorPtr>
   makeVectors(const RowTypePtr& rowType, vector_size_t size, int numVectors);
 

@@ -582,9 +582,7 @@ TEST_F(ApproxPercentileTest, noInput) {
       // constants folded into it during expression compilation (e.g.
       // "array_constructor(0.5)") outlive the task; otherwise the task's own
       // expression pool trips the leak check when destroyed before them.
-      AssertQueryBuilder(plan)
-          .queryCtx(newQueryCtxWithFixtureExprPool())
-          .assertResults(expected);
+      AssertQueryBuilder(plan).exprPool(pool_).assertResults(expected);
     };
 
     // Global.
