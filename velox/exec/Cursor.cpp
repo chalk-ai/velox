@@ -251,7 +251,9 @@ class TaskCursorBase : public TaskCursor {
               unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
           cache::AsyncDataCache::getInstance(),
           nullptr,
-          nullptr,
+          // 'exprPool' is optional; when null the QueryCtx creates its own
+          // per-query expression pool as usual.
+          params.exprPool,
           nullptr,
           fmt::format("TaskCursorQuery_{}", cursorQueryId++));
     }
