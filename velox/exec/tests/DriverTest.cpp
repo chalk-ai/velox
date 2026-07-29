@@ -628,10 +628,7 @@ TEST_F(DriverTest, yield) {
     // arbitration section), so leaving it under the arbitrated query pool trips
     // the arbitration state check once these 20 tasks oversubscribe the shared
     // arbitrator. This test exercises yielding, not memory arbitration.
-    params[i].queryCtx = core::QueryCtx::Builder()
-                             .executor(driverExecutor_.get())
-                             .exprPool(pool_)
-                             .build();
+    params[i].exprPool = pool_;
   }
   std::vector<int32_t> counters(kNumTasks, 0);
   std::vector<std::thread> threads;

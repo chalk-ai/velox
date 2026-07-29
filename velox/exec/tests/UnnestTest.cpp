@@ -895,8 +895,6 @@ TEST_P(UnnestTest, barrier) {
         numSplits;
     auto task =
         AssertQueryBuilder(plan)
-            // The plan is reused across iterations, so route the query's
-            // expression pool to the fixture pool that outlives it.
             .exprPool(pool_)
             .config(
                 SparkQueryConfig::qualify(SparkQueryConfig::kPartitionId), "0")
@@ -969,9 +967,6 @@ TEST_P(UnnestTest, spiltOutput) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.toString());
     auto task = AssertQueryBuilder(plan)
-                    // The plan is reused across iterations, so route the
-                    // query's expression pool to the fixture pool that outlives
-                    // it.
                     .exprPool(pool_)
                     .config(
                         core::QueryConfig::kPreferredOutputBatchRows,
@@ -999,6 +994,12 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
     }));
   }
 
+  auto expectedResult = makeRowVector({
+      makeFlatVector<int64_t>(
+          numBatches * 3 * inputBatchSize,
+          [](auto row) { return 1 + row % 3; }),
+  });
+
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
 
   // Create a plan with project node to generate the sequence.
@@ -1013,12 +1014,6 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
   unnestFields.emplace_back(
       std::make_shared<core::FieldAccessTypedExpr>(
           projectOutput->childAt(0), "s"));
-
-  const auto expectedResult = makeRowVector({
-      makeFlatVector<int64_t>(
-          numBatches * 3 * inputBatchSize,
-          [](auto row) { return 1 + row % 3; }),
-  });
 
   struct {
     std::optional<bool> nodeSplitOutput;
