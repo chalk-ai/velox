@@ -395,7 +395,7 @@ class DecimalUtil {
           // This is consistent with Spark's behavior.
           const auto digits = countDigits(unscaledValue);
           auto coefficientBuf = std::vector<char>(digits);
-          const auto coefficient = std::to_chars(
+          const auto coefficient = decimalToChars(
               coefficientBuf.data(),
               coefficientBuf.data() + digits,
               unscaledValue);
@@ -424,7 +424,7 @@ class DecimalUtil {
           return writePosition - startPosition;
         }
       }
-      auto [position, errorCode] = std::to_chars(
+      auto [position, errorCode] = decimalToChars(
           writePosition,
           writePosition + maxSize,
           unscaledValue / DecimalUtil::kPowersOfTen[scale]);
@@ -444,7 +444,7 @@ class DecimalUtil {
         writePosition += numLeadingZeros;
         // Append remaining fraction digits.
         auto result =
-            std::to_chars(writePosition, writePosition + maxSize, fraction);
+            decimalToChars(writePosition, writePosition + maxSize, fraction);
         VELOX_DCHECK_EQ(
             result.ec,
             std::errc(),
@@ -613,6 +613,19 @@ class DecimalUtil {
   static constexpr __uint128_t kOverflowMultiplier = ((__uint128_t)1 << 127);
 
  private:
+  template <typename T>
+  static std::to_chars_result decimalToChars(char* first, char* last, T value) {
+    return std::to_chars(first, last, value);
+  }
+
+  // libstdc++ does not expose __int128 overloads for std::to_chars in strict
+  // standard mode. These overloads preserve castToString support when clients
+  // compile Velox with -std=c++20 instead of GNU extensions.
+  static std::to_chars_result
+  decimalToChars(char* first, char* last, int128_t value);
+  static std::to_chars_result
+  decimalToChars(char* first, char* last, uint128_t value);
+
   // Parses the string view to decimal components, which contains the
   // unscaled value, precision, and scale. The parsed precision and scale are
   // returned through the reference parameters. The unscaled value is returned

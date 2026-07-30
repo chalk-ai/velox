@@ -19,6 +19,25 @@
 
 namespace facebook::velox {
 namespace {
+std::to_chars_result uint128ToChars(char* first, char* last, uint128_t value) {
+  char digits[40];
+  int32_t numDigits = 0;
+  do {
+    digits[numDigits++] =
+        static_cast<char>('0' + static_cast<int32_t>(value % 10));
+    value /= 10;
+  } while (value != 0);
+
+  if (last - first < numDigits) {
+    return {last, std::errc::value_too_large};
+  }
+
+  for (int32_t i = numDigits - 1; i >= 0; --i) {
+    *first++ = digits[i];
+  }
+  return {first, std::errc()};
+}
+
 std::string formatDecimal(uint8_t scale, int128_t unscaledValue) {
   VELOX_DCHECK_LT(scale, std::size(DecimalUtil::kPowersOfTen));
   const bool isFraction = (scale > 0);
@@ -51,6 +70,16 @@ std::string formatDecimal(uint8_t scale, int128_t unscaledValue) {
       "{}{}{}", isNegative ? "-" : "", integralPart, fractionString);
 }
 } // namespace
+
+std::to_chars_result
+DecimalUtil::decimalToChars(char* first, char* last, int128_t value) {
+  return uint128ToChars(first, last, static_cast<uint128_t>(value));
+}
+
+std::to_chars_result
+DecimalUtil::decimalToChars(char* first, char* last, uint128_t value) {
+  return uint128ToChars(first, last, value);
+}
 
 std::string DecimalUtil::toString(int128_t value, const Type& type) {
   auto [precision, scale] = getDecimalPrecisionScale(type);
