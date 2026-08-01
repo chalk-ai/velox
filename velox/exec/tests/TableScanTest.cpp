@@ -1823,6 +1823,63 @@ TEST_F(TableScanTest, preloadingSplitClose) {
   latch.wait();
 }
 
+// Depends on a TestValue injection point, which is compiled out under NDEBUG.
+DEBUG_ONLY_TEST_F(TableScanTest, preloadedSplitTakeoverSuspendsDriver) {
+  auto filePaths = makeFilePaths(10);
+  auto vectors = makeVectors(10, 100);
+  for (int32_t i = 0; i < vectors.size(); i++) {
+    writeToFile(filePaths[i]->getPath(), vectors[i]);
+  }
+  createDuckDbTable(vectors);
+
+  // Occupy every IO thread so that no split preload can make progress. The
+  // driver then always reaches an unfinished AsyncSource in getSplit(), which
+  // is the path that must run suspended.
+  auto* executor = ioExecutor_.get();
+  folly::Latch latch(executor->numThreads());
+  std::vector<folly::Baton<>> batons(executor->numThreads());
+  for (auto& baton : batons) {
+    executor->add([&]() {
+      baton.wait();
+      latch.count_down();
+    });
+  }
+
+  std::atomic_int numDriverTakeovers{0};
+  std::atomic_bool alwaysSuspended{true};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::AsyncSource::move",
+      std::function<void(void*)>(([&](void* /*unused*/) {
+        auto* driverThreadCtx = driverThreadContext();
+        if (driverThreadCtx == nullptr) {
+          // A background preload, not the driver taking over an unfinished one.
+          return;
+        }
+        ++numDriverTakeovers;
+        if (!driverThreadCtx->driverCtx()->driver->state().suspended()) {
+          alwaysSuspended = false;
+        }
+      })));
+
+  auto task = assertQuery(
+      tableScanNode(), filePaths, "SELECT * FROM tmp", /*numPrefetchSplit=*/10);
+
+  // Release the IO threads before asserting so that a failure cannot leave them
+  // parked on batons that go out of scope.
+  for (auto& baton : batons) {
+    baton.post();
+  }
+  latch.wait();
+
+  auto stats = getTableScanRuntimeStats(task);
+  ASSERT_GT(stats.at("preloadedSplits").sum, 0);
+  EXPECT_GT(numDriverTakeovers.load(), 0)
+      << "the driver never waited on an unfinished split preload";
+  EXPECT_TRUE(alwaysSuspended.load())
+      << "the driver stayed on thread while waiting on a split preload, which "
+         "can deadlock against a memory reclaim waiting for the task to pause";
+}
+
 TEST_F(TableScanTest, waitForSplit) {
   auto filePaths = makeFilePaths(10);
   auto vectors = makeVectors(10, 1'000);
