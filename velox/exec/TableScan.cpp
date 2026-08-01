@@ -391,11 +391,28 @@ bool TableScan::getSplit() {
 
   if (connectorSplit->dataSource != nullptr) {
     ++numPreloadedSplits_;
-    // The AsyncSource returns a unique_ptr to a shared_ptr. The unique_ptr
-    // will be nullptr if there was a cancellation.
-    numReadyPreloadedSplits_ += connectorSplit->dataSource->hasValue();
+    // move() returns nullptr if there was a cancellation.
+    const bool preloadReady = connectorSplit->dataSource->hasValue();
+    numReadyPreloadedSplits_ += preloadReady;
     auto startTimeNs = getCurrentTimeNano();
-    auto preparedDataSource = connectorSplit->dataSource->move();
+    std::unique_ptr<connector::DataSource> preparedDataSource;
+    if (preloadReady) {
+      preparedDataSource = connectorSplit->dataSource->move();
+    } else {
+      // move() either waits for a preload running on the connector IO executor
+      // or, if none started, builds the data source here. The wait is the case
+      // that matters: the preload allocates, so it can queue behind a memory
+      // arbitration that is itself waiting for this task to pause, and a pause
+      // never completes while this driver is counted as running.
+      //
+      // Suspending across the inline build too is safe and keeps this race
+      // free: the data source being built is a fresh one that only reaches
+      // operator state below at setFromDataSource(), so a reclaim that runs
+      // against the paused task cannot observe it. Gating on hasValue() keeps
+      // the already-prepared fast path off the task mutex.
+      ScopedDriverSuspension suspension;
+      preparedDataSource = connectorSplit->dataSource->move();
+    }
     auto endTimeNs = getCurrentTimeNano();
     stats_.wlock()->addRuntimeStat(
         std::string(TableScan::kWaitForPreloadSplitNanos),

@@ -558,7 +558,8 @@ class Driver : public std::enable_shared_from_this<Driver> {
   /// Returns the process-wide number of driver cpu yields.
   static std::atomic_uint64_t& yieldCount();
 
-  static std::shared_ptr<Driver> testingCreate(std::unique_ptr<DriverCtx> ctx = nullptr);
+  static std::shared_ptr<Driver> testingCreate(
+      std::unique_ptr<DriverCtx> ctx = nullptr);
 
  private:
   // Ensures that the thread is removed from its Task's thread count on exit.
@@ -947,6 +948,40 @@ class ScopedDriverThreadContext {
 /// Returns the driver thread context set by a per-thread local variable if the
 /// current running thread is a driver thread.
 DriverThreadContext* driverThreadContext();
+
+/// Takes the calling driver thread out of the driver executor pool while it
+/// blocks on work that runs somewhere else, such as a table scan split preload
+/// or a coalesced read on the connector IO executor.
+///
+/// That work can enter memory arbitration, and an arbitration already in flight
+/// may be waiting for this task to pause. Task::requestPause() only completes
+/// once every driver thread is off thread, so waiting here while still counted
+/// as running closes a cycle: the reclaimer waits for the pause, the pause
+/// waits for this driver, and this driver waits for work queued behind the
+/// reclaimer's arbitration. Suspending breaks the cycle, since a suspended
+/// driver thread is not counted as running by the pause. This is the same
+/// reason Operator::MemoryReclaimer::enterArbitration() suspends a driver that
+/// initiates arbitration itself.
+///
+/// Keep the scope as narrow as the wait. A suspended driver can have its task
+/// paused and its operators reclaimed underneath it, so the covered code must
+/// not mutate operator state.
+///
+/// Constructing this off a driver thread is a no-op, so it is safe to place in
+/// code reached from both driver and background threads.
+class ScopedDriverSuspension {
+ public:
+  ScopedDriverSuspension();
+  ~ScopedDriverSuspension();
+
+  ScopedDriverSuspension(const ScopedDriverSuspension&) = delete;
+  ScopedDriverSuspension& operator=(const ScopedDriverSuspension&) = delete;
+
+ private:
+  /// Null when not on a driver thread, or when the task was already terminating
+  /// and the suspension was therefore not entered.
+  Driver* driver_{nullptr};
+};
 
 } // namespace facebook::velox::exec
 
