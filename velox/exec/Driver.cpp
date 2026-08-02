@@ -336,8 +336,7 @@ void Driver::init(
   trackOperatorCpuUsage_ = ctx_->queryConfig().operatorTrackCpuUsage();
 }
 
-std::shared_ptr<Driver> Driver::testingCreate(
-    std::unique_ptr<DriverCtx> ctx) {
+std::shared_ptr<Driver> Driver::testingCreate(std::unique_ptr<DriverCtx> ctx) {
   auto driver = new Driver();
   if (ctx != nullptr) {
     ctx->driver = driver;
@@ -345,7 +344,6 @@ std::shared_ptr<Driver> Driver::testingCreate(
   }
   return std::shared_ptr<Driver>(driver);
 }
-
 
 void Driver::initializeOperators() {
   if (operatorsInitialized_) {
@@ -1442,6 +1440,27 @@ std::string Driver::label() const {
 
 DriverThreadContext* driverThreadContext() {
   return driverThreadCtx;
+}
+
+ScopedDriverSuspension::ScopedDriverSuspension() {
+  DriverThreadContext* const threadCtx = driverThreadContext();
+  if (threadCtx == nullptr) {
+    return;
+  }
+  Driver* const driver = threadCtx->driverCtx()->driver;
+  if (driver->task()->enterSuspended(driver->state()) != StopReason::kNone) {
+    // The task is terminating, so there is no pause left to unblock and the
+    // wait is about to be released by task teardown.
+    return;
+  }
+  driver_ = driver;
+}
+
+ScopedDriverSuspension::~ScopedDriverSuspension() {
+  if (driver_ == nullptr) {
+    return;
+  }
+  driver_->task()->leaveSuspended(driver_->state());
 }
 
 ScopedDriverThreadContext::ScopedDriverThreadContext(const DriverCtx* driverCtx)
