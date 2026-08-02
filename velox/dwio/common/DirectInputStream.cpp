@@ -19,6 +19,7 @@
 #include "velox/common/time/Timer.h"
 #include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/dwio/common/DirectInputStream.h"
+#include "velox/exec/Driver.h"
 
 using ::facebook::velox::common::Region;
 
@@ -178,6 +179,11 @@ void DirectInputStream::loadPosition() {
       {
         MicrosecondWallTimer timer(&loadUs);
         if (!load->loadOrFuture(&waitFuture)) {
+          // Another thread, typically a prefetch on the connector IO executor,
+          // is already running this load. That thread's allocations can enter
+          // memory arbitration, so a driver waiting here must go off thread or
+          // it can deadlock against the reclaim the load is queued behind.
+          exec::ScopedDriverSuspension suspension;
           waitFuture.wait();
         }
         loadedRegion_.offset = region_.offset;
