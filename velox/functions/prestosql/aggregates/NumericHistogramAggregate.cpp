@@ -517,6 +517,52 @@ void registerNumericHistogramAggregate(
           const core::QueryConfig& /*config*/)
           -> std::unique_ptr<exec::Aggregate> {
         const std::string& name = names.front();
+        // Companion-function path. The auto-generated `*_partial` /
+        // `*_merge` / `*_merge_extract_*` companions call this factory with
+        // `argTypes` set to the single varbinary intermediate type rather
+        // than the parent's `(bigint buckets, value [, weight])`. The bucket
+        // count is already encoded in the serialized accumulator, so nothing
+        // here needs the original raw inputs -- the adapter's
+        // intermediate-input path deserializes and combines the stored state
+        // directly. Dispatch on the result map's key type to pick the
+        // matching adapter. Without this, the `argTypes.size() >= 2` check
+        // below rejects every companion invocation, which makes
+        // numeric_histogram unusable as a partial-then-merge aggregation.
+        if (argTypes.size() == 1 && argTypes[0]->isVarbinary()) {
+          TypeKind valueKind;
+          if (resultType->isMap()) {
+            // *_merge_extract_* produces the final map; its key type selects
+            // the instantiation.
+            valueKind = resultType->childAt(0)->kind();
+          } else if (resultType->isVarbinary()) {
+            // *_merge returns the intermediate itself. NumericHistogram keeps
+            // bucket centers and weights in double vectors whatever TValue is
+            // -- TValue only types the final map -- so both instantiations
+            // serialize and deserialize the state identically here.
+            valueKind = TypeKind::DOUBLE;
+          } else {
+            VELOX_USER_FAIL(
+                "Aggregation {}: companion expects a map or varbinary result "
+                "type, got {}",
+                name,
+                resultType->toString());
+          }
+          switch (valueKind) {
+            case TypeKind::REAL:
+              return std::make_unique<exec::SimpleAggregateAdapter<
+                  NumericHistogramAggregate<float, double, 2>>>(
+                  step, argTypes, resultType);
+            case TypeKind::DOUBLE:
+              return std::make_unique<exec::SimpleAggregateAdapter<
+                  NumericHistogramAggregate<double, double, 2>>>(
+                  step, argTypes, resultType);
+            default:
+              VELOX_USER_FAIL(
+                  "Aggregation {}: unknown companion result type {}",
+                  name,
+                  resultType->toString());
+          }
+        }
         VELOX_USER_CHECK_GE(
             argTypes.size(), 2, "{} takes at least two arguments", name);
         VELOX_USER_CHECK_LE(
