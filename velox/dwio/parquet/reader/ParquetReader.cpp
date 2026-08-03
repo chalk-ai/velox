@@ -432,13 +432,11 @@ void ReaderBase::initializeSchema() {
       1,
       "Invalid Parquet schema: Need at least one non-root column in the file");
   // parquet.thrift says "The root of the schema does not have a
-  // repetition_type" but there are Parquet files that specify
-  // REQUIRED explicitly.
-  VELOX_CHECK_EQ(
-      (*fileMetaData_->schema())[0].repetition_type().value_or(
-          thrift::FieldRepetitionType::REQUIRED),
-      thrift::FieldRepetitionType::REQUIRED,
-      "Invalid Parquet schema: root element must be REQUIRED");
+  // repetition_type", so any repetition on the root carries no meaning.
+  // Some writers still set one explicitly (e.g. REQUIRED from parquet-cpp,
+  // REPEATED from arrow-go / Rust parquet), and other readers (arrow C++,
+  // DuckDB) ignore it, so we accept any value here. getParquetColumnInfo()
+  // likewise skips the root's repetition when computing levels.
   VELOX_CHECK_GT(
       *(*fileMetaData_->schema())[0].num_children(),
       0,
@@ -494,7 +492,11 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
   bool isRepeated = false;
   bool isOptional = false;
 
-  if (schemaElement.repetition_type()) {
+  // The root schema element (index 0) has no meaningful repetition_type per
+  // parquet.thrift, but some writers (arrow-go, Rust parquet) emit a
+  // non-REQUIRED value on it. Ignore it so a spurious OPTIONAL/REPEATED root
+  // does not inflate every column's definition/repetition levels.
+  if (curSchemaIdx != 0 && schemaElement.repetition_type()) {
     if (*schemaElement.repetition_type() !=
         thrift::FieldRepetitionType::REQUIRED) {
       maxDefine++;
@@ -618,6 +620,31 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
     }
     VELOX_CHECK(!children.empty());
     name = columnNames.at(curSchemaIdx);
+
+    // The root is always a plain ROW. parquet.thrift gives the root no
+    // meaningful repetition_type, but some writers (arrow-go, Rust parquet)
+    // stamp REPEATED on it, which would otherwise send the root down the
+    // legacy-list branch below and wrap the entire schema in ARRAY(ROW(...)).
+    // Returning here mirrors the plain "Row type" branch that a
+    // REQUIRED/unset root took before roots with other repetitions were
+    // accepted.
+    if (curSchemaIdx == 0) {
+      auto type = createRowType(children, isFileColumnNamesReadAsLowerCase());
+      return std::make_unique<ParquetTypeWithId>(
+          std::move(type),
+          std::move(children),
+          curSchemaIdx,
+          maxSchemaElementIdx,
+          ParquetTypeWithId::kNonLeaf,
+          std::move(name),
+          std::nullopt,
+          std::nullopt,
+          std::nullopt,
+          maxRepeat,
+          maxDefine,
+          isOptional,
+          isRepeated);
+    }
 
     if (schemaElement.converted_type()) {
       switch (*schemaElement.converted_type()) {
