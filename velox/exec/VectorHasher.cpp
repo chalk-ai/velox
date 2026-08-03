@@ -646,6 +646,21 @@ void VectorHasher::analyzeValue(StringView value) {
   }
 }
 
+template <>
+void VectorHasher::analyzeValue(Timestamp value) {
+  if (FOLLY_UNLIKELY(
+          value.getNanos() % Timestamp::kNanosecondsInMillisecond != 0)) {
+    // Sub-millisecond timestamps cannot be mapped to value ids without
+    // precision loss. Mark both range and distinct tracking as overflowed
+    // so mayUseValueIds() returns false. This makes the table uses kHash
+    // instead of recording a truncated value
+    setRangeOverflow();
+    setDistinctOverflow();
+    return;
+  }
+  analyzeValue(value.toMillis());
+}
+
 void VectorHasher::copyStringToLocal(const UniqueValue* unique) {
   auto size = unique->size();
   if (size <= sizeof(int64_t)) {
