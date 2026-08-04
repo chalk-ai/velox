@@ -230,6 +230,76 @@ TEST_P(MultiThreadedHashJoinTest, normalizedKeyOverflow) {
       .run();
 }
 
+TEST_P(MultiThreadedHashJoinTest, timestampSubMillisecondBuildKeys) {
+  // A hash join build with both millisecond-aligned and sub-millisecond
+  // timestamp keys should not use a value ID based hash mode, since timestamps
+  // are encoded as milliseconds in value IDs. In this test, we place the
+  // sub-millisecond value in the middle of a batch, where build-side key
+  // analysis passes it to analyzeValue() rather than valueId(). If the analysis
+  // doesn't reject the column for value ID encoding, the table will use
+  // normalized-key mode and the parallel join build fails a VELOX_CHECK in
+  // partitionRows when re-encoding the stored keys.
+  constexpr vector_size_t kSize = 1024; const auto subMs =
+  Timestamp::fromMicros(512 * 1'000 + 123);
+
+  std::vector<RowVectorPtr> buildVectors;
+  for (int32_t vec = 0; vec < 2; ++vec) {
+    std::vector<std::string> keys;
+    keys.reserve(kSize);
+    for (auto row = 0; row < kSize; ++row) {
+      keys.push_back(fmt::format("key-{:08d}", vec * kSize + row));
+    }
+    buildVectors.push_back(makeRowVector(
+        {"u_k0", "u_k1", "u_data"},
+        {makeFlatVector<std::string>(keys),
+         makeFlatVector<Timestamp>(
+             kSize,
+             [&](auto row) {
+               return vec == 0 && row == 512
+                   ? subMs
+                   : Timestamp::fromMillis(vec * kSize + row);
+             }),
+         makeFlatVector<std::string>(
+             kSize, [](auto row) { return fmt::format("u-{}", row); })}));
+  }
+
+  std::vector<std::string> probeKeys;
+  probeKeys.reserve(kSize);
+  for (auto row = 0; row < kSize; ++row) {
+    probeKeys.push_back(fmt::format("key-{:08d}", row));
+  }
+  std::vector<RowVectorPtr> probeVectors = {makeRowVector(
+      {"t_k0", "t_k1", "t_data"},
+      {makeFlatVector<std::string>(probeKeys),
+       makeFlatVector<Timestamp>(
+           kSize,
+           [&](auto row) {
+             return row == 512 ? subMs : Timestamp::fromMillis(row);
+           }),
+       makeFlatVector<std::string>(
+           kSize, [](auto row) { return fmt::format("t-{}", row); })})};
+
+  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+      .numDrivers(numDrivers_)
+      .parallelizeJoinBuildRows(parallelBuildSideRowsEnabled_)
+      .keyTypes({VARCHAR(), TIMESTAMP()})
+      .probeVectors(std::move(probeVectors))
+      .buildVectors(std::move(buildVectors))
+      .referenceQuery(
+          "SELECT t_k0, t_k1, t_data, u_k0, u_k1, u_data FROM t, u WHERE t_k0 = u_k0 AND t_k1 = u_k1")
+      .injectSpill(false)
+      .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
+        auto joinStats = task->taskStats()
+                             .pipelineStats.back()
+                             .operatorStats.back()
+                             .runtimeStats;
+        ASSERT_EQ(
+            joinStats["hashtable.hashMode"].max,
+            static_cast<int64_t>(BaseHashTable::HashMode::kHash));
+      })
+      .run();
+}
+
 DEBUG_ONLY_TEST_P(MultiThreadedHashJoinTest, parallelJoinBuildCheck) {
   std::atomic<bool> isParallelBuild{false};
   SCOPED_TESTVALUE_SET(
