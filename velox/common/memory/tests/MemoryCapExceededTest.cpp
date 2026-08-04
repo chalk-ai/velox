@@ -76,8 +76,8 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
   // 5.00MB.
   std::vector<std::string> expectedTexts = {
       "Can't grow ",
-      "capacity with 2.00MB. This will exceed its memory pool capacity 5.00MB, "
-      "current capacity 5.00MB.",
+      "capacity with 2.00MB. This will exceed its memory pool capacity 5.00MB, current "
+      "capacity 5.00MB.\n"
       "ARBITRATOR[SHARED CAPACITY[6.00GB] STATS[numRequests 1 numRunning 1 "
       "numSucceded 0 numAborted 0 numFailures 0 numNonReclaimableAttempts 0 "
       "reclaimedFreeCapacity 0B reclaimedUsedCapacity 0B maxCapacity 6.00GB "
@@ -120,9 +120,13 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
                   .singleAggregation({"c0"}, {"sum(p1)"})
                   .orderBy({"c0"}, false)
                   .planNode();
-  auto queryCtx = core::QueryCtx::Builder().executor(executor_.get()).pool(
-      memory::memoryManager()->addRootPool(
-          "mem_cap_exceeded_test_pool", kMaxBytes, exec::MemoryReclaimer::create())).build();
+  auto queryCtx = core::QueryCtx::Builder()
+                  .executor(executor_.get()).pool(
+                    memory::memoryManager()->addRootPool(
+                      "mem_cap_exceeded_test_pool", kMaxBytes, exec::MemoryReclaimer::create()
+                    )
+                  )
+                  .build();
   CursorParameters params;
   params.planNode = plan;
   params.queryCtx = queryCtx;
