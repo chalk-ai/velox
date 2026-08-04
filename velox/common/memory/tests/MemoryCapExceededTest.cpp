@@ -76,7 +76,10 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
       "reclaimedFreeCapacity 0B reclaimedUsedCapacity 0B maxCapacity 6.00GB "
       "freeCapacity 5.50GB freeReservedCapacity 0B]",
       // CONFIG[...] pairs, matched individually so key order does not matter.
-      "CONFIG[kind=SHARED;capacity=6.00GB;arbitrationStateCheckCb=(set);",
+      "CONFIG[",
+      "kind=SHARED;",
+      "capacity=6.00GB;",
+      "arbitrationStateCheckCb=(set);",
       "memory-pool-abort-capacity-limit=0B;",
       "memory-pool-min-reclaim-pct=0;",
       "memory-pool-reserved-capacity=0B;",
