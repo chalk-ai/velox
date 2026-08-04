@@ -77,11 +77,11 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
   std::vector<std::string> expectedTexts = {
       "Can't grow ",
       "capacity with 2.00MB. This will exceed its memory pool capacity 5.00MB, "
-      "current capacity 4.00MB.",
+      "current capacity 5.00MB.",
       "ARBITRATOR[SHARED CAPACITY[6.00GB] STATS[numRequests 1 numRunning 1 "
       "numSucceded 0 numAborted 0 numFailures 0 numNonReclaimableAttempts 0 "
-      "reclaimedFreeCapacity 1.00MB reclaimedUsedCapacity 0B maxCapacity 6.00GB "
-      "freeCapacity 5.00GB freeReservedCapacity 0B]",
+      "reclaimedFreeCapacity 0B reclaimedUsedCapacity 0B maxCapacity 6.00GB "
+      "freeCapacity 5.50GB freeReservedCapacity 0B]",
       // CONFIG[...] pairs, matched individually so key order does not matter.
       "CONFIG[kind=SHARED;capacity=6.00GB;arbitrationStateCheckCb=(set);",
       "memory-pool-abort-capacity-limit=0B;",
@@ -93,14 +93,15 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
       "reserved-capacity=0B;",
       " AGGREGATE root[",
       "] parent[null] MALLOC track-usage thread-safe]<max capacity 5.00MB "
-      "capacity 4.00MB used 3.74MB available 0B reservation [used 0B, reserved "
-      "4.00MB, min 0B] counters [allocs 0, frees 0, reserves 0, releases 0, "
+      "capacity 5.00MB used 3.75MB available 0B reservation [used 0B, reserved "
+      "5.00MB, min 0B] counters [allocs 0, frees 0, reserves 0, releases 0, "
       "collisions 0, external-allocs 0, external-frees 0, cumulative-external "
       "0B])>"};
   std::vector<std::string> expectedDetailedTexts = {
+      "expression pool usage 12.00KB reserved 1.00MB peak 12.00KB",
       "node.2 usage 3.74MB reserved 4.00MB peak 4.00MB",
       "op.2.0.0.Aggregation usage 3.74MB reserved 4.00MB peak 3.76MB",
-      "Top 1 leaf memory pool usages:"};
+      "Top 2 leaf memory pool usages:"};
 
   std::vector<RowVectorPtr> data;
   for (auto i = 0; i < 100; ++i) {
@@ -119,10 +120,9 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
                   .singleAggregation({"c0"}, {"sum(p1)"})
                   .orderBy({"c0"}, false)
                   .planNode();
-  auto queryCtx = core::QueryCtx::create(executor_.get());
-  queryCtx->testingOverrideMemoryPool(
+  auto queryCtx = core::QueryCtx::Builder().executor(executor_.get()).pool(
       memory::memoryManager()->addRootPool(
-          queryCtx->queryId(), kMaxBytes, exec::MemoryReclaimer::create()));
+          "mem_cap_exceeded_test_pool", kMaxBytes, exec::MemoryReclaimer::create())).build();
   CursorParameters params;
   params.planNode = plan;
   params.queryCtx = queryCtx;
