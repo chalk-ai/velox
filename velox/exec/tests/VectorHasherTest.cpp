@@ -609,6 +609,38 @@ TEST_F(VectorHasherTest, dateIds) {
   EXPECT_EQ(numDistinct, VectorHasher::kRangeTooLarge);
 }
 
+TEST_F(VectorHasherTest, timestampSubMillisecond) {
+  // HashBuild analyzes build-side join keys by calling computeValueIds() on
+  // each input batch and then calling mayUseValueIds() to decide whether
+  // the keys can be encoded as value IDs. Value IDs encode timestamps as
+  // milliseconds, so a timestamp with a sub-millisecond component cannot be
+  // encoded. The hasher must report this regardless of where in a batch such
+  // a value appears. Values after a batch's first not-yet-mapped one are
+  // passed to analyzeValue() rather than valueId().
+  constexpr vector_size_t kSize = 100;
+  SelectivityVector rows(kSize);
+  raw_vector<uint64_t> result(kSize);
+
+  auto hasher = exec::VectorHasher::create(TIMESTAMP(), 0);
+
+  // Millisecond-aligned values keep the column eligible for value ids.
+  auto aligned = makeFlatVector<Timestamp>(
+      kSize, [](auto row) { return Timestamp::fromMillis(row); });
+  hasher->decode(*aligned, rows);
+  hasher->computeValueIds(rows, result);
+  EXPECT_TRUE(hasher->mayUseValueIds());
+
+  // A batch with one sub-millisecond value in the middle must disqualify
+  // the column.
+  auto mixed = makeFlatVector<Timestamp>(kSize, [](auto row) {
+    return row == kSize / 2 ? Timestamp::fromMicros(row * 1'000 + 123)
+                            : Timestamp::fromMillis(kSize + row);
+  });
+  hasher->decode(*mixed, rows);
+  hasher->computeValueIds(rows, result);
+  EXPECT_FALSE(hasher->mayUseValueIds());
+}
+
 TEST_F(VectorHasherTest, boolNoNulls) {
   auto vector = BaseVector::create(BOOLEAN(), 100, pool());
   auto bools = vector->as<FlatVector<bool>>();
