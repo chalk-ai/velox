@@ -65,15 +65,8 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
   vector_size_t size = 1'024;
   // This limit ensures that only the Aggregation Operator fails.
   constexpr int64_t kMaxBytes = 5LL << 20; // 5MB
-  // We look for these lines separately, since their order can change.
-  //
-  // Note on the memory figures below: with the query-scoped expression pool,
-  // the FilterProject's "c0 + c1" result is allocated from the query's
-  // expression pool rather than the FilterProject operator pool. As a result
-  // the FilterProject no longer shows up in the operator memory breakdown, only
-  // the Aggregation remains ("Top 1" leaf usage), and the query pool trips the
-  // cap at 4.00MB (1.00MB of free capacity having been reclaimed) instead of
-  // 5.00MB.
+  // We look for these lines separately, since their order can change (not sure
+  // why).
   std::vector<std::string> expectedTexts = {
       "Can't grow ",
       "capacity with 2.00MB. This will exceed its memory pool capacity 5.00MB, current "
