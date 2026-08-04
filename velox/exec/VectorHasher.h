@@ -655,6 +655,11 @@ bool VectorHasher::makeValueIdsForRows<TypeKind::VARCHAR>(
 template <>
 void VectorHasher::analyzeValue(StringView value);
 
+// Analyze timestamp values with overflow handling for
+// sub-millisecond values
+template <>
+void VectorHasher::analyzeValue(Timestamp value);
+
 template <>
 inline uint64_t VectorHasher::valueId(StringView value) {
   auto size = value.size();
