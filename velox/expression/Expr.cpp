@@ -2185,6 +2185,13 @@ std::string makeUuid() {
 }
 } // namespace
 
+void Expr::clearStats() {
+  stats_ = ExprStats{};
+  for (auto& input : inputs_) {
+    input->clearStats();
+  }
+}
+
 std::unordered_map<std::string, exec::ExprStats> ExprSet::stats(
     bool excludeSpecialForm) const {
   std::unordered_map<std::string, exec::ExprStats> stats;
@@ -2373,6 +2380,12 @@ void ExprSet::clear() {
 void ExprSet::clearCache() {
   for (auto& expr : exprs_) {
     expr->clearCache();
+  }
+}
+
+void ExprSet::clearStats() {
+  for (auto& expr : exprs_) {
+    expr->clearStats();
   }
 }
 

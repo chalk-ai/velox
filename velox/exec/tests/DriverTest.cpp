@@ -622,6 +622,7 @@ TEST_F(DriverTest, yield) {
         [](int64_t num) { return num % 10 > 0; },
         &hits);
     params[i].maxDrivers = kThreadsPerTask;
+    params[i].exprPool = pool_;
   }
   std::vector<int32_t> counters(kNumTasks, 0);
   std::vector<std::thread> threads;
@@ -809,7 +810,7 @@ TEST_F(DriverTest, pauserNode) {
   std::vector<CursorParameters> params(kNumTasks);
   int32_t hits{0};
   for (int32_t i = 0; i < kNumTasks; ++i) {
-    params[i].queryCtx = core::QueryCtx::create(executor.get());
+    params[i].exprPool = pool_;
     params[i].planNode = makeValuesFilterProject(
         rowType_,
         "m1 % 10 > 0",

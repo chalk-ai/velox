@@ -820,6 +820,7 @@ TEST_P(UnnestTest, batchSize) {
   });
 
   auto task = AssertQueryBuilder(plan)
+                  .exprPool(pool_)
                   .config(
                       core::QueryConfig::kPreferredOutputBatchRows,
                       std::to_string(batchSize_))
@@ -894,6 +895,7 @@ TEST_P(UnnestTest, barrier) {
         numSplits;
     auto task =
         AssertQueryBuilder(plan)
+            .exprPool(pool_)
             .config(
                 SparkQueryConfig::qualify(SparkQueryConfig::kPartitionId), "0")
             .config(
@@ -965,6 +967,7 @@ TEST_P(UnnestTest, spiltOutput) {
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.toString());
     auto task = AssertQueryBuilder(plan)
+                    .exprPool(pool_)
                     .config(
                         core::QueryConfig::kPreferredOutputBatchRows,
                         std::to_string(GetParam()))
@@ -991,7 +994,7 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
     }));
   }
 
-  const auto expectedResult = makeRowVector({
+  auto expectedResult = makeRowVector({
       makeFlatVector<int64_t>(
           numBatches * 3 * inputBatchSize,
           [](auto row) { return 1 + row % 3; }),
@@ -1058,6 +1061,7 @@ TEST_P(UnnestTest, splitOutputNodeOverride) {
         : numBatches;
 
     auto task = AssertQueryBuilder(unnestNode)
+                    .exprPool(pool_)
                     .config(
                         core::QueryConfig::kPreferredOutputBatchRows,
                         std::to_string(GetParam()))
