@@ -24,6 +24,7 @@
 #include "velox/dwio/parquet/reader/BooleanColumnReader.h"
 #include "velox/dwio/parquet/reader/FloatingPointColumnReader.h"
 #include "velox/dwio/parquet/reader/IntegerColumnReader.h"
+#include "velox/dwio/parquet/reader/ParquetData.h"
 #include "velox/dwio/parquet/reader/RepeatedColumnReader.h"
 #include "velox/dwio/parquet/reader/StringColumnReader.h"
 #include "velox/dwio/parquet/reader/StructColumnReader.h"
@@ -32,6 +33,60 @@
 #include "velox/dwio/parquet/thrift/ParquetThrift.h"
 
 namespace facebook::velox::parquet {
+
+namespace {
+
+class NullColumnReader final : public dwio::common::SelectiveColumnReader {
+ public:
+  NullColumnReader(
+      const TypePtr& requestedType,
+      std::shared_ptr<const dwio::common::TypeWithId> fileType,
+      ParquetParams& params,
+      common::ScanSpec& scanSpec)
+      : SelectiveColumnReader(
+            requestedType,
+            std::move(fileType),
+            params,
+            scanSpec) {}
+
+  void seekToRowGroup(int64_t index) override {
+    SelectiveColumnReader::seekToRowGroup(index);
+    scanState().clear();
+    readOffset_ = 0;
+    formatData_->as<ParquetData>().seekToRowGroup(index);
+  }
+
+  void getValues(const RowSet& rows, VectorPtr* result) override {
+    *result =
+        BaseVector::createNullConstant(requestedType_, rows.size(), pool_);
+  }
+
+  void read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls)
+      override {
+    prepareRead<int8_t>(offset, rows, incomingNulls);
+    VELOX_CHECK(allNull_, "Parquet UNKNOWN column contains a non-null value");
+    VELOX_CHECK_NULL(
+        scanSpec_->valueHook(),
+        "Value hooks are not supported for Parquet UNKNOWN columns");
+
+    const auto* filter = scanSpec_->filter();
+    const bool passes = !filter || filter->testNull();
+    if (useOutputRows() && passes) {
+      for (const auto row : rows) {
+        addOutputRow(row);
+      }
+    }
+    numValues_ = scanSpec_->keepValues() && passes ? rows.size() : 0;
+    readOffset_ += rows.back() + 1;
+  }
+
+ protected:
+  bool readsNullsOnly() const override {
+    return true;
+  }
+};
+
+} // namespace
 
 // static
 std::unique_ptr<dwio::common::SelectiveColumnReader> ParquetColumnReader::build(
@@ -45,6 +100,11 @@ std::unique_ptr<dwio::common::SelectiveColumnReader> ParquetColumnReader::build(
       static_cast<int>(common::ScanSpec::ExtractionType::kNone),
       "Parquet reader does not support extraction pushdown");
   auto colName = scanSpec.fieldName();
+
+  if (fileType->type()->kind() == TypeKind::UNKNOWN) {
+    return std::make_unique<NullColumnReader>(
+        requestedType, fileType, params, scanSpec);
+  }
 
   if (fileType->type()->isTime()) {
     VELOX_CHECK(
