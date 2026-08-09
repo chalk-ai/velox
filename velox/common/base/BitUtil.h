@@ -835,7 +835,10 @@ template <typename T>
 inline T loadBits(const uint64_t* source, uint64_t bitOffset, uint8_t numBits) {
   constexpr int32_t kBitSize = 8 * sizeof(T);
   auto address = reinterpret_cast<uint64_t>(source) + bitOffset / 8;
-  T word = *reinterpret_cast<const T*>(address);
+  T word;
+  // A bit offset can address any byte. A typed dereference would require
+  // alignment that the source address does not promise.
+  std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(T));
   auto bit = bitOffset & 7;
   if (!bit) {
     return word;

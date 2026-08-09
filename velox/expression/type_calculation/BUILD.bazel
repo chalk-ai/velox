@@ -43,5 +43,8 @@ cc_library(
     include_prefix = "velox/expression/type_calculation",
     textual_hdrs = ["Scanner.h"],
     implementation_deps = ["@flex//:headers"],
-    deps = ["//:common_headers"],
+    deps = [
+        "//:base",
+        "//:common_headers",
+    ],
 )

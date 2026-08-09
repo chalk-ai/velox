@@ -49,5 +49,8 @@ cc_library(
         "SignatureParser.yy.h",
     ],
     implementation_deps = ["@flex//:headers"],
-    deps = ["//:common_headers"],
+    deps = [
+        "//:base",
+        "//:common_headers",
+    ],
 )

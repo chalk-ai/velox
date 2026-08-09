@@ -52,6 +52,7 @@ cc_library(
         "@fmt",
     ],
     deps = [
+        "//:base",
         "//:common_headers",
     ],
 )
