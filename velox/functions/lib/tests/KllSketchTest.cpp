@@ -393,7 +393,9 @@ TEST_F(KllSketchTest, memoryUsage) {
   for (int i = 1024; i < 8192; ++i) {
     kll.insert(i);
   }
-  EXPECT_LE(alloc.retainedSize() - alloc.freeSpace(), 32840);
+  // The budget leaves slack for libc++'s vector growth, which allocates
+  // slightly differently than libstdc++.
+  EXPECT_LE(alloc.retainedSize() - alloc.freeSpace(), 33000);
 }
 
 } // namespace

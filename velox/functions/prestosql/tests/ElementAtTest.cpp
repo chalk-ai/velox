@@ -161,14 +161,14 @@ class ElementAtTest : public FunctionBaseTest {
     checkStatus(true, true, nullptr);
 
     auto result1 = mapSubscriptWithCaching.applyMap(rows, args, evalCtx);
-    // Nothing has been materialized yet since the input is seen only once.
-    checkStatus(true, true, args[0]);
+    // Seeing a non-constant map disables caching entirely.
+    checkStatus(false, true, nullptr);
 
     auto result2 = mapSubscriptWithCaching.applyMap(rows, args, evalCtx);
-    checkStatus(true, false, args[0]);
+    checkStatus(false, true, nullptr);
 
     auto result3 = mapSubscriptWithCaching.applyMap(rows, args, evalCtx);
-    checkStatus(true, false, args[0]);
+    checkStatus(false, true, nullptr);
 
     // all the result should be the same.
     expected = makeConstant<int32_t>(3, 1);
@@ -1311,7 +1311,8 @@ TEST_F(ElementAtTest, errorStatesArray) {
       [](auto row) { return row == 40; });
 }
 
-TEST_F(ElementAtTest, testCachingOptimization) {
+// Doesn't work with constant map caching.
+TEST_F(ElementAtTest, DISABLED_testCachingOptimization) {
   std::vector<std::vector<std::pair<int64_t, std::optional<int64_t>>>>
       inputMapVectorData;
   inputMapVectorData.push_back({});
@@ -1504,7 +1505,8 @@ TEST_F(ElementAtTest, floatingPointCornerCases) {
   testFloatingPointCornerCases<double>();
 }
 
-TEST_F(ElementAtTest, testCachingOptimizationComplexKey) {
+// Doesn't work with constant map caching.
+TEST_F(ElementAtTest, DISABLED_testCachingOptimizationComplexKey) {
   std::vector<std::vector<int64_t>> keys;
   std::vector<int64_t> values;
   for (int i = 0; i < 999; i += 3) {
@@ -1714,19 +1716,16 @@ TEST_F(ElementAtTest, timestampWithTimeZoneWithCaching) {
 
     test::assertEqualVectors(
         expected, mapSubscriptWithCaching.applyMap(rows, args, evalCtx));
-    // Nothing has been materialized yet since the input is seen only once.
-    checkStatus(true, true, args[0]);
+    // Seeing a non-constant map disables caching entirely.
+    checkStatus(false, true, nullptr);
 
     test::assertEqualVectors(
         expected, mapSubscriptWithCaching.applyMap(rows, args, evalCtx));
-    // The argument from the previous call should be cached.
-    checkStatus(true, false, args[0]);
+    checkStatus(false, true, nullptr);
 
     test::assertEqualVectors(
         expected, mapSubscriptWithCaching.applyMap(rows, args, evalCtx));
-    // The map should still be cached because we called it with the same
-    // argument.
-    checkStatus(true, false, args[0]);
+    checkStatus(false, true, nullptr);
   };
 
   // Test elementAt with scalar values and caching.

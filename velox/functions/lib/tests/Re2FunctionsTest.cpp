@@ -596,10 +596,10 @@ TEST_F(Re2FunctionsTest, likePatternCopyProtectsAgainstDanglingPointer) {
   // The fix: copy to a local string while the page is still mapped.
   std::string patternCopy(patternView.data(), patternView.size());
 
-  // Unmap the page (simulates buffer reclamation under memory pressure).
-  // After this, any access to 'page' causes SIGSEGV, exactly matching the
-  // production crash at page-aligned address 0x7fa369c00000.
-  munmap(page, 4096);
+  // Revoke access instead of unmapping (simulates buffer reclamation under
+  // memory pressure). Unmapping would let the allocator reuse the address
+  // range, making the dangling read succeed and the death check flaky.
+  ASSERT_EQ(mprotect(page, 4096, PROT_NONE), 0);
 
   // With the fix (using the copy): works correctly.
   auto metadata = determinePatternKind(patternCopy, std::nullopt);
@@ -617,6 +617,7 @@ TEST_F(Re2FunctionsTest, likePatternCopyProtectsAgainstDanglingPointer) {
           std::nullopt),
       "");
 #endif
+  munmap(page, 4096);
 }
 
 TEST_F(Re2FunctionsTest, likeDeterminePatternKind) {
@@ -1568,18 +1569,11 @@ TEST_F(Re2FunctionsTest, likeRegexLimit) {
     flatPattern->set(i, StringView(localPattern));
   }
 
-  VELOX_ASSERT_THROW(
-      evaluate("like(c0, c1)", makeRowVector({input, pattern})),
-      "Max number of regex reached");
-
-  // First maxCompiledRegexes rows should return false, the rest raise and error
-  // and become null.
-  result = evaluate("try(like(c0, c1))", makeRowVector({input, pattern}));
-  auto expected = makeFlatVector<bool>(
-      aboveMaxCompiledRegexes,
-      [](auto /*row*/) { return false; },
-      [&](auto row) { return row >= maxCompiledRegexes; });
-  assertEqualVectors(expected, result);
+  // The regex cache evicts instead of throwing, so distinct patterns beyond
+  // the limit still evaluate.
+  result = evaluate("like(c0, c1)", makeRowVector({input, pattern}));
+  assertEqualVectors(
+      makeConstant(false, aboveMaxCompiledRegexes), result);
 
   // All are complex but the same, should pass.
   for (auto i = 0; i < aboveMaxCompiledRegexes; i++) {
@@ -1651,27 +1645,39 @@ TEST_F(Re2FunctionsTest, limit) {
           }),
   });
 
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_extract(c0, c1)", data), "Max number of regex reached");
+  // The regex cache evicts old entries instead of throwing, so distinct
+  // patterns beyond the limit still evaluate. Verify values to catch wrong
+  // matches under eviction pressure.
+  assertEqualVectors(data->childAt(0), evaluate("regexp_extract(c0, c1)", data));
+  assertEqualVectors(
+      makeFlatVector<std::string>(
+          aboveMaxCompiledRegexes, [](auto /*row*/) { return "and"; }),
+      evaluate("regexp_extract(c0, c1, 1)", data));
+
+  std::vector<std::vector<std::string>> fullMatches;
+  std::vector<std::vector<std::string>> groupMatches;
+  for (auto row = 0; row < aboveMaxCompiledRegexes; ++row) {
+    fullMatches.push_back({fmt::format("Apples and oranges {}", row)});
+    groupMatches.push_back({"and"});
+  }
+  assertEqualVectors(
+      makeArrayVector<std::string>(fullMatches),
+      evaluate("regexp_extract_all(c0, c1)", data));
+  assertEqualVectors(
+      makeArrayVector<std::string>(groupMatches),
+      evaluate("regexp_extract_all(c0, c1, 1)", data));
+
+  assertEqualVectors(
+      makeConstant(true, aboveMaxCompiledRegexes),
+      evaluate("regexp_like(c0, c1)", data));
+
+  // The c2 patterns repeat numbers below the limit, so rows past the limit
+  // reuse cached regexes. Whether such a pattern matches its row depends on
+  // digit prefixes, so only check that evaluation succeeds.
   ASSERT_NO_THROW(evaluate("regexp_extract(c0, c2)", data));
-
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_extract(c0, c1, 1)", data),
-      "Max number of regex reached");
   ASSERT_NO_THROW(evaluate("regexp_extract(c0, c2, 1)", data));
-
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_extract_all(c0, c1)", data),
-      "Max number of regex reached");
   ASSERT_NO_THROW(evaluate("regexp_extract_all(c0, c2)", data));
-
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_extract_all(c0, c1, 1)", data),
-      "Max number of regex reached");
   ASSERT_NO_THROW(evaluate("regexp_extract_all(c0, c2, 1)", data));
-
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_like(c0, c1)", data), "Max number of regex reached");
   ASSERT_NO_THROW(evaluate("regexp_like(c0, c2)", data));
 }
 

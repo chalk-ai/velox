@@ -107,7 +107,7 @@ TEST(AzureClientProviderFactoriesTest, registerFromConfig) {
         false);
     VELOX_ASSERT_THROW(
         registerAzureClientProvider(config),
-        "Unsupported auth type Custom, supported auth types are SharedKey, OAuth and SAS.");
+        "Unsupported auth type Custom, supported auth types are SharedKey, OAuth, SAS and DefaultCredential.");
   }
 
   {

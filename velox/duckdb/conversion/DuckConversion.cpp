@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #include "velox/duckdb/conversion/DuckConversion.h"
+
+#include <duckdb/parser/expression/type_expression.hpp> // @manual
+
 #include "velox/type/Variant.h"
 
 namespace facebook::velox::duckdb {
@@ -115,6 +118,27 @@ LogicalType fromVeloxType(const TypePtr& type) {
 
 //! Type mapping for DuckDB -> velox conversions, we support more types here
 TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
+  if (type.id() == LogicalTypeId::UNBOUND) {
+    type = UnboundType::TryDefaultBind(type);
+    if (type.id() == LogicalTypeId::UNBOUND) {
+      // Velox custom types such as hyperloglog reach DuckDB only as a type
+      // name in DDL, so DuckDB cannot bind them to a builtin type. Resolve
+      // the name through the velox custom type registry instead.
+      const auto& expression = UnboundType::GetTypeExpression(type);
+      VELOX_CHECK(
+          expression->type == ::duckdb::ExpressionType::TYPE,
+          "Could not resolve unbound DuckDB type: {}",
+          type.ToString());
+      const auto& name =
+          expression->Cast<::duckdb::TypeExpression>().GetTypeName();
+      auto customType = getCustomType(name, {});
+      VELOX_CHECK_NOT_NULL(
+          customType,
+          "Could not resolve unbound DuckDB type: {}",
+          type.ToString());
+      return customType;
+    }
+  }
   switch (type.id()) {
     case LogicalTypeId::SQLNULL:
       return UNKNOWN();
