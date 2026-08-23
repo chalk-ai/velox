@@ -607,6 +607,21 @@ TEST(DecimalTest, castToString) {
       DecimalUtil::kLongDecimalMax, 38, 0, 39, std::string(38, '9'));
   testcastToString<int128_t>(
       DecimalUtil::kLongDecimalMin, 38, 0, 39, "-" + std::string(38, '9'));
+  // INT128_MIN: negating it overflows signed int128 and its magnitude is not
+  // representable in the signed type, so the magnitude must be taken in unsigned
+  // space. Regression for the "--"/garbage output this used to produce.
+  testcastToString<int128_t>(
+      std::numeric_limits<int128_t>::min(),
+      38,
+      0,
+      40,
+      "-170141183460469231731687303715884105728");
+  testcastToString<int128_t>(
+      std::numeric_limits<int128_t>::max(),
+      38,
+      0,
+      39,
+      "170141183460469231731687303715884105727");
 }
 
 TEST(DecimalTest, castFromString) {
