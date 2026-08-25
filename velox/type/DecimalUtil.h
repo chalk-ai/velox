@@ -385,20 +385,26 @@ class DecimalUtil {
     } else {
       if (unscaledValue < 0) {
         *writePosition++ = '-';
-        unscaledValue = -unscaledValue;
       }
+      // Absolute value in unsigned 128-bit space. Negating the signed minimum
+      // (e.g. INT128_MIN) is overflow UB, and its magnitude is not representable
+      // in the signed type, so compute it as unsigned to handle that boundary.
+      const uint128_t magnitude = unscaledValue < 0
+          ? uint128_t(0) - static_cast<uint128_t>(unscaledValue)
+          : static_cast<uint128_t>(unscaledValue);
       if (isScientific) {
         if (scale >= kMinScientificNotationScale &&
-            unscaledValue < DecimalUtil::kPowersOfTen
-                                [scale - kMinScientificNotationScale]) {
+            magnitude < static_cast<uint128_t>(
+                            DecimalUtil::kPowersOfTen
+                                [scale - kMinScientificNotationScale])) {
           // Use scientific notation if the absolute value is less than 1e-6.
           // This is consistent with Spark's behavior.
-          const auto digits = countDigits(unscaledValue);
+          const auto digits = countDigits(magnitude);
           auto coefficientBuf = std::vector<char>(digits);
           const auto coefficient = std::to_chars(
               coefficientBuf.data(),
               coefficientBuf.data() + digits,
-              unscaledValue);
+              magnitude);
           VELOX_DCHECK_EQ(
               coefficient.ec,
               std::errc(),
@@ -427,7 +433,7 @@ class DecimalUtil {
       auto [position, errorCode] = std::to_chars(
           writePosition,
           writePosition + maxSize,
-          unscaledValue / DecimalUtil::kPowersOfTen[scale]);
+          magnitude / static_cast<uint128_t>(DecimalUtil::kPowersOfTen[scale]));
       VELOX_DCHECK_EQ(
           errorCode,
           std::errc(),
@@ -437,7 +443,8 @@ class DecimalUtil {
 
       if (scale > 0) {
         *writePosition++ = '.';
-        uint128_t fraction = unscaledValue % DecimalUtil::kPowersOfTen[scale];
+        uint128_t fraction =
+            magnitude % static_cast<uint128_t>(DecimalUtil::kPowersOfTen[scale]);
         // Append leading zeros.
         int numLeadingZeros = std::max(scale - countDigits(fraction), 0);
         std::memset(writePosition, '0', numLeadingZeros);

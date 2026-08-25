@@ -568,6 +568,13 @@ TEST(DecimalTest, maxStringViewSize) {
   testMaxStringViewSize(10, 0, 11);
   testMaxStringViewSize(10, 1, 12);
   testMaxStringViewSize(10, 10, 13);
+  // Long decimals size for the int128 storage's 39-digit maximum rather than
+  // the declared precision: an out-of-precision magnitude (HUGEINT stored as
+  // DECIMAL(38, 0)) still formats every digit plus the sign.
+  testMaxStringViewSize(19, 0, 40);
+  testMaxStringViewSize(38, 0, 40);
+  testMaxStringViewSize(38, 1, 41);
+  testMaxStringViewSize(38, 38, 42);
 }
 
 TEST(DecimalTest, castToString) {
@@ -607,6 +614,21 @@ TEST(DecimalTest, castToString) {
       DecimalUtil::kLongDecimalMax, 38, 0, 39, std::string(38, '9'));
   testcastToString<int128_t>(
       DecimalUtil::kLongDecimalMin, 38, 0, 39, "-" + std::string(38, '9'));
+  // INT128_MIN's magnitude is not representable in the signed type, so the
+  // negation-based magnitude computation overflowed and rendered garbage;
+  // 40 is maxStringViewSize(38, 0), so the sign plus all 39 digits must fit.
+  testcastToString<int128_t>(
+      std::numeric_limits<int128_t>::min(),
+      38,
+      0,
+      DecimalUtil::maxStringViewSize(38, 0),
+      "-170141183460469231731687303715884105728");
+  testcastToString<int128_t>(
+      std::numeric_limits<int128_t>::max(),
+      38,
+      0,
+      DecimalUtil::maxStringViewSize(38, 0),
+      "170141183460469231731687303715884105727");
 }
 
 TEST(DecimalTest, castFromString) {
