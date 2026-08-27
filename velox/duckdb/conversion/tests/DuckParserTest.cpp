@@ -956,7 +956,6 @@ TEST(DuckParserTest, varbinaryLiteral) {
 
   auto* constant = expr->as<core::ConstantExpr>();
   VELOX_EXPECT_EQ_TYPES(constant->type(), VARBINARY());
-  // The literal is copied byte for byte matching the velox runtime cast; blob
-  // escapes are not interpreted.
-  EXPECT_EQ(constant->value().value<TypeKind::VARBINARY>(), "\\x41");
+  // DuckDB folds the blob cast and interprets the hexadecimal escape.
+  EXPECT_EQ(constant->value().value<TypeKind::VARBINARY>(), "A");
 }
