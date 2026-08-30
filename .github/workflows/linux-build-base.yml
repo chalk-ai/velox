@@ -80,6 +80,22 @@ jobs:
 
   adapters:
     name: Linux release with adapters
+    # DISABLED (Chalk CI cost): this job has not completed successfully once
+    # since at least 2026-08-01. Over August it and `ubuntu-debug` ran 120 times
+    # between them -- via both the "Build with GCC" (linux-build.yml) and
+    # "Build with Clang" (scheduled.yml nightly cron) callers -- and every
+    # single run ended `cancelled`, averaging 18.8h and piling up at GitHub's
+    # hard 24h job ceiling. Nothing in this workflow sets `timeout-minutes`,
+    # so there is no earlier backstop.
+    #
+    # Each run holds an entire google-c4d-standard-16 node, because that
+    # runner scale set is request-less (one runner per node), so this cost
+    # roughly 2,260 node-hours on Chalk's CI cluster in August for zero green
+    # builds. Nothing `needs:` these two jobs, so skipping them is contained.
+    #
+    # To re-enable: drop the `if: false` AND set a `timeout-minutes` (upstream
+    # Velox uses 120 for comparable jobs) so a stall cannot run for a day.
+    if: false
     runs-on: google-c4d-standard-16
     container: ghcr.io/facebookincubator/velox-dev:adapters
     defaults:
@@ -228,6 +244,22 @@ jobs:
   ubuntu-debug:
     runs-on: google-c4d-standard-16
     name: Ubuntu debug with resolve_dependency
+    # DISABLED (Chalk CI cost): this job has not completed successfully once
+    # since at least 2026-08-01. Over August it and `adapters` ran 120 times
+    # between them -- via both the "Build with GCC" (linux-build.yml) and
+    # "Build with Clang" (scheduled.yml nightly cron) callers -- and every
+    # single run ended `cancelled`, averaging 18.8h and piling up at GitHub's
+    # hard 24h job ceiling. Nothing in this workflow sets `timeout-minutes`,
+    # so there is no earlier backstop.
+    #
+    # Each run holds an entire google-c4d-standard-16 node, because that
+    # runner scale set is request-less (one runner per node), so this cost
+    # roughly 2,260 node-hours on Chalk's CI cluster in August for zero green
+    # builds. Nothing `needs:` these two jobs, so skipping them is contained.
+    #
+    # To re-enable: drop the `if: false` AND set a `timeout-minutes` (upstream
+    # Velox uses 120 for comparable jobs) so a stall cannot run for a day.
+    if: false
     env:
       CCACHE_DIR: ${{ github.workspace }}/ccache
       CACHE_HMAC_KEY: ${{ secrets.CHALK_PRIVATE_GITHUB_ACTIONS_HMAC_KEY }}
