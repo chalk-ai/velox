@@ -465,11 +465,7 @@ void appendConstantArrayElement(
     if (castExpr->child->GetExpressionType() ==
         ExpressionType::VALUE_CONSTANT) {
       auto constExpr = dynamic_cast<ConstantExpression*>(castExpr->child.get());
-      // Parse-time type names are unbound, so bind before inspecting.
       auto castType = castExpr->cast_type;
-      if (castType.id() == LogicalTypeId::UNBOUND) {
-        castType = ::duckdb::UnboundType::TryDefaultBind(castType);
-      }
       if (constExpr->value.IsNull()) {
         // A typed NULL (e.g. CAST(NULL AS BIGINT)) has no value to cast;
         // represent it as an UNKNOWN null and let the non-null elements
@@ -799,15 +795,6 @@ core::ExprPtr parseCastExpr(
             Variant::create<TypeKind::BOOLEAN>(false),
             getAlias(expr));
       }
-    }
-
-    // DuckDB no longer folds string literals cast to blob in the parser.
-    // Fold into a VARBINARY constant to keep literal semantics.
-    if (targetType->isVarbinary() && constant->type()->isVarchar()) {
-      return std::make_shared<const core::ConstantExpr>(
-          VARBINARY(),
-          Variant::binary(constant->value().value<TypeKind::VARCHAR>()),
-          getAlias(expr));
     }
 
     // DuckDB parses DATE '...' and '...'::date as cast(varchar as DATE).
