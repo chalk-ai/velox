@@ -212,6 +212,21 @@ class QueryConfig {
       true,
       "Track CPU usage for stages of individual operators.")
 
+  /// Whether the task collects per-operator stats. True by default. When
+  /// false, the task neither allocates nor aggregates OperatorStats, and
+  /// Task::taskStats() reports an empty 'operatorStats' for every pipeline.
+  /// This saves one OperatorStats allocation and copy per operator at task
+  /// startup and another at teardown, which is significant for plans with
+  /// thousands of operators. Set to false only when nothing consumes operator
+  /// stats.
+  VELOX_QUERY_CONFIG(
+      kOperatorStatsEnabled,
+      operatorStatsEnabled,
+      "operator_stats_enabled",
+      bool,
+      true,
+      "Collect per-operator stats in the task.")
+
   /// Flags used to configure the CAST operator:
   VELOX_QUERY_CONFIG(
       kLegacyCast,

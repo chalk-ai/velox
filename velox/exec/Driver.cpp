@@ -946,24 +946,27 @@ void Driver::closeOperators() {
       totalDriverOnThreadNanos_,
       totalDriverBlockedNanos_);
 
-  // Add operator stats to the task.
-  for (auto& op : operators_) {
-    auto stats = op->stats(true);
-    stats.numDrivers = 1;
+  // Add operator stats to the task. Copying the stats out of every operator is
+  // not free, so skip it when the task does not collect them.
+  if (task()->operatorStatsEnabled()) {
+    for (auto& op : operators_) {
+      auto stats = op->stats(true);
+      stats.numDrivers = 1;
 
-    // Calculate this driver's CPU time for this specific operator and add it as
-    // a runtime stat. This will be aggregated across all drivers, with the max
-    // field containing the CPU time from the longest running driver.
-    uint64_t operatorCpuNanos = stats.addInputTiming.cpuNanos +
-        stats.getOutputTiming.cpuNanos + stats.finishTiming.cpuNanos +
-        stats.isBlockedTiming.cpuNanos;
+      // Calculate this driver's CPU time for this specific operator and add it
+      // as a runtime stat. This will be aggregated across all drivers, with the
+      // max field containing the CPU time from the longest running driver.
+      uint64_t operatorCpuNanos = stats.addInputTiming.cpuNanos +
+          stats.getOutputTiming.cpuNanos + stats.finishTiming.cpuNanos +
+          stats.isBlockedTiming.cpuNanos;
 
-    if (operatorCpuNanos > 0) {
-      stats.runtimeStats[std::string(OperatorStats::kDriverCpuTime)] =
-          RuntimeMetric(operatorCpuNanos, RuntimeCounter::Unit::kNanos);
+      if (operatorCpuNanos > 0) {
+        stats.runtimeStats[std::string(OperatorStats::kDriverCpuTime)] =
+            RuntimeMetric(operatorCpuNanos, RuntimeCounter::Unit::kNanos);
+      }
+
+      task()->addOperatorStats(stats);
     }
-
-    task()->addOperatorStats(stats);
   }
 }
 
