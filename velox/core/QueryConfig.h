@@ -212,6 +212,25 @@ class QueryConfig {
       true,
       "Track CPU usage for stages of individual operators.")
 
+  /// Whether every operator in a task shares one memory pool instead of getting
+  /// its own. False by default.
+  ///
+  /// A task otherwise creates one aggregate pool per plan node and one leaf
+  /// pool per operator; for a plan with thousands of operators that is
+  /// thousands of pool objects built at task start and torn down at the end,
+  /// and it dominates both. The per-operator pools exist so the arbitrator can
+  /// reclaim from an individual operator and so memory can be attributed per
+  /// operator, so this is only safe for a query that neither spills nor runs
+  /// under an enforced memory limit. Per-operator memory stats read zero and
+  /// the arbitrator cannot target an individual operator when this is set.
+  VELOX_QUERY_CONFIG(
+      kSharedOperatorPool,
+      sharedOperatorPool,
+      "shared_operator_pool",
+      bool,
+      false,
+      "Share a single memory pool across all operators in a task.")
+
   /// Whether the task collects per-operator stats. True by default. When
   /// false, the task neither allocates nor aggregates OperatorStats, and
   /// Task::taskStats() reports an empty 'operatorStats' for every pipeline.

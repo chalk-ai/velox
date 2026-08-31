@@ -111,6 +111,11 @@ Operator::Operator(
               std::string(operatorType)}) {}
 
 void Operator::maybeSetReclaimer() {
+  if (operatorCtx_->driverCtx()->queryConfig().sharedOperatorPool()) {
+    // The pool belongs to every operator in the task, so no one operator may
+    // claim it.
+    return;
+  }
   VELOX_CHECK_NULL(pool()->reclaimer());
 
   if (pool()->parent()->reclaimer() == nullptr) {
@@ -207,11 +212,16 @@ std::unique_ptr<JoinBridge> Operator::joinBridgeFromPlanNode(
 
 void Operator::initialize() {
   VELOX_CHECK(!initialized_);
-  VELOX_CHECK_EQ(
-      pool()->usedBytes(),
-      0,
-      "Unexpected memory usage from pool {} before operator init",
-      pool()->name());
+  // With a shared pool an operator that initializes late legitimately sees
+  // memory its neighbours have already allocated, so the pool cannot be
+  // expected to be empty.
+  if (!operatorCtx_->driverCtx()->queryConfig().sharedOperatorPool()) {
+    VELOX_CHECK_EQ(
+        pool()->usedBytes(),
+        0,
+        "Unexpected memory usage from pool {} before operator init",
+        pool()->name());
+  }
   initialized_ = true;
   maybeSetReclaimer();
   maybeSetTracer();
@@ -328,8 +338,12 @@ void Operator::close() {
   recordSpillStats();
   finishTrace();
 
-  // Release the unused memory reservation on close.
-  operatorCtx_->pool()->release();
+  // Release the unused memory reservation on close. Not when the pool is
+  // shared: the reservation being released would belong to every operator in
+  // the task, including those still running.
+  if (!operatorCtx_->driverCtx()->queryConfig().sharedOperatorPool()) {
+    operatorCtx_->pool()->release();
+  }
 }
 
 vector_size_t Operator::outputBatchRows(

@@ -15,6 +15,7 @@
  */
 
 #include "velox/exec/Task.h"
+#include <gmock/gmock.h>
 #include "folly/synchronization/EventCount.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/tests/FaultyFileSystem.h"
@@ -1705,6 +1706,55 @@ TEST_F(TaskTest, operatorStatsDisabled) {
   EXPECT_EQ(
       disabledStats.numCompletedDrivers, enabledStats.numCompletedDrivers);
   EXPECT_EQ(toPlanStats(disabledStats).size(), 0);
+}
+
+/// Test that a task can put every operator on one shared memory pool instead of
+/// a pool per operator under a pool per plan node.
+TEST_F(TaskTest, sharedOperatorPool) {
+  const auto data = makeRowVector({
+      makeFlatVector<int64_t>(100, [](auto row) { return row % 10; }),
+      makeFlatVector<int64_t>(100, [](auto row) { return row; }),
+  });
+
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  const auto plan = PlanBuilder(planNodeIdGenerator)
+                        .values({data, data})
+                        .localPartition({"c0"})
+                        .singleAggregation({"c0"}, {"sum(c1)"})
+                        .planNode();
+
+  auto run = [&](bool sharedOperatorPool, std::shared_ptr<Task>& task) {
+    return AssertQueryBuilder(plan)
+        .config(
+            core::QueryConfig::kSharedOperatorPool,
+            sharedOperatorPool ? "true" : "false")
+        .maxDrivers(4)
+        .copyResults(pool(), task);
+  };
+
+  auto childPoolNames = [](const std::shared_ptr<Task>& task) {
+    std::vector<std::string> names;
+    task->pool()->visitChildren([&](memory::MemoryPool* child) {
+      names.push_back(child->name());
+      return true;
+    });
+    return names;
+  };
+
+  std::shared_ptr<Task> perOperatorTask;
+  const auto expected = run(false, perOperatorTask);
+
+  std::shared_ptr<Task> sharedTask;
+  const auto actual = run(true, sharedTask);
+  assertEqualResults({expected}, {actual});
+
+  // Sharing collapses the whole pool subtree into one leaf under the task pool.
+  EXPECT_THAT(childPoolNames(sharedTask), testing::ElementsAre("op.shared"));
+
+  // Without it the task has one aggregate pool per plan node instead.
+  const auto perOperatorNames = childPoolNames(perOperatorTask);
+  EXPECT_GT(perOperatorNames.size(), 1);
+  EXPECT_THAT(perOperatorNames, testing::Each(testing::StartsWith("node.")));
 }
 
 TEST_F(TaskTest, outputBufferSize) {
