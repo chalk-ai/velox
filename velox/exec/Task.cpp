@@ -432,6 +432,7 @@ Task::Task(
       mode_(mode),
       memoryArbitrationPriority_(memoryArbitrationPriority),
       queryCtx_(std::move(queryCtx)),
+      operatorStatsEnabled_(queryCtx_->queryConfig().operatorStatsEnabled()),
       planFragment_(std::move(planFragment)),
       firstNodeNotSupportingBarrier_(
           planFragment_.firstNodeNotSupportingBarrier()),
@@ -1548,8 +1549,9 @@ std::vector<std::shared_ptr<Driver>> Task::createDriversLocked(
   // Initialize operator stats using the 1st driver of each operator.
   // We create drivers for grouped and ungrouped execution separately, so we
   // need to track down initialization of operator stats separately as well.
-  if ((groupedExecutionDrivers & !initializedGroupedOpStats_) ||
-      (!groupedExecutionDrivers & !initializedUngroupedOpStats_)) {
+  if (operatorStatsEnabled_ &&
+      ((groupedExecutionDrivers & !initializedGroupedOpStats_) ||
+       (!groupedExecutionDrivers & !initializedUngroupedOpStats_))) {
     (groupedExecutionDrivers ? initializedGroupedOpStats_
                              : initializedUngroupedOpStats_) = true;
     size_t firstPipelineDriverIndex{0};
@@ -2871,6 +2873,9 @@ ContinueFuture Task::makeFinishFutureLocked(const char* comment) {
 }
 
 void Task::addOperatorStats(OperatorStats& stats) {
+  if (!operatorStatsEnabled_) {
+    return;
+  }
   std::lock_guard<std::timed_mutex> l(mutex_);
   VELOX_CHECK(
       stats.pipelineId >= 0 &&
@@ -2940,13 +2945,15 @@ TaskStats Task::taskStats() const {
       continue;
     }
 
-    for (auto& op : driver->operators()) {
-      auto statsCopy = op->stats(false);
-      aggregateOperatorRuntimeStats(statsCopy.runtimeStats);
-      addRunningTimeOperatorMetrics(statsCopy);
-      taskStats.pipelineStats[statsCopy.pipelineId]
-          .operatorStats[statsCopy.operatorId]
-          .add(statsCopy);
+    if (operatorStatsEnabled_) {
+      for (auto& op : driver->operators()) {
+        auto statsCopy = op->stats(false);
+        aggregateOperatorRuntimeStats(statsCopy.runtimeStats);
+        addRunningTimeOperatorMetrics(statsCopy);
+        taskStats.pipelineStats[statsCopy.pipelineId]
+            .operatorStats[statsCopy.operatorId]
+            .add(statsCopy);
+      }
     }
     auto pipeline_id = driver->driverCtx()->pipelineId;
     if (driver->isOnThread()) {
