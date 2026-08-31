@@ -333,8 +333,15 @@ class Task : public std::enable_shared_from_this<Task> {
   std::string errorMessage() const;
 
   /// Returns Task Stats by copy as other threads might be updating the
-  /// structure.
+  /// structure. The per-pipeline 'operatorStats' are empty if the
+  /// 'operator_stats_enabled' query config is false.
   TaskStats taskStats() const;
+
+  /// Returns true if this task collects per-operator stats, i.e. the
+  /// 'operator_stats_enabled' query config is true.
+  bool operatorStatsEnabled() const {
+    return operatorStatsEnabled_;
+  }
 
   /// Information about an operator call that helps debugging stuck calls.
   struct OpCallInfo {
@@ -649,7 +656,8 @@ class Task : public std::enable_shared_from_this<Task> {
   void setAllOutputConsumed();
 
   /// Adds 'stats' to the cumulative total stats for the operator in the Task
-  /// stats. Called from Drivers upon their closure.
+  /// stats. Called from Drivers upon their closure. Does nothing if the
+  /// 'operator_stats_enabled' query config is false.
   void addOperatorStats(OperatorStats& stats);
 
   /// Adds per driver statistics.  Called from Drivers upon their closure.
@@ -1230,6 +1238,11 @@ class Task : public std::enable_shared_from_this<Task> {
   const int32_t memoryArbitrationPriority_;
 
   std::shared_ptr<core::QueryCtx> queryCtx_;
+
+  // Whether per-operator stats are collected, from the query config. Cached
+  // because it is consulted once per operator at task start and again at task
+  // teardown.
+  const bool operatorStatsEnabled_;
 
   core::PlanFragment planFragment_;
 

@@ -1658,6 +1658,55 @@ DEBUG_ONLY_TEST_F(TaskTest, liveStats) {
   EXPECT_EQ(terminationTimeMs, task->taskStats().terminationTimeMs);
 }
 
+/// Test that disabling operator stats collection leaves the operator stats
+/// empty without changing the query results or the driver accounting.
+TEST_F(TaskTest, operatorStatsDisabled) {
+  const auto data = makeRowVector({
+      makeFlatVector<int64_t>(100, [](auto row) { return row % 10; }),
+      makeFlatVector<int64_t>(100, [](auto row) { return row; }),
+  });
+
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  const auto plan = PlanBuilder(planNodeIdGenerator)
+                        .values({data, data})
+                        .localPartition({"c0"})
+                        .singleAggregation({"c0"}, {"sum(c1)"})
+                        .planNode();
+
+  auto run = [&](bool operatorStatsEnabled, std::shared_ptr<Task>& task) {
+    return AssertQueryBuilder(plan)
+        .config(
+            core::QueryConfig::kOperatorStatsEnabled,
+            operatorStatsEnabled ? "true" : "false")
+        .maxDrivers(4)
+        .copyResults(pool(), task);
+  };
+
+  std::shared_ptr<Task> enabledTask;
+  const auto expected = run(true, enabledTask);
+  const auto enabledStats = enabledTask->taskStats();
+  ASSERT_EQ(enabledStats.pipelineStats.size(), 2);
+  for (const auto& pipelineStats : enabledStats.pipelineStats) {
+    ASSERT_FALSE(pipelineStats.operatorStats.empty());
+  }
+
+  std::shared_ptr<Task> disabledTask;
+  const auto actual = run(false, disabledTask);
+  assertEqualResults({expected}, {actual});
+
+  const auto disabledStats = disabledTask->taskStats();
+  ASSERT_EQ(
+      disabledStats.pipelineStats.size(), enabledStats.pipelineStats.size());
+  for (const auto& pipelineStats : disabledStats.pipelineStats) {
+    ASSERT_TRUE(pipelineStats.operatorStats.empty());
+  }
+  // Driver accounting does not depend on the operator stats.
+  EXPECT_EQ(disabledStats.numTotalDrivers, enabledStats.numTotalDrivers);
+  EXPECT_EQ(
+      disabledStats.numCompletedDrivers, enabledStats.numCompletedDrivers);
+  EXPECT_EQ(toPlanStats(disabledStats).size(), 0);
+}
+
 TEST_F(TaskTest, outputBufferSize) {
   constexpr int32_t numBatches = 10;
   std::vector<RowVectorPtr> dataBatches;
