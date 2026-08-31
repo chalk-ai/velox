@@ -950,6 +950,12 @@ class Task : public std::enable_shared_from_this<Task> {
       const core::PlanNodeId& planNodeId,
       uint32_t numDrivers);
 
+  // Returns the single leaf pool every operator shares when
+  // 'shared_operator_pool' is set, creating it on first use. Hung directly off
+  // the task pool and deliberately given no reclaimer: a shared pool is only
+  // permitted where nothing reclaims.
+  memory::MemoryPool* getOrAddSharedOperatorPool();
+
   // Creates new instance of memory pool for a plan node, stores it in the task
   // to ensure lifetime and returns a raw pointer.
   memory::MemoryPool* getOrAddNodePool(const core::PlanNodeId& planNodeId);
@@ -1271,6 +1277,10 @@ class Task : public std::enable_shared_from_this<Task> {
   //
   // NOTE: 'childPools_' holds the ownerships of node memory pools.
   std::unordered_map<std::string, memory::MemoryPool*> nodePools_;
+
+  // The leaf pool shared by every operator when 'shared_operator_pool' is set,
+  // null until the first operator asks for a pool. Owned by 'childPools_'.
+  memory::MemoryPool* sharedOperatorPool_{nullptr};
 
   // Aggregate child of each registered custom root pool. Keyed by resource
   // tag. Lifetime is held in 'customChildPools_'.
