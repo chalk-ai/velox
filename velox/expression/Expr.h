@@ -259,6 +259,10 @@ class Expr {
     }
   }
 
+  /// Resets the evaluation statistics of this expression and, recursively, of
+  /// all its inputs.
+  void clearStats();
+
   const TypePtr& type() const {
     return type_;
   }
@@ -922,6 +926,11 @@ class ExprSet {
   /// evaluated. If 'excludeSpecialForm' is true, special forms are excluded.
   std::unordered_map<std::string, exec::ExprStats> stats(
       bool excludeSpecialForm = false) const;
+
+  /// Resets the evaluation statistics of all expressions in this set. Used
+  /// before an ExprSet is recycled so that the statistics of its previous use
+  /// are not attributed to the next one.
+  void clearStats();
 
  protected:
   void clearSharedSubexprs();

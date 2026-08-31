@@ -470,7 +470,7 @@ TEST_F(ApproxPercentileAggregateTest, noInput) {
                   {"m1", "m1", "m1", "m1"})
               .planNode();
 
-      AssertQueryBuilder(plan).assertResults(expected);
+      AssertQueryBuilder(plan).exprPool(pool_).assertResults(expected);
     };
 
     // Global aggregation with mask.

@@ -6834,7 +6834,9 @@ TEST_F(TableScanTest, filterColumnHandles) {
                       partitionKey("ds", VARCHAR()),
                       regularColumn("a", BIGINT()),
                   })
-                  .remainingFilter("length(ds) + a % 2 > 0")
+                  // coalesce keeps the filter true for null 'a' rows, so the
+                  // expectation below can list all input rows.
+                  .remainingFilter("length(ds) + coalesce(a, 0) % 2 > 0")
                   .endTableScan()
                   .planNode();
   AssertQueryBuilder(plan).split(split).assertResults(

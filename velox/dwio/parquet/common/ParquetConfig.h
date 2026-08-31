@@ -70,6 +70,18 @@ class ParquetConfig {
       "Map Parquet table field names to file field names using names, not indices.")
 
   VELOX_PARQUET_CONFIG(
+      kBloomFilterPruningEnabledSession,
+      kBloomFilterPruningEnabled,
+      bloomFilterPruningEnabled,
+      "bloom_filter_pruning_enabled",
+      "bloom-filter-pruning-enabled",
+      bool,
+      false,
+      "Prune row groups using parquet bloom filters for point-equality "
+      "filters that statistics could not exclude. Each probe issues one "
+      "extra small read per candidate (row group, column).")
+
+  VELOX_PARQUET_CONFIG(
       kFooterSpeculativeIoSizeSession,
       kFooterSpeculativeIoSize,
       footerSpeculativeIoSize,
@@ -242,11 +254,30 @@ class ParquetConfig {
   static constexpr std::string_view kWriterSerdeTimestampTimezone =
       "parquet.writer.timestamp.timezone";
 
+  /// Serde parameter key holding a comma-separated list of column dot-paths
+  /// to write parquet bloom filters for.
+  static constexpr std::string_view kWriterSerdeBloomFilterColumns =
+      "parquet.writer.bloom.filter.columns";
+
+  /// Serde parameter key for the bloom filter false positive probability,
+  /// in (0, 1). Applies to every column listed in
+  /// kWriterSerdeBloomFilterColumns.
+  static constexpr std::string_view kWriterSerdeBloomFilterFpp =
+      "parquet.writer.bloom.filter.fpp";
+
+  /// Serde parameter key for the bloom filter expected number of distinct
+  /// values. Applies to every column listed in
+  /// kWriterSerdeBloomFilterColumns.
+  static constexpr std::string_view kWriterSerdeBloomFilterNdv =
+      "parquet.writer.bloom.filter.ndv";
+
   /// Registers Parquet session properties with a config provider.
   static void registerProperties(
       std::vector<config::ConfigProperty>& properties,
       std::string_view sessionPrefix) {
     registerProperty<kUseColumnNamesSessionProperty>(properties, sessionPrefix);
+    registerProperty<kBloomFilterPruningEnabledSessionProperty>(
+        properties, sessionPrefix);
     registerProperty<kFooterSpeculativeIoSizeSessionProperty>(
         properties, sessionPrefix);
     registerProperty<kAllowInt32NarrowingSessionProperty>(

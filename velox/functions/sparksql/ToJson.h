@@ -17,6 +17,7 @@
 
 #include <vector>
 #include "velox/expression/ComplexViewTypes.h"
+#include "velox/expression/VectorReaders.h"
 #include "velox/functions/lib/DateTimeFormatter.h"
 #include "velox/functions/lib/TimeUtils.h"
 #include "velox/functions/sparksql/SparkQueryConfig.h"

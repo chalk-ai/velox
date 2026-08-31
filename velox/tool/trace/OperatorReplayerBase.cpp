@@ -138,13 +138,13 @@ std::shared_ptr<core::QueryCtx> OperatorReplayerBase::createQueryCtx() {
     connectorConfigs.emplace(
         connectorId, std::make_shared<config::ConfigBase>(std::move(configs)));
   }
-  return core::QueryCtx::create(
-      executor_,
-      core::QueryConfig{queryConfigs_},
-      std::move(connectorConfigs),
-      nullptr,
-      std::move(queryPool),
-      executor_);
+  return core::QueryCtx::Builder()
+    .executor(executor_)
+    .queryConfig(core::QueryConfig{queryConfigs_})
+    .connectorConfigs(std::move(connectorConfigs))
+    .pool(std::move(queryPool))
+    .spillExecutor(executor_)
+    .build();
 }
 
 std::function<core::PlanNodePtr(std::string, core::PlanNodePtr)>

@@ -19,6 +19,9 @@
 
 %code requires
 {
+	#include <string>
+	#include <vector>
+
     namespace facebook::velox::functions::prestosql {
         class Scanner;
     } // namespace facebook::velox::functions::prestosql
@@ -33,7 +36,7 @@
 
 %code
 {
-    #include <velox/functions/prestosql/types/parser/Scanner.h>
+    #include "velox/functions/prestosql/types/parser/Scanner.h"
     #define yylex(x) scanner->lex(x)
 }
 

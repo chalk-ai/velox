@@ -16,6 +16,8 @@
 #pragma once
 
 #include "velox/buffer/Buffer.h"
+#include "velox/common/base/Nulls.h"
+#include "velox/vector/TypeAliases.h"
 
 namespace facebook::velox {
 

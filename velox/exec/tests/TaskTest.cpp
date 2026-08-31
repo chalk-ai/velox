@@ -3769,7 +3769,69 @@ TEST_F(TaskTest, expressionStatsInBetweenBarriers) {
   VELOX_CHECK(waitForTaskCompletion(task.get()));
   taskStats = task->taskStats();
   ASSERT_EQ(taskStats.numFinishedSplits, 2);
+  // Expression stats survive the ExprSet being returned to the pool at close:
+  // FilterProject copies them into the operator stats first.
   verifyExpressionStats(taskStats, 20);
+}
+
+TEST_F(TaskTest, expressionStatsResetAcrossTasks) {
+  // The ExprSetPool is owned by the plan node, hence, the second task run over
+  // the same plan picks up the ExprSet the first one returned to the pool.
+  // Verify that each task reports only the rows it processed itself.
+  // This projection ensures that we verify that inputs of special
+  // form (coalesce) are also included.
+  const std::string projection = "coalesce(c0 + 1, 0)";
+  const int numRows{10};
+  auto data = makeRowVector({
+      makeFlatVector<int64_t>(numRows, [](auto row) { return row; }),
+  });
+
+  core::PlanNodeId projectNodeId;
+  auto plan = PlanBuilder()
+                  .values({data})
+                  .project({projection})
+                  .capturePlanNodeId(projectNodeId)
+                  .planFragment();
+
+  auto verifyExpressionStats = [nodeId = projectNodeId](
+                                   const TaskStats& taskStats,
+                                   uint64_t expectedNumProcessedRows) {
+    ASSERT_EQ(taskStats.pipelineStats.size(), 1);
+    ASSERT_EQ(taskStats.pipelineStats[0].operatorStats.size(), 2);
+    auto& projectStats = taskStats.pipelineStats[0].operatorStats[1];
+    ASSERT_EQ(projectStats.planNodeId, nodeId);
+    auto& expressionStats = projectStats.expressionStats;
+    // Ensure only the non-special form expression is tracked.
+    ASSERT_EQ(expressionStats.size(), 1);
+    auto it = expressionStats.find("plus");
+    ASSERT_TRUE(it != expressionStats.end());
+    ASSERT_EQ(it->second.numProcessedRows, expectedNumProcessedRows);
+  };
+
+  // Both tasks share 'pool_' as the expression memory pool so that the pooled
+  // ExprSet outlives the task that created it.
+  for (auto i = 0; i < 2; ++i) {
+    auto queryCtx =
+        core::QueryCtx::Builder()
+            .queryConfig(core::QueryConfig(
+                {{core::QueryConfig::kMaxOutputBatchRows, "10"},
+                 {core::QueryConfig::kOperatorTrackExpressionStats, "true"}}))
+            .exprPool(pool_)
+            .build();
+    const auto task = Task::create(
+        fmt::format("expressionStatsResetAcrossTasks.{}", i),
+        plan,
+        0,
+        std::move(queryCtx),
+        Task::ExecutionMode::kSerial);
+    RowVectorPtr result;
+    do {
+      ContinueFuture dummyFuture{ContinueFuture::makeEmpty()};
+      result = task->next(&dummyFuture);
+      ASSERT_FALSE(dummyFuture.valid());
+    } while (result != nullptr);
+    verifyExpressionStats(task->taskStats(), numRows);
+  }
 }
 
 DEBUG_ONLY_TEST_F(TaskTest, taskExecutionEndTime) {
