@@ -913,12 +913,24 @@ std::unique_ptr<memory::MemoryReclaimer> Task::createTaskReclaimer() {
       shared_from_this(), memoryArbitrationPriority_);
 }
 
+velox::memory::MemoryPool* Task::getOrAddSharedOperatorPool() {
+  if (sharedOperatorPool_ == nullptr) {
+    childPools_.push_back(pool_->addLeafChild(
+        "op.shared", /*threadSafe=*/true, /*reclaimer=*/nullptr));
+    sharedOperatorPool_ = childPools_.back().get();
+  }
+  return sharedOperatorPool_;
+}
+
 velox::memory::MemoryPool* Task::addOperatorPool(
     const core::PlanNodeId& planNodeId,
     uint32_t splitGroupId,
     int pipelineId,
     uint32_t driverId,
     const std::string& operatorType) {
+  if (queryCtx_->queryConfig().sharedOperatorPool()) {
+    return getOrAddSharedOperatorPool();
+  }
   velox::memory::MemoryPool* nodePool;
   if (isHashJoinOperator(operatorType)) {
     nodePool = getOrAddJoinNodePool(planNodeId, splitGroupId);

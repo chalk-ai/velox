@@ -50,6 +50,7 @@ const std::vector<config::ConfigProperty>& QueryConfig::registeredProperties() {
     // Operator.
     VELOX_REGISTER_QUERY_CONFIG(kOperatorTrackCpuUsage);
     VELOX_REGISTER_QUERY_CONFIG(kOperatorStatsEnabled);
+    VELOX_REGISTER_QUERY_CONFIG(kSharedOperatorPool);
 
     // Cast.
     VELOX_REGISTER_QUERY_CONFIG(kLegacyCast);
