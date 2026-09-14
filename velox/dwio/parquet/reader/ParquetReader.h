@@ -46,21 +46,55 @@ class ParquetReaderOptions : public dwio::common::FormatSpecificOptions {
   uint64_t footerSpeculativeIoSize{
       ParquetConfig::kFooterSpeculativeIoSizeSessionProperty::defaultValue};
 
+  void setAllowInt32Narrowing(bool allow) {
+    allowInt32Narrowing_ = allow;
+  }
+
+  bool allowInt32Narrowing() const {
+    return allowInt32Narrowing_;
+  }
+
+  void setFooterMemoryTrackingThreshold(uint64_t threshold) {
+    footerMemoryTrackingThreshold_ = threshold;
+  }
+
+  uint64_t footerMemoryTrackingThreshold() const {
+    return footerMemoryTrackingThreshold_;
+  }
+
+  void setNullStructIfAllFieldsMissing(bool value) {
+    nullStructIfAllFieldsMissing_ = value;
+  }
+
+  bool nullStructIfAllFieldsMissing() const {
+    return nullStructIfAllFieldsMissing_;
+  }
+
+  void setBloomFilterPruningEnabled(bool value) {
+    bloomFilterPruningEnabled_ = value;
+  }
+
+  bool bloomFilterPruningEnabled() const {
+    return bloomFilterPruningEnabled_;
+  }
+
+ private:
   /// Allows reading INT32 physical columns as narrower integer types.
-  bool allowInt32Narrowing{
+  bool allowInt32Narrowing_{
       ParquetConfig::kAllowInt32NarrowingSessionProperty::defaultValue};
 
   /// Serialized footer size threshold above which heap tracking is enabled.
-  uint64_t footerMemoryTrackingThreshold{
+  uint64_t footerMemoryTrackingThreshold_{
       ParquetConfig::kDefaultFooterMemoryTrackingThreshold};
 
-  /// Maps table fields to Parquet file fields by position or name.
-  dwio::common::ColumnMappingMode columnMappingMode{
-      dwio::common::ColumnMappingMode::kPosition};
-
   /// Prune row groups using parquet bloom filters for point-equality filters.
-  bool bloomFilterPruningEnabled{
+  bool bloomFilterPruningEnabled_{
       ParquetConfig::kBloomFilterPruningEnabledSessionProperty::defaultValue};
+
+  /// Returns NULL for fully-missing structs under name-based mapping.
+  bool nullStructIfAllFieldsMissing_{
+      ParquetConfig::kNullStructIfAllFieldsMissingSessionProperty::
+          defaultValue};
 };
 
 /// Implements the RowReader interface for Parquet.
@@ -80,8 +114,7 @@ class ParquetRowReader : public dwio::common::RowReader {
       velox::VectorPtr& result,
       const dwio::common::Mutation* = nullptr) override;
 
-  void updateRuntimeStats(
-      dwio::common::RuntimeStatistics& stats) const override;
+  void updateRuntimeStats(dwio::common::RuntimeStats& stats) const override;
 
   void resetFilterCaches() override;
 

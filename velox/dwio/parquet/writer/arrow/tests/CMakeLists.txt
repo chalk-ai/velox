@@ -17,7 +17,6 @@ add_executable(
   BloomFilterTest.cpp
   ColumnReaderTest.cpp
   ColumnWriterTest.cpp
-  EncodingTest.cpp
   FileDeserializeTest.cpp
   FileSerializeTest.cpp
   MetadataTest.cpp
@@ -41,6 +40,7 @@ target_link_libraries(
   arrow_testing
   velox_dwio_native_parquet_reader
   velox_test_util
+  velox_vector_test_lib
 )
 
 add_library(
@@ -50,6 +50,7 @@ add_library(
   ColumnReader.cpp
   ColumnScanner.cpp
   FileReader.cpp
+  ParquetTestFile.cpp
   TestUtil.cpp
 
 )
@@ -59,6 +60,8 @@ velox_add_test_headers(
   ColumnReader.h
   ColumnScanner.h
   FileReader.h
+  Hasher.h
+  ParquetTestFile.h
   TestUtil.h
 )
 
@@ -66,5 +69,7 @@ target_link_libraries(
   velox_dwio_arrow_parquet_writer_test_lib
   arrow
   velox_dwio_arrow_parquet_writer_lib
+  velox_dwio_native_parquet_reader
+  velox_test_util
   GTest::gtest
 )
