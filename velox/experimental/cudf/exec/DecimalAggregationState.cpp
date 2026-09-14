@@ -33,7 +33,7 @@ namespace facebook::velox::cudf_velox {
 DecimalSumStateColumns deserializeDecimalSumState(
     const cudf::column_view& stateCol,
     int32_t scale,
-    rmm::cuda_stream_view stream) {
+    cuda::stream_ref stream) {
   VELOX_CHECK(
       stateCol.type().id() == cudf::type_id::STRING,
       "Decimal sum state requires STRING/VARBINARY column (type is {})",
@@ -80,13 +80,19 @@ DecimalSumStateColumns deserializeDecimalSumState(
 
   cudf::strings_column_view strings(stateCol);
 
+  auto const nullCount = stateCol.nullable() ? stateCol.null_count() : 0;
   auto const payloadSize = strings.chars_size(stream);
-  auto const expectedPayloadSize =
+  // serializeDecimalSumState writes 32 bytes for every row (including nulls),
+  // but an Arrow round-trip compacts null rows to 0 bytes. Accept both.
+  auto const fullPayloadSize =
       static_cast<int64_t>(numRows) * detail::kDecimalSumStateSize;
+  auto const compactPayloadSize =
+      static_cast<int64_t>(numRows - nullCount) * detail::kDecimalSumStateSize;
   VELOX_CHECK(
-      payloadSize == expectedPayloadSize,
-      "Decimal sum state requires payload size {} (got {})",
-      expectedPayloadSize,
+      payloadSize == fullPayloadSize || payloadSize == compactPayloadSize,
+      "Decimal sum state requires payload size {} or {} (got {})",
+      fullPayloadSize,
+      compactPayloadSize,
       payloadSize);
 
   auto offsetsView = strings.offsets();
@@ -116,7 +122,14 @@ DecimalSumStateColumns deserializeDecimalSumState(
       "Decimal sum state requires INT32 or INT64 offsets (offset type is {})",
       cudf::type_to_name(offsetsView.type()));
   detail::unpackDecimalSumState(
-      offsetsType, offsetsView, charsPtr, sumView, countView, numRows, stream);
+      offsetsType,
+      offsetsView,
+      charsPtr,
+      sumView,
+      countView,
+      numRows,
+      stateCol.null_mask(),
+      stream);
 
   if (stateCol.nullable()) {
     auto nullMask = cudf::copy_bitmask(stateCol, stream, mr);
@@ -135,7 +148,7 @@ DecimalSumStateColumns deserializeDecimalSumState(
 std::unique_ptr<cudf::column> serializeDecimalSumState(
     const cudf::column_view& sumCol,
     const cudf::column_view& countCol,
-    rmm::cuda_stream_view stream,
+    cuda::stream_ref stream,
     rmm::device_async_resource_ref mr) {
   VELOX_CHECK(
       countCol.type().id() == cudf::type_id::INT64,
@@ -218,7 +231,7 @@ std::unique_ptr<cudf::column> serializeDecimalSumState(
 std::unique_ptr<cudf::column> computeDecimalAverage(
     const cudf::column_view& sumCol,
     const cudf::column_view& countCol,
-    rmm::cuda_stream_view stream,
+    cuda::stream_ref stream,
     rmm::device_async_resource_ref mr) {
   VELOX_CHECK(
       countCol.type().id() == cudf::type_id::INT64,

@@ -363,7 +363,7 @@ void GroupingSet::addInputForActiveRows(
     if (!newGroups.empty()) {
       sortedAggregations_->initializeNewGroups(groups, newGroups);
     }
-    sortedAggregations_->addInput(groups, input);
+    sortedAggregations_->addInput(groups, input, activeRows_);
   }
 }
 
@@ -1629,6 +1629,7 @@ void GroupingSet::toIntermediate(
       populateTempVectors(i, input);
       VELOX_DCHECK(aggregateVector);
       function->toIntermediate(rows, tempVectors_, aggregateVector);
+      ++numToIntermediateFastPathCalls_;
       continue;
     }
 
