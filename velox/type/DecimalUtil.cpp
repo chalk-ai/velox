@@ -124,7 +124,15 @@ void DecimalUtil::computeAverage(
 }
 
 int32_t DecimalUtil::maxStringViewSize(int precision, int scale) {
-  int32_t rowSize = precision + 1; // Number and symbol.
+  // A long decimal's int128 storage can carry a 39-digit magnitude that exceeds
+  // any declared precision (e.g. a HUGEINT surfaced as DECIMAL(38, 0)), and
+  // castToString formats every stored digit, so size long decimals for the
+  // storage type's digit count. Short decimals keep precision-based sizing:
+  // their common small buffers stay tight, and no producer stores
+  // out-of-precision int64 values.
+  const int32_t maxDigits =
+      precision > ShortDecimalType::kMaxPrecision ? 39 : precision;
+  int32_t rowSize = maxDigits + 1; // Number and symbol.
   if (scale > 0) {
     ++rowSize; // A dot.
   }

@@ -167,8 +167,11 @@ class AbfsFileSystemTest : public testing::Test {
   }
 
   void TearDown() override {
-    // SetUp() throws before assigning the server when azurite is unavailable.
-    if (azuriteServer_) {
+    // azuriteServer_ is left null if SetUp() threw before it could be
+    // constructed (e.g. the azurite-blob executable wasn't found).
+    // TearDown() runs unconditionally after SetUp(), even on failure, so
+    // it must not assume construction succeeded.
+    if (azuriteServer_ != nullptr) {
       azuriteServer_->stop();
     }
   }

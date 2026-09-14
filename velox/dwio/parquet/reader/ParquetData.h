@@ -34,15 +34,17 @@ class ParquetParams : public dwio::common::FormatParams {
  public:
   ParquetParams(
       memory::MemoryPool& pool,
-      dwio::common::ColumnReaderStatistics& stats,
+      dwio::common::SplitStats& stats,
       const FileMetaDataPtr metaData,
       const tz::TimeZone* sessionTimezone,
       TimestampPrecision timestampPrecision,
-      dwio::common::BufferedInput* bufferedInput = nullptr)
+      bool nullStructIfAllFieldsMissing,
+      dwio::common::BufferedInput* bufferedInput)
       : FormatParams(pool, stats),
         metaData_(metaData),
         sessionTimezone_(sessionTimezone),
         timestampPrecision_(timestampPrecision),
+        nullStructIfAllFieldsMissing_(nullStructIfAllFieldsMissing),
         bufferedInput_(bufferedInput) {}
   std::unique_ptr<dwio::common::FormatData> toFormatData(
       const std::shared_ptr<const dwio::common::TypeWithId>& type,
@@ -52,10 +54,19 @@ class ParquetParams : public dwio::common::FormatParams {
     return timestampPrecision_;
   }
 
+  const FileMetaDataPtr& fileMetaData() const {
+    return metaData_;
+  }
+
+  bool nullStructIfAllFieldsMissing() const {
+    return nullStructIfAllFieldsMissing_;
+  }
+
  private:
   const FileMetaDataPtr metaData_;
   const tz::TimeZone* sessionTimezone_;
   const TimestampPrecision timestampPrecision_;
+  const bool nullStructIfAllFieldsMissing_;
   // File input used to read bloom filters during row group filtering; may be
   // nullptr, in which case bloom filters are not probed.
   dwio::common::BufferedInput* const bufferedInput_ = nullptr;
@@ -68,9 +79,9 @@ class ParquetData : public dwio::common::FormatData {
       const std::shared_ptr<const dwio::common::TypeWithId>& type,
       const FileMetaDataPtr fileMetadataPtr,
       memory::MemoryPool& pool,
-      dwio::common::ColumnReaderStatistics& stats,
+      dwio::common::ColumnRuntimeStats& stats,
       const tz::TimeZone* sessionTimezone,
-      dwio::common::BufferedInput* bufferedInput = nullptr)
+      dwio::common::BufferedInput* bufferedInput)
       : pool_(pool),
         type_(std::static_pointer_cast<const ParquetTypeWithId>(type)),
         fileMetaDataPtr_(fileMetadataPtr),
@@ -170,6 +181,7 @@ class ParquetData : public dwio::common::FormatData {
     // 'nullsOnly' set and is responsible for reading however many nulls or
     // pages it takes to skip 'numValues' top level rows.
     if (nullsOnly) {
+      VELOX_CHECK_NOT_NULL(reader_);
       reader_->skipNullsOnly(numValues);
     }
     if (presetNulls_) {
@@ -242,7 +254,7 @@ class ParquetData : public dwio::common::FormatData {
   const uint32_t maxDefine_;
   const uint32_t maxRepeat_;
   int64_t rowsInRowGroup_;
-  dwio::common::ColumnReaderStatistics& stats_;
+  dwio::common::ColumnRuntimeStats& stats_;
   const tz::TimeZone* sessionTimezone_;
   // File input used to read bloom filters during row group filtering; may be
   // nullptr, in which case bloom filters are not probed.

@@ -36,7 +36,7 @@ std::unique_ptr<dwio::common::FormatData> ParquetParams::toFormatData(
       type,
       metaData_,
       pool(),
-      runtimeStatistics(),
+      columnStats(type->id(), type->type()->kind()),
       sessionTimezone_,
       bufferedInput_);
 }
@@ -105,8 +105,11 @@ bool ParquetData::rowGroupMatches(
 
   auto columnChunk = rowGroup.columnChunk(column);
   if (columnChunk.hasStatistics()) {
-    auto columnStats =
-        columnChunk.getColumnStatistics(type, rowGroup.numRows());
+    auto columnStats = columnChunk.getColumnStatistics(
+        type,
+        rowGroup.numRows(),
+        type_->convertedType_,
+        type_->logicalType_);
     if (!testFilter(filter, columnStats.get(), rowGroup.numRows(), type)) {
       return false;
     }
@@ -280,13 +283,8 @@ void ParquetData::enqueueRowGroup(
     chunkReadOffset = chunk.dictionaryPageOffset();
   }
 
-  uint64_t readSize =
-      (chunk.compression() == common::CompressionKind::CompressionKind_NONE)
-      ? chunk.totalUncompressedSize()
-      : chunk.totalCompressedSize();
-
   auto id = dwio::common::StreamIdentifier(type_->column());
-  streams_[index] = input.enqueue({chunkReadOffset, readSize}, &id);
+  streams_[index] = input.enqueue({chunkReadOffset, chunk.readSize()}, &id);
 }
 
 dwio::common::PositionProvider ParquetData::seekToRowGroup(int64_t index) {

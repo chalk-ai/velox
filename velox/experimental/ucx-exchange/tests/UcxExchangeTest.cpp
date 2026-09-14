@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "velox/experimental/ucx-exchange/UcxExchange.h"
 #include <cudf/column/column_factories.hpp>
 #include <cudf/contiguous_split.hpp>
 #include <cudf/copying.hpp>
@@ -21,20 +22,34 @@
 #include <cudf/structs/structs_column_view.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/types.hpp>
+#include <cudf/utilities/memory_resource.hpp>
 #include <folly/Executor.h>
+#include <folly/Synchronized.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/synchronization/EventCount.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest-param-test.h>
 #include <gtest/gtest.h>
 #include <rmm/device_buffer.hpp>
+#include <algorithm>
 #include <chrono>
+#include <functional>
 #include <future>
+#include <limits>
 #include <memory>
 #include <sstream>
+#include <utility>
 #include <vector>
 #include "velox/common/memory/MemoryPool.h"
 #include "velox/core/QueryConfig.h"
+#include "velox/exec/OutputTransportRegistry.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/exec/tests/utils/PortUtil.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/exec/ToCudf.h"
+#include "velox/experimental/cudf/exec/VeloxCudfInterop.h"
+#include "velox/experimental/cudf/vector/CudfVector.h"
 #include "velox/experimental/ucx-exchange/Communicator.h"
 #include "velox/experimental/ucx-exchange/UcxExchangeProtocol.h"
 #include "velox/experimental/ucx-exchange/UcxOutputQueueManager.h"
@@ -43,6 +58,8 @@
 #include "velox/experimental/ucx-exchange/tests/UcxPartitionedOutputMock.h"
 #include "velox/experimental/ucx-exchange/tests/UcxTestData.h"
 #include "velox/experimental/ucx-exchange/tests/UcxTestHelpers.h"
+#include "velox/serializers/PrestoSerializer.h"
+#include "velox/vector/FlatVector.h"
 
 using namespace facebook::velox;
 using namespace facebook::velox::exec;
@@ -58,6 +75,8 @@ struct ExchangeTestParams {
   int numRowsPerChunk;
   int numUpstreamTasks;
   TableType tableType = TableType::NARROW; // Default to narrow table
+
+  bool operator==(const ExchangeTestParams&) const = default;
 };
 
 // Helper function to generate test parameters with different numUpstreamTasks
@@ -127,7 +146,18 @@ struct ExchangeTestParamsPrinter {
 
 class UcxExchangeTest : public testing::TestWithParam<ExchangeTestParams> {
  protected:
-  static constexpr uint16_t kCommunicatorPort = 21346;
+  // Chosen per process in SetUpTestCase() rather than hardcoded. The
+  // communicator opens a listener on this port without address reuse, so two
+  // runs of this binary in quick succession fail the second with
+  // "bind(0.0.0.0:21346) failed: Address already in use" while the first port
+  // is still in TIME_WAIT.
+  static uint16_t communicatorPort_;
+
+  // UcxExchangeSource computes the UCX port as the split URL's port + 3
+  // (UcxExchangeSource.cpp), so remoteSplit() advertises this much below the
+  // communicator's port for the round trip to land back on it.
+  static constexpr int kSplitUrlPortOffset = 3;
+
   static constexpr auto kUnusedCoordinatorUrl =
       std::string_view("http://localhost:12345/bla");
 
@@ -161,10 +191,18 @@ class UcxExchangeTest : public testing::TestWithParam<ExchangeTestParams> {
     VLOG(0) << "setup test case, creating queue manager, communicator, etc..";
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
 
+    // UcxExchangeSource derives the UCX port as the split URL's port + 3, and
+    // remoteSplit() advertises communicatorPort_ - 3 to match, so the offset
+    // must stay below the chosen port.
+    const auto freePort = exec::test::getFreePort();
+    ASSERT_GT(freePort, kSplitUrlPortOffset);
+    ASSERT_LE(freePort, std::numeric_limits<uint16_t>::max());
+    communicatorPort_ = static_cast<uint16_t>(freePort);
+
     queueManager_ = UcxOutputQueueManager::getInstanceRef();
     ContinueFuture future;
     communicator_ = facebook::velox::ucx_exchange::Communicator::initAndGet(
-        kCommunicatorPort, std::string(kUnusedCoordinatorUrl), &future);
+        communicatorPort_, std::string(kUnusedCoordinatorUrl), &future);
     if (communicator_) {
       communicatorThread_ = std::make_shared<std::thread>(
           &facebook::velox::ucx_exchange::Communicator::run,
@@ -191,7 +229,7 @@ class UcxExchangeTest : public testing::TestWithParam<ExchangeTestParams> {
   exec::Split remoteSplit(std::string_view taskId, int partitionId) {
     std::string remoteUrl = fmt::format(
         "http://127.0.0.1:{}/v1/task/{}/results/{}",
-        kCommunicatorPort - 3,
+        communicatorPort_ - kSplitUrlPortOffset,
         taskId,
         partitionId);
     return exec::Split(
@@ -207,6 +245,61 @@ INSTANTIATE_TEST_SUITE_P(
     UcxExchangeTest,
     ::testing::ValuesIn(generateTestParams()),
     ExchangeTestParamsPrinter());
+
+// size() and empty() read a counter maintained under the queue's mutex rather
+// than the deque, so that the Communicator progress thread can poll the depth
+// lock-free. Covers that the counter stays in step with every mutation.
+TEST(UcxExchangeQueueTest, sizeTracksQueuedTables) {
+  UcxExchangeQueue queue{/*numberOfConsumers=*/1};
+  std::vector<ContinuePromise> promises;
+  {
+    std::lock_guard<std::mutex> l(queue.mutex());
+    queue.addSourceLocked();
+    EXPECT_EQ(queue.size(), 0);
+    EXPECT_TRUE(queue.empty());
+
+    for (int32_t expected = 1; expected <= 3; ++expected) {
+      queue.enqueueLocked(std::make_unique<PackedTableWithStream>(), promises);
+      EXPECT_EQ(queue.size(), expected);
+    }
+    EXPECT_FALSE(queue.empty());
+
+    bool atEnd{false};
+    ContinueFuture future = ContinueFuture::makeEmpty();
+    ContinuePromise stalePromise = ContinuePromise::makeEmpty();
+    EXPECT_NE(queue.dequeueLocked(0, &atEnd, &future, &stalePromise), nullptr);
+    EXPECT_FALSE(atEnd);
+    EXPECT_EQ(queue.size(), 2);
+
+    // The end-of-stream marker counts a source as completed instead of being
+    // queued, so the depth must not move.
+    queue.enqueueLocked(nullptr, promises);
+    EXPECT_EQ(queue.size(), 2);
+  }
+
+  // setError() discards the queued tables, because an errored queue is never
+  // consumed from.
+  queue.setError("Producer failed");
+  EXPECT_EQ(queue.size(), 0);
+  EXPECT_TRUE(queue.empty());
+}
+
+TEST(UcxExchangeQueueTest, closeResetsSize) {
+  UcxExchangeQueue queue{/*numberOfConsumers=*/1};
+  std::vector<ContinuePromise> promises;
+  {
+    std::lock_guard<std::mutex> l(queue.mutex());
+    queue.addSourceLocked();
+    queue.enqueueLocked(std::make_unique<PackedTableWithStream>(), promises);
+    queue.enqueueLocked(std::make_unique<PackedTableWithStream>(), promises);
+    EXPECT_EQ(queue.size(), 2);
+  }
+
+  // close() discards whatever is still queued.
+  queue.close();
+  EXPECT_EQ(queue.size(), 0);
+  EXPECT_TRUE(queue.empty());
+}
 
 TEST_P(UcxExchangeTest, basicTest) {
   VLOG(3) << "+ UcxExchangeTest::basicTest";
@@ -826,6 +919,97 @@ TEST_P(UcxExchangeTest, realPartitionedOutputDataIntegrityTest) {
   VLOG(3) << "- UcxExchangeTest::realPartitionedOutputDataIntegrityTest";
 }
 
+// Focused regression test for shared UcxExchangeClient ownership. This
+// intentionally creates and seeds the client directly, bypassing the normal
+// task-split path, to isolate close behavior after the client is populated.
+// Closing one operator must not close the shared client while another operator
+// still needs to drain data.
+TEST_P(UcxExchangeTest, sharedClientSurvivesOneExchangeClose) {
+  // This test doesn't use parameters - run only for the first param set.
+  if (GetParam() != generateTestParams().front()) {
+    GTEST_SKIP() << "sharedClientSurvivesOneExchangeClose: runs only once";
+  }
+
+  const std::string taskPrefix = getUniqueTaskPrefix();
+  const std::string srcTaskId = taskPrefix + "sharedClientSrc";
+  const std::string sinkTaskId = taskPrefix + "sharedClientSink";
+  const int numPartitions = 1;
+  const int partitionId = 0;
+  const int numSourceDrivers = 1;
+  const int numSinkDrivers = 2;
+  const int numChunks = 5;
+  const int numRowsPerChunk = 1000;
+
+  auto rowType = UcxTestData::kTestRowType;
+  auto srcTask = createSourceTask(srcTaskId, pool_, rowType);
+  queueManager_->initializeTask(
+      srcTask,
+      core::PartitionedOutputNode::Kind::kPartitioned,
+      numPartitions,
+      numSourceDrivers);
+
+  auto sourceMock = std::make_shared<UcxPartitionedOutputMock>(
+      srcTaskId, numSourceDrivers, numPartitions, numChunks, numRowsPerChunk);
+  sourceMock->run();
+  sourceMock->joinThreads();
+
+  core::PlanNodeId exchangeNodeId;
+  auto sinkTask =
+      createExchangeTask(sinkTaskId, rowType, partitionId, exchangeNodeId);
+  auto exchangeClient = std::make_shared<UcxExchangeClient>(
+      sinkTask->taskId(), sinkTask->destination(), numSinkDrivers);
+
+  auto split = remoteSplit(srcTaskId, partitionId);
+  auto remoteConnectorSplit =
+      std::dynamic_pointer_cast<exec::RemoteConnectorSplit>(
+          split.connectorSplit);
+  ASSERT_NE(remoteConnectorSplit, nullptr);
+  exchangeClient->addRemoteTaskId(remoteConnectorSplit->taskId);
+  exchangeClient->noMoreRemoteTasks();
+
+  const uint32_t pipelineId = 0;
+  const uint32_t partition = 0;
+  auto planNode = sinkTask->planFragment().planNode;
+  auto closingDriverCtx = std::make_shared<DriverCtx>(
+      sinkTask, 0, pipelineId, kUngroupedGroupId, partition);
+  auto drainingDriverCtx = std::make_shared<DriverCtx>(
+      sinkTask, 1, pipelineId, kUngroupedGroupId, partition);
+
+  UcxExchange closingExchange(
+      0, closingDriverCtx.get(), planNode, exchangeClient);
+  UcxExchange drainingExchange(
+      1, drainingDriverCtx.get(), planNode, exchangeClient);
+
+  closingExchange.close();
+
+  uint64_t rowsReceived = 0;
+  while (true) {
+    ContinueFuture future;
+    auto blocked = drainingExchange.isBlocked(&future);
+    if (blocked != BlockingReason::kNotBlocked) {
+      future.wait();
+      continue;
+    }
+
+    RowVectorPtr result = drainingExchange.getOutput();
+    if (result) {
+      auto cudfResult =
+          std::dynamic_pointer_cast<cudf_velox::CudfVector>(result);
+      ASSERT_NE(cudfResult, nullptr);
+      rowsReceived += cudfResult->getTableView().num_rows();
+    }
+
+    if (drainingExchange.isFinished()) {
+      break;
+    }
+  }
+  drainingExchange.close();
+
+  EXPECT_EQ(rowsReceived, static_cast<uint64_t>(numChunks) * numRowsPerChunk);
+
+  queueManager_->removeTask(srcTaskId);
+}
+
 // Test that verifies intra-node exchange does not livelock when a producing
 // task is removed while the consumer is polling IntraNodeTransferRegistry.
 // Before the fix: test times out (livelock). After the fix: test passes.
@@ -1326,7 +1510,7 @@ TEST_P(UcxExchangeTest, batchAccumulationTest) {
 
     // Pass custom threshold via QueryConfig.
     std::unordered_map<std::string, std::string> extraConfig{
-        {core::QueryConfig::kUcxPartitionedOutputBatchRows,
+        {cudf_velox::CudfConfig::kUcxPartitionedOutputBatchRows,
          std::to_string(customThreshold)}};
 
     auto srcTask = createPartitionedOutputTask(
@@ -1480,5 +1664,6 @@ std::shared_ptr<UcxOutputQueueManager> UcxExchangeTest::queueManager_;
 std::shared_ptr<std::thread> UcxExchangeTest::communicatorThread_;
 std::shared_ptr<Communicator> UcxExchangeTest::communicator_;
 std::atomic<uint32_t> UcxExchangeTest::testCounter_{0};
+uint16_t UcxExchangeTest::communicatorPort_{0};
 
 } // namespace facebook::velox::ucx_exchange
