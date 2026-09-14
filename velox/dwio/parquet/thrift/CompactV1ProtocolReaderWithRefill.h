@@ -18,6 +18,7 @@
 
 #include <thrift/lib/cpp2/protocol/CompactV1Protocol.h>
 #include <thrift/lib/cpp2/protocol/ProtocolReaderWithRefill.h>
+#include <bit>
 
 namespace apache::thrift {
 
@@ -34,7 +35,7 @@ class CompactV1ProtocolReaderWithRefill
     auto cursor = protocol_.getCursor();
     uint64_t bits = cursor.readLE<int64_t>();
     protocol_.skipBytes(sizeof(double));
-    dub = folly::bit_cast<double>(bits);
+    dub = std::bit_cast<double>(bits);
   }
 };
 

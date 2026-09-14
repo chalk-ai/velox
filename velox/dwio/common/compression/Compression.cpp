@@ -55,7 +55,7 @@ ZstdCompressor::compress(const void* src, void* dest, uint64_t length) {
     if (ZSTD_getErrorCode(ret) == ZSTD_ErrorCode::ZSTD_error_dstSize_tooSmall) {
       return length;
     }
-    DWIO_RAISE("ZSTD returned an error: ", ZSTD_getErrorName(ret));
+    DWIO_RAISE_FMT("ZSTD returned an error: {}", ZSTD_getErrorName(ret));
   }
   return ret;
 }
@@ -81,7 +81,7 @@ ZlibCompressor::ZlibCompressor(int32_t level, int32_t windowBits, bool isGzip)
   if (isGzip) {
     windowBits = (windowBits < 0 ? -windowBits : windowBits) | kGzipCodec;
   }
-  DWIO_ENSURE_EQ(
+  DWIO_ENSURE_EQ_FMT(
       deflateInit2(
           &stream_, level_, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY),
       Z_OK,
@@ -98,7 +98,7 @@ ZlibCompressor::~ZlibCompressor() {
 uint64_t
 ZlibCompressor::compress(const void* src, void* dest, uint64_t length) {
   isCompressCalled_ = true;
-  DWIO_ENSURE_EQ(deflateReset(&stream_), Z_OK, "Failed to reset deflate.");
+  DWIO_ENSURE_EQ_FMT(deflateReset(&stream_), Z_OK, "Failed to reset deflate.");
 
   stream_.avail_in = static_cast<uint32_t>(length);
   stream_.next_in = reinterpret_cast<unsigned char*>(const_cast<void*>(src));
@@ -111,7 +111,7 @@ ZlibCompressor::compress(const void* src, void* dest, uint64_t length) {
   } else if (ret == Z_OK || ret == Z_BUF_ERROR) {
     // needs more output buffer
   } else {
-    DWIO_RAISE("Failed to deflate input data. error: ", ret);
+    DWIO_RAISE_FMT("Failed to deflate input data. error: {}", ret);
   }
 
   return stream_.total_out;
@@ -135,10 +135,10 @@ class ZlibDecompressor : public Decompressor {
  protected:
   void reset() {
     auto result = inflateReset(&zstream_);
-    DWIO_ENSURE_EQ(
+    DWIO_ENSURE_EQ_FMT(
         result,
         Z_OK,
-        "Bad inflateReset in ZlibDecompressor::reset. error: ",
+        "Bad inflateReset in ZlibDecompressor::reset. error: {}",
         result);
   }
 
@@ -164,12 +164,11 @@ ZlibDecompressor::ZlibDecompressor(
         (zlibWindowBits < 0 ? -zlibWindowBits : zlibWindowBits) | kGzipCodec;
   }
   const auto result = inflateInit2(&zstream_, zlibWindowBits);
-  DWIO_ENSURE_EQ(
+  DWIO_ENSURE_EQ_FMT(
       result,
       Z_OK,
-      "Error from inflateInit2. error: ",
+      "Error from inflateInit2. error: {} Info: {}",
       result,
-      " Info: ",
       streamDebugInfo_);
 }
 
@@ -194,10 +193,10 @@ uint64_t ZlibDecompressor::decompress(
   zstream_.next_out = reinterpret_cast<Bytef*>(const_cast<char*>(dest));
   zstream_.avail_out = folly::to<uInt>(destLength);
   auto result = inflate(&zstream_, Z_FINISH);
-  DWIO_ENSURE_EQ(
+  DWIO_ENSURE_EQ_FMT(
       result,
       Z_STREAM_END,
-      "Error in ZlibDecompressor::decompress. error: ",
+      "Error in ZlibDecompressor::decompress. error: {}",
       result);
   return destLength - zstream_.avail_out;
 }
@@ -251,11 +250,11 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
   auto uncompressedSize = destLength;
 
   while (compressedSize > 0) {
-    DWIO_ENSURE_GE(
+    DWIO_ENSURE_GE_FMT(
         compressedSize,
         dwio::common::INT_BYTE_SIZE,
+        "{} decompression failed, input len is too small: {}",
         ::facebook::velox::common::compressionKindToString(kind_),
-        " decompression failed, input len is too small: ",
         compressedSize);
 
     uint32_t decompressedBlockSize =
@@ -264,14 +263,13 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
     compressedSize -= dwio::common::INT_BYTE_SIZE;
     uint32_t remainingOutputSize = uncompressedSize - decompressedTotalSize;
 
-    DWIO_ENSURE_GE(
+    DWIO_ENSURE_GE_FMT(
         remainingOutputSize,
         decompressedBlockSize,
+        "{} decompression failed, remainingOutputSize is less than "
+        "decompressedBlockSize, remainingOutputSize: {}, decompressedBlockSize: {}",
         ::facebook::velox::common::compressionKindToString(kind_),
-        " decompression failed, remainingOutputSize is less than "
-        "decompressedBlockSize, remainingOutputSize: ",
         remainingOutputSize,
-        ", decompressedBlockSize: ",
         decompressedBlockSize);
 
     if (compressedSize <= 0) {
@@ -280,11 +278,11 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
 
     do {
       // Check that input length should not be negative.
-      DWIO_ENSURE_GE(
+      DWIO_ENSURE_GE_FMT(
           compressedSize,
           dwio::common::INT_BYTE_SIZE,
+          "{} decompression failed, input len is too small: {}",
           ::facebook::velox::common::compressionKindToString(kind_),
-          " decompression failed, input len is too small: ",
           compressedSize);
       // Read the length of the next lz4/lzo compressed block.
       uint32_t compressedBlockSize =
@@ -295,14 +293,13 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
       if (compressedBlockSize == 0) {
         continue;
       }
-      DWIO_ENSURE_LE(
+      DWIO_ENSURE_LE_FMT(
           compressedBlockSize,
           compressedSize,
+          "{} decompression failed, compressedBlockSize is greater than "
+          "compressedSize, compressedBlockSize: {}, compressedSize: {}",
           ::facebook::velox::common::compressionKindToString(kind_),
-          " decompression failed, compressedBlockSize is greater than "
-          "compressedSize, compressedBlockSize: ",
           compressedBlockSize,
-          ", compressedSize: ",
           compressedSize);
 
       // Decompress this block.
@@ -313,14 +310,13 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
           outPtr,
           static_cast<int32_t>(remainingOutputSize));
 
-      DWIO_ENSURE_LE(
+      DWIO_ENSURE_LE_FMT(
           decompressedSize,
           remainingOutputSize,
+          "{} decompression failed, decompressedSize is not less than "
+          "or equal to remainingOutputSize, decompressedSize: {}, remainingOutputSize: {}",
           ::facebook::velox::common::compressionKindToString(kind_),
-          " decompression failed, decompressedSize is not less than "
-          "or equal to remainingOutputSize, decompressedSize: ",
           decompressedSize,
-          ", remainingOutputSize: ",
           remainingOutputSize);
 
       outPtr += decompressedSize;
@@ -331,14 +327,13 @@ uint64_t LzoAndLz4DecompressorCommon::decompress(
     } while (decompressedBlockSize > 0);
   }
 
-  DWIO_ENSURE_EQ(
+  DWIO_ENSURE_EQ_FMT(
       decompressedTotalSize,
       uncompressedSize,
+      "{} decompression failed, decompressedTotalSize is not equal to "
+      "uncompressedSize, decompressedTotalSize: {}, uncompressedSize: {}",
       ::facebook::velox::common::compressionKindToString(kind_),
-      " decompression failed, decompressedTotalSize is not equal to "
-      "uncompressedSize, decompressedTotalSize: ",
       decompressedTotalSize,
-      ", uncompressedSize: ",
       uncompressedSize);
 
   return decompressedTotalSize;
@@ -397,8 +392,8 @@ uint64_t Lz4Decompressor::decompressInternal(
       static_cast<int32_t>(srcLength),
       static_cast<int32_t>(destLength));
 
-  DWIO_ENSURE_GE(
-      result, 0, "lz4 failed to decompress. Info: ", streamDebugInfo_);
+  DWIO_ENSURE_GE_FMT(
+      result, 0, "lz4 failed to decompress. Info: {}", streamDebugInfo_);
   return static_cast<uint64_t>(result);
 }
 
@@ -429,11 +424,10 @@ uint64_t ZstdDecompressor::decompress(
   thread_local std::unique_ptr<ZSTD_DCtx, size_t (*)(ZSTD_DCtx*)> ctx{
       ZSTD_createDCtx(), ZSTD_freeDCtx};
   auto ret = ZSTD_decompressDCtx(ctx.get(), dest, destLength, src, srcLength);
-  DWIO_ENSURE(
+  DWIO_ENSURE_FMT(
       !ZSTD_isError(ret),
-      "ZSTD returned an error: ",
+      "ZSTD returned an error: {} Info: {}",
       ZSTD_getErrorName(ret),
-      " Info: ",
       streamDebugInfo_);
   return ret;
 }
@@ -448,10 +442,10 @@ std::pair<int64_t, bool> ZstdDecompressor::getDecompressedLength(
       uncompressedLength == ZSTD_CONTENTSIZE_ERROR) {
     return {blockSize_, false};
   }
-  DWIO_ENSURE_LE(
+  DWIO_ENSURE_LE_FMT(
       uncompressedLength,
       blockSize_,
-      "Insufficient buffer size. Info: ",
+      "Insufficient buffer size. Info: {}",
       streamDebugInfo_);
   return {uncompressedLength, true};
 }
@@ -480,10 +474,10 @@ uint64_t SnappyDecompressor::decompress(
     char* dest,
     uint64_t destLength) {
   auto [length, _] = getDecompressedLength(src, srcLength);
-  DWIO_ENSURE_GE(destLength, length);
-  DWIO_ENSURE(
+  DWIO_ENSURE_GE_FMT(destLength, length, "");
+  DWIO_ENSURE_FMT(
       snappy::RawUncompress(src, srcLength, dest),
-      "Snappy decompress failed. Info: ",
+      "Snappy decompress failed. Info: {}",
       streamDebugInfo_);
   return length;
 }
@@ -497,10 +491,10 @@ std::pair<int64_t, bool> SnappyDecompressor::getDecompressedLength(
   if (!snappy::GetUncompressedLength(src, srcLength, &uncompressedLength)) {
     return {blockSize_, false};
   }
-  DWIO_ENSURE_LE(
+  DWIO_ENSURE_LE_FMT(
       uncompressedLength,
       blockSize_,
-      "Insufficient buffer size. Info: ",
+      "Insufficient buffer size. Info: {}",
       streamDebugInfo_);
   return {uncompressedLength, true};
 }
@@ -563,12 +557,11 @@ bool ZlibDecompressionStream::readOrSkip(const void** data, int32_t* size) {
     inputBufferPtr_ += availSize;
     remainingLength_ -= availSize;
   } else {
-    DWIO_ENSURE_EQ(
-        state_,
-        State::START,
-        "Unknown compression state in ZlibDecompressionStream::Next in ",
+    DWIO_ENSURE_FMT(
+        state_ == State::START,
+        "Unknown compression state {} in ZlibDecompressionStream::Next in {} Info: {}",
+        static_cast<int>(state_),
         getName(),
-        " Info: ",
         ZlibDecompressor::streamDebugInfo_);
     prepareOutputBuffer(
         getDecompressedLength(inputBufferPtr_, availSize).first);
@@ -605,7 +598,7 @@ bool ZlibDecompressionStream::readOrSkip(const void** data, int32_t* size) {
             case Z_MEM_ERROR:
               [[fallthrough]];
             case Z_STREAM_ERROR:
-              DWIO_RAISE("Failed to inflate input data. error: ", result);
+              DWIO_RAISE_FMT("Failed to inflate input data. error: {}", result);
             default:
               *size += static_cast<int32_t>(
                   blockSize_ - static_cast<int64_t>(zstream_.avail_out));
@@ -743,6 +736,7 @@ std::unique_ptr<dwio::common::SeekableInputStream> createDecompressor(
 //           streamDebugInfo);
       break;
     case CompressionKind::CompressionKind_LZ4:
+    case CompressionKind::CompressionKind_LZ4_HADOOP:
       decompressor = std::make_unique<Lz4Decompressor>(
           blockSize,
           options.format.lz4_lzo.isHadoopFrameFormat,
@@ -753,7 +747,7 @@ std::unique_ptr<dwio::common::SeekableInputStream> createDecompressor(
           std::make_unique<ZstdDecompressor>(blockSize, streamDebugInfo);
       break;
     default:
-      DWIO_RAISE("Unknown compression codec ", kind);
+      DWIO_RAISE_FMT("Unknown compression codec {}", kind);
   }
   return std::make_unique<PagedInputStream>(
       std::move(input),
