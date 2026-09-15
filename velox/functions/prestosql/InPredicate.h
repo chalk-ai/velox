@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <folly/CPortability.h>
+#include <folly/Likely.h>
+
 #include "velox/common/base/CompareFlags.h"
 #include "velox/functions/Macros.h"
 

@@ -15,8 +15,13 @@
  */
 #pragma once
 
+#include <cstdint>
+#include <random>
+#include <vector>
+
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <folly/CPortability.h>
 
 #include "velox/core/QueryConfig.h"
 #include "velox/functions/Macros.h"
