@@ -15,6 +15,10 @@
  */
 #pragma once
 
+#include <cstdint>
+
+#include <folly/CPortability.h>
+
 #include "velox/functions/Macros.h"
 
 namespace facebook::velox::functions::sparksql {

@@ -15,6 +15,10 @@
  */
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
+#include "velox/common/base/Exceptions.h"
 #include "velox/functions/Macros.h"
 
 namespace facebook::velox::functions::sparksql {

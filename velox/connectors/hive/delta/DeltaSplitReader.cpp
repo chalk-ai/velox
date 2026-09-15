@@ -107,7 +107,7 @@ DeltaSplitReader::DeltaSplitReader(
 
 void DeltaSplitReader::prepareSplit(
     std::shared_ptr<common::MetadataFilter> metadataFilter,
-    dwio::common::RuntimeStatistics& runtimeStats,
+    dwio::common::RuntimeStats& runtimeStats,
     const folly::F14FastMap<std::string, std::string>& fileReadOps) {
   HiveSplitReader::prepareSplit(
       std::move(metadataFilter), runtimeStats, fileReadOps);

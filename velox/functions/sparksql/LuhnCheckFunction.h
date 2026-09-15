@@ -15,6 +15,12 @@
  */
 #pragma once
 
+#include <cctype>
+#include <cstdint>
+
+#include <folly/CPortability.h>
+
+#include "velox/common/base/CheckedArithmetic.h"
 #include "velox/functions/Macros.h"
 
 namespace facebook::velox::functions::sparksql {
