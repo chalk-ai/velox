@@ -15,6 +15,10 @@
  */
 #pragma once
 
+#include <folly/CPortability.h>
+
+#include "velox/common/base/BitUtil.h"
+#include "velox/common/base/Exceptions.h"
 #include "velox/functions/Macros.h"
 namespace facebook::velox::functions {
 
@@ -45,7 +49,8 @@ struct BitCountFunction {
         " {} can not be represented with {} bits",
         num,
         bits);
-    result = bits::countBits(reinterpret_cast<uint64_t*>(&num), 0, bits);
+    result = facebook::velox::bits::countBits(
+        reinterpret_cast<uint64_t*>(&num), 0, bits);
     return true;
   }
 };
