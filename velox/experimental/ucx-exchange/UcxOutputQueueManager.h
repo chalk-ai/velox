@@ -16,7 +16,7 @@
 #pragma once
 
 #include <cudf/contiguous_split.hpp>
-#include <velox/exec/OutputBufferManager.h>
+#include "velox/exec/OutputBufferManager.h"
 #include <velox/exec/Task.h>
 #include <functional>
 #include <string_view>

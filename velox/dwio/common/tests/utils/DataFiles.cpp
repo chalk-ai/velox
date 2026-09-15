@@ -15,6 +15,7 @@
  */
 
 #include "velox/dwio/common/tests/utils/DataFiles.h"
+#include <cstdlib>
 #include <string_view>
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/Fs.h"
@@ -40,6 +41,28 @@ const fs::path& projectRoot() {
         0, sourcePath.size() - kDataFilesSourceSuffix.size())};
   }();
   return root;
+}
+
+// Bazel compiles with execroot-relative source paths, so a relative project
+// root like "external/<repo>/" identifies the repository directory holding
+// the data files inside the test's runfiles tree.
+std::string getDataFilePathFromRunfiles(
+    const fs::path& runfilesRoot,
+    const fs::path& projectRoot,
+    const std::string& baseDir,
+    const fs::path& requestedPath) {
+  constexpr std::string_view kExternalPrefix = "external/";
+  fs::path repositoryDirectory;
+  const std::string root = projectRoot.string();
+  if (root.starts_with(kExternalPrefix)) {
+    repositoryDirectory = root.substr(kExternalPrefix.size());
+  } else if (const char* workspace = std::getenv("TEST_WORKSPACE")) {
+    // An empty root means this repository is the main repository.
+    repositoryDirectory = workspace;
+  }
+  return (runfilesRoot / repositoryDirectory / baseDir / requestedPath)
+      .lexically_normal()
+      .string();
 }
 
 // Preserves the legacy cwd-based lookup for builds where __FILE__ is rewritten
@@ -69,6 +92,11 @@ std::string getDataFilePath(
   const auto& root = projectRoot();
   if (root.is_absolute()) {
     return (root / baseDir / requestedPath).lexically_normal().string();
+  }
+
+  if (const char* srcdir = std::getenv("TEST_SRCDIR")) {
+    return getDataFilePathFromRunfiles(
+        fs::path{srcdir}, root, baseDir, requestedPath);
   }
 
   return getDataFilePathFromCurrentDirectory(baseDir, requestedPath);

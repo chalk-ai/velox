@@ -70,6 +70,14 @@ class ParquetReaderOptions : public dwio::common::FormatSpecificOptions {
     return nullStructIfAllFieldsMissing_;
   }
 
+  void setBloomFilterPruningEnabled(bool value) {
+    bloomFilterPruningEnabled_ = value;
+  }
+
+  bool bloomFilterPruningEnabled() const {
+    return bloomFilterPruningEnabled_;
+  }
+
  private:
   /// Allows reading INT32 physical columns as narrower integer types.
   bool allowInt32Narrowing_{
@@ -78,6 +86,10 @@ class ParquetReaderOptions : public dwio::common::FormatSpecificOptions {
   /// Serialized footer size threshold above which heap tracking is enabled.
   uint64_t footerMemoryTrackingThreshold_{
       ParquetConfig::kDefaultFooterMemoryTrackingThreshold};
+
+  /// Prune row groups using parquet bloom filters for point-equality filters.
+  bool bloomFilterPruningEnabled_{
+      ParquetConfig::kBloomFilterPruningEnabledSessionProperty::defaultValue};
 
   /// Returns NULL for fully-missing structs under name-based mapping.
   bool nullStructIfAllFieldsMissing_{

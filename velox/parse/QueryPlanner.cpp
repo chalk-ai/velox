@@ -16,7 +16,19 @@
 
 #include "velox/parse/QueryPlanner.h"
 #include "velox/duckdb/conversion/DuckConversion.h"
-#include "velox/parse/DuckLogicalOperator.h"
+
+#include <limits>
+
+#include <duckdb/catalog/catalog_entry/table_catalog_entry.hpp> // @manual
+#include <duckdb/planner/operator/logical_aggregate.hpp> // @manual
+#include <duckdb/planner/operator/logical_comparison_join.hpp> // @manual
+#include <duckdb/planner/operator/logical_cross_product.hpp> // @manual
+#include <duckdb/planner/operator/logical_dummy_scan.hpp> // @manual
+#include <duckdb/planner/operator/logical_filter.hpp> // @manual
+#include <duckdb/planner/operator/logical_get.hpp> // @manual
+#include <duckdb/planner/operator/logical_limit.hpp> // @manual
+#include <duckdb/planner/operator/logical_order.hpp> // @manual
+#include <duckdb/planner/operator/logical_projection.hpp> // @manual
 
 #include <duckdb.hpp> // @manual
 #include <duckdb/main/connection.hpp> // @manual
@@ -132,7 +144,30 @@ PlanNodePtr toVeloxPlan(
     std::vector<PlanNodePtr> sources,
     QueryContext& queryContext) {
   if (logicalGet.function.name == "unnest") {
-    VELOX_CHECK_EQ(1, sources.size());
+    if (sources.empty()) {
+      // DuckDB binds UNNEST over a constant list without a child plan and
+      // keeps the list in the function parameters, so synthesize the input.
+      VELOX_CHECK_EQ(
+          1, logicalGet.parameters.size(), "{}", logicalGet.ToString());
+      const auto& listValue = logicalGet.parameters[0];
+      std::vector<Variant> elements;
+      for (const auto& element : ::duckdb::ListValue::GetChildren(listValue)) {
+        elements.push_back(duckdb::duckValueToVariant(element));
+      }
+      auto arrayType = ARRAY(duckdb::toVeloxType(
+          ::duckdb::ListType::GetChildType(listValue.type())));
+      auto arrayVector = BaseVector::createConstant(
+          arrayType, Variant::array(std::move(elements)), 1, pool);
+      auto rowVector = std::make_shared<RowVector>(
+          pool,
+          ROW({"a0"}, {arrayType}),
+          nullptr,
+          1,
+          std::vector<VectorPtr>{arrayVector});
+      sources.push_back(std::make_shared<ValuesNode>(
+          queryContext.nextNodeId(), std::vector<RowVectorPtr>{rowVector}));
+    }
+    VELOX_CHECK_EQ(1, sources.size(), "{}", logicalGet.ToString());
     return std::make_shared<UnnestNode>(
         queryContext.nextNodeId(),
         std::vector<FieldAccessTypedExprPtr>{}, // replicateVariables
@@ -150,24 +185,24 @@ PlanNodePtr toVeloxPlan(
   VELOX_CHECK_EQ(0, sources.size());
 
   std::vector<std::string> columnNames;
-  const auto& columnIds = logicalGet.column_ids;
+  const auto& columnIds = logicalGet.GetColumnIds();
   std::vector<std::string> names;
   std::vector<TypePtr> types;
-  constexpr uint64_t kNone = ~0UL;
-  for (auto i = 0; i < columnIds.size(); ++i) {
-    if (columnIds[i] == kNone) {
+  for (const auto& columnId : columnIds) {
+    if (columnId.IsVirtualColumn()) {
       continue;
     }
-    names.push_back(
-        queryContext.nextColumnName(logicalGet.names[columnIds[i]]));
-    types.push_back(
-        duckdb::toVeloxType(logicalGet.returned_types[columnIds[i]]));
-    columnNames.push_back(logicalGet.names[columnIds[i]]);
+    const auto column = columnId.GetPrimaryIndex();
+    names.push_back(queryContext.nextColumnName(logicalGet.names[column]));
+    types.push_back(duckdb::toVeloxType(logicalGet.returned_types[column]));
+    columnNames.push_back(logicalGet.names[column]);
   }
 
   auto rowType = ROW(std::move(names), std::move(types));
 
-  auto tableName = logicalGet.function.to_string(logicalGet.bind_data.get());
+  auto table = logicalGet.GetTable();
+  VELOX_CHECK(table, "Expected a table scan: {}", logicalGet.ToString());
+  const auto& tableName = table->name;
   auto it = queryContext.inMemoryTables.find(tableName);
 
   if (it == queryContext.inMemoryTables.end()) {
@@ -179,8 +214,11 @@ PlanNodePtr toVeloxPlan(
   for (auto& rowVector : it->second) {
     std::vector<VectorPtr> children;
     if (rowVector->size() > 0) {
-      for (auto i = 0; i < columnIds.size(); ++i) {
-        children.push_back(rowVector->childAt(columnIds[i]));
+      for (const auto& columnId : columnIds) {
+        if (columnId.IsVirtualColumn()) {
+          continue;
+        }
+        children.push_back(rowVector->childAt(columnId.GetPrimaryIndex()));
       }
     }
     data.push_back(
@@ -785,12 +823,25 @@ PlanNodePtr toVeloxPlan(
     }
     case ::duckdb::LogicalOperatorType::LOGICAL_LIMIT: {
       auto& limit = dynamic_cast<const ::duckdb::LogicalLimit&>(plan);
+      // UNSET means the clause is absent, e.g. OFFSET without LIMIT.
+      VELOX_CHECK(
+          limit.limit_val.Type() == ::duckdb::LimitNodeType::CONSTANT_VALUE ||
+              limit.limit_val.Type() == ::duckdb::LimitNodeType::UNSET,
+          "Only constant LIMIT is supported");
+      VELOX_CHECK(
+          limit.offset_val.Type() == ::duckdb::LimitNodeType::CONSTANT_VALUE ||
+              limit.offset_val.Type() == ::duckdb::LimitNodeType::UNSET,
+          "Only constant OFFSET is supported");
+      const int64_t offset =
+          limit.offset_val.Type() == ::duckdb::LimitNodeType::UNSET
+          ? 0
+          : limit.offset_val.GetConstantValue();
+      const int64_t count =
+          limit.limit_val.Type() == ::duckdb::LimitNodeType::UNSET
+          ? std::numeric_limits<int64_t>::max()
+          : limit.limit_val.GetConstantValue();
       return std::make_shared<core::LimitNode>(
-          queryContext.nextNodeId(),
-          limit.offset_val,
-          limit.limit_val,
-          false,
-          sources[0]);
+          queryContext.nextNodeId(), offset, count, false, sources[0]);
     }
     case ::duckdb::LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
       return toVeloxPlan(
@@ -913,11 +964,11 @@ static void customScalarFunction(
   VELOX_UNREACHABLE();
 }
 
-static ::duckdb::idx_t customAggregateState() {
+static ::duckdb::idx_t customAggregateState(const ::duckdb::AggregateFunction& /*function*/) {
   VELOX_UNREACHABLE();
 }
 
-static void customAggregateInitialize(::duckdb::data_ptr_t) {
+static void customAggregateInitialize(const ::duckdb::AggregateFunction& /*function*/, ::duckdb::data_ptr_t /*state*/) {
   VELOX_UNREACHABLE();
 }
 
@@ -1028,6 +1079,9 @@ PlanNodePtr DuckDbQueryPlanner::plan(const std::string& sql) {
   // Disable the optimizer. Otherwise, the filter over table scan gets pushdown
   // as a callback that is impossible to recover.
   conn_.Query("PRAGMA disable_optimizer");
+  // Keep scalar subqueries as plain values instead of wrapping them in a
+  // multi-row runtime error guard that plans as an unsupported CASE.
+  conn_.Query("SET scalar_subquery_error_on_multiple_rows=false");
 
   auto plan = conn_.ExtractPlan(sql);
 

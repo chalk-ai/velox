@@ -1,0 +1,50 @@
+load("@bison//:bison.bzl", "bison")
+load("@flex//:flex.bzl", "flex")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+bison(
+    name = "generate_type_calculation_bison",
+    srcs = ["TypeCalculation.yy"],
+    outs = [
+        "TypeCalculation.yy.cc",
+        "TypeCalculation.yy.h",
+    ],
+    args = [
+        "--defines=$(execpath TypeCalculation.yy.h)",
+        "-o",
+        "$(execpath TypeCalculation.yy.cc)",
+        "$(execpath TypeCalculation.yy)",
+    ],
+)
+
+flex(
+    name = "generate_type_calculation_flex",
+    srcs = ["TypeCalculation.ll"],
+    outs = ["Scanner.cpp"],
+    args = [
+        "-Cf",
+        "--prefix=veloxtc",
+        "-o",
+        "$(execpath Scanner.cpp)",
+        "$(execpath TypeCalculation.ll)",
+    ],
+)
+
+cc_library(
+    name = "type_calculation",
+    srcs = [
+        "Scanner.cpp",
+        "TypeCalculation.yy.cc",
+        "TypeCalculation.yy.h",
+    ],
+    hdrs = ["TypeCalculation.h"],
+    include_prefix = "velox/expression/type_calculation",
+    textual_hdrs = ["Scanner.h"],
+    implementation_deps = ["@flex//:headers"],
+    deps = [
+        "//:base",
+        "//:common_headers",
+    ],
+)

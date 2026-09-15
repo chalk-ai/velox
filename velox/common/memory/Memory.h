@@ -28,7 +28,7 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include <velox/common/base/Exceptions.h>
+#include "velox/common/base/Exceptions.h"
 #include "folly/CPortability.h"
 #include "folly/GLog.h"
 #include "folly/Likely.h"

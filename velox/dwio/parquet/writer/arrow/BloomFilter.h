@@ -28,7 +28,7 @@
 #include "velox/dwio/parquet/writer/arrow/Platform.h"
 #include "velox/dwio/parquet/writer/arrow/Properties.h"
 #include "velox/dwio/parquet/writer/arrow/Types.h"
-#include "velox/dwio/parquet/writer/arrow/tests/Hasher.h"
+#include "velox/dwio/parquet/writer/arrow/Hasher.h"
 
 namespace facebook::velox::parquet::arrow {
 

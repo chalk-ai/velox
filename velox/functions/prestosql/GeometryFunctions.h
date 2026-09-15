@@ -1278,10 +1278,10 @@ struct StConvexHullFunction {
 
       if ((minX == maxX) || (minY == maxY)) {
         // Envelope is a line, so that's the minimum convex hull
-        auto coords =
-            std::make_unique<geos::geom::CoordinateSequence>(2, 2);
-        coords->setAt(geos::geom::Coordinate(minX, minY), 0);
-        coords->setAt(geos::geom::Coordinate(maxX, maxY), 1);
+        auto coords = std::make_unique<geos::geom::CoordinateSequence>(
+            std::initializer_list<geos::geom::Coordinate>{
+                geos::geom::Coordinate(minX, minY),
+                geos::geom::Coordinate(maxX, maxY)});
 
         common::geospatial::GeometrySerializer::serialize(
             *(factory_->createLineString(std::move(coords))), result);

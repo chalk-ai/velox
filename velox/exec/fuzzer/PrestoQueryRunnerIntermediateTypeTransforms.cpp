@@ -110,7 +110,13 @@ VectorPtr evaluateExpression(
     core::ExprPtr& expression,
     const VectorPtr& input,
     const SelectivityVector& rows) {
-  std::shared_ptr<core::QueryCtx> queryCtx_{velox::core::QueryCtx::create()};
+  // Use the caller-owned input pool as the query's expression pool. Expression
+  // evaluation allocates its results from the query-scoped expression pool, so
+  // routing that to 'input->pool()' keeps the returned vector's memory alive
+  // after this function's local QueryCtx is destroyed (otherwise the expression
+  // pool's leak check trips when it outlives the value it produced).
+  std::shared_ptr<core::QueryCtx> queryCtx_{
+      core::QueryCtx::Builder().exprPool(input->pool()->shared_from_this()).build()};
   std::unique_ptr<core::ExecCtx> execCtx{
       std::make_unique<core::ExecCtx>(input->pool(), queryCtx_.get())};
   velox::test::VectorMaker vectorMaker(input->pool());

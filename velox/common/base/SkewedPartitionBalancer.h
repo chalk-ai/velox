@@ -108,8 +108,9 @@ class SkewedPartitionRebalancer {
   void rebalancePartitions(int64_t processedBytes);
 
   // Calculates the partition processed data size based on the number of
-  // processed rows and the averaged row size.
-  void calculatePartitionProcessedBytes();
+  // processed rows and the averaged row size. Returns false when no rows have
+  // been recorded yet, so there is nothing to attribute the bytes to.
+  bool calculatePartitionProcessedBytes();
 
   template <bool MaxQueue>
   uint64_t calculateTaskDataSizeSinceLastRebalance(

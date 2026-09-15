@@ -26,6 +26,9 @@
 
 #ifndef GRAMMAR_SUPPORT_H
 #define GRAMMAR_SUPPORT_H
+
+#include <cstdio>
+
 /*
  * entry in the file stack used to manage multiple input file and include files
  */

@@ -224,6 +224,8 @@ ParquetReaderFactory::createFormatOptions(
       ParquetConfig::footerMemoryTrackingThreshold(connectorConfig, session));
   options->setNullStructIfAllFieldsMissing(
       ParquetConfig::nullStructIfAllFieldsMissing(connectorConfig, session));
+  options->setBloomFilterPruningEnabled(
+      ParquetConfig::bloomFilterPruningEnabled(connectorConfig, session));
   return options;
 }
 
@@ -238,6 +240,10 @@ class ReaderBase {
 
   memory::MemoryPool& getMemoryPool() const {
     return pool_;
+  }
+
+  const ParquetReaderOptions& parquetReaderOptions() const {
+    return parquetReaderOptions_;
   }
 
   dwio::common::BufferedInput& bufferedInput() const {
@@ -929,21 +935,20 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
             // In this legacy case, there is no middle layer between "array"
             // node and the children nodes. Below creates this dummy middle
             // layer to mimic the non-legacy case and fill the gap.
-            rowChildren.emplace_back(
-                std::make_unique<ParquetTypeWithId>(
-                    childrenRowType,
-                    std::move(children),
-                    curSchemaIdx,
-                    maxSchemaElementIdx,
-                    ParquetTypeWithId::kNonLeaf,
-                    "dummy",
-                    std::nullopt,
-                    std::nullopt,
-                    std::nullopt,
-                    maxRepeat,
-                    maxDefine,
-                    isOptional,
-                    isRepeated));
+            rowChildren.emplace_back(std::make_unique<ParquetTypeWithId>(
+                childrenRowType,
+                std::move(children),
+                curSchemaIdx,
+                maxSchemaElementIdx,
+                ParquetTypeWithId::kNonLeaf,
+                "dummy",
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                maxRepeat,
+                maxDefine,
+                isOptional,
+                isRepeated));
             auto res = std::make_unique<ParquetTypeWithId>(
                 TypeFactory<TypeKind::ARRAY>::create(childrenRowType),
                 std::move(rowChildren),
@@ -993,21 +998,20 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
           // In this legacy case, there is no middle layer between "array"
           // node and the children nodes. Below creates this dummy middle
           // layer to mimic the non-legacy case and fill the gap.
-          rowChildren.emplace_back(
-              std::make_unique<ParquetTypeWithId>(
-                  childrenRowType,
-                  std::move(children),
-                  curSchemaIdx,
-                  maxSchemaElementIdx,
-                  ParquetTypeWithId::kNonLeaf,
-                  "dummy",
-                  std::nullopt,
-                  std::nullopt,
-                  std::nullopt,
-                  maxRepeat,
-                  maxDefine,
-                  isOptional,
-                  isRepeated));
+          rowChildren.emplace_back(std::make_unique<ParquetTypeWithId>(
+              childrenRowType,
+              std::move(children),
+              curSchemaIdx,
+              maxSchemaElementIdx,
+              ParquetTypeWithId::kNonLeaf,
+              "dummy",
+              std::nullopt,
+              std::nullopt,
+              std::nullopt,
+              maxRepeat,
+              maxDefine,
+              isOptional,
+              isRepeated));
           return std::make_unique<ParquetTypeWithId>(
               TypeFactory<TypeKind::ARRAY>::create(childrenRowType),
               std::move(rowChildren),
@@ -1613,6 +1617,12 @@ class ParquetRowReader::Impl {
       return; // TODO
     }
     parquetStatsContext_ = ParquetStatsContext(readerBase_->version());
+    // Bloom filter row group pruning is gated off by default: each probe is an
+    // extra synchronous read during filtering. Passing no input disables it.
+    auto* bloomFilterInput =
+        readerBase_->parquetReaderOptions().bloomFilterPruningEnabled()
+        ? &readerBase_->bufferedInput()
+        : nullptr;
     if (readerBase_->initialThriftSize() > 0) {
       splitStats_.accumulateStat(
           ParquetRuntimeStats::kFooterEstimatedBytesMetric,
@@ -1624,7 +1634,8 @@ class ParquetRowReader::Impl {
         readerBase_->fileMetaData(),
         readerBase->sessionTimezone(),
         options_.timestampPrecision(),
-        readerBase_->nullStructIfAllFieldsMissing());
+        readerBase_->nullStructIfAllFieldsMissing(),
+        bloomFilterInput);
     requestedType_ = options_.requestedType() ? options_.requestedType()
                                               : readerBase_->schema();
     columnReader_ = ParquetColumnReader::build(

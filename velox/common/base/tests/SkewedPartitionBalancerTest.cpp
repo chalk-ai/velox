@@ -113,7 +113,8 @@ TEST_F(SkewedPartitionRebalancerTest, basic) {
   ASSERT_EQ(balancer->stats(), SkewedPartitionRebalancer::Stats{});
 
   balancer->addProcessedBytes(128);
-  VELOX_ASSERT_THROW(balancer->rebalance(), "");
+  // A rebalance without any recorded rows is a no-op instead of an error.
+  balancer->rebalance();
   ASSERT_EQ(balancer->stats().numBalanceTriggers, 1);
   ASSERT_EQ(balancer->stats().numScaledPartitions, 0);
 
@@ -188,7 +189,8 @@ TEST_F(SkewedPartitionRebalancerTest, rebalanceCondition) {
   ASSERT_EQ(balancer->stats().numBalanceTriggers, 0);
   balancer->addProcessedBytes(128);
   ASSERT_TRUE(helper.shouldRebalance());
-  VELOX_ASSERT_THROW(balancer->rebalance(), "");
+  // A rebalance without any recorded rows is a no-op instead of an error.
+  balancer->rebalance();
   balancer->addPartitionRowCount(0, 1);
   balancer->addPartitionRowCount(31, 1);
   for (int i = 0; i < helper.numPartitions(); ++i) {

@@ -317,12 +317,13 @@ TEST_F(MemoryManagerTest, defaultMemoryManager) {
   auto pool = managerB.addRootPool();
   ASSERT_EQ(managerA.numPools(), 6);
   ASSERT_EQ(managerB.numPools(), 6);
-  ASSERT_EQ(
-      managerA.toString(),
-      "Memory Manager[capacity UNLIMITED alignment 64B usedBytes 0B number of pools 6\nList of root pools:\n\t__sys_root__\n\tdefault_root_0\n\trefcount 2\nMemory Allocator[MALLOC capacity UNLIMITED allocated bytes 0 allocated pages 0 mapped pages 0]\nARBIRTATOR[NOOP CAPACITY[UNLIMITED]]]");
-  ASSERT_EQ(
-      managerB.toString(),
-      "Memory Manager[capacity UNLIMITED alignment 64B usedBytes 0B number of pools 6\nList of root pools:\n\t__sys_root__\n\tdefault_root_0\n\trefcount 2\nMemory Allocator[MALLOC capacity UNLIMITED allocated bytes 0 allocated pages 0 mapped pages 0]\nARBIRTATOR[NOOP CAPACITY[UNLIMITED]]]");
+  // The default root pool name uses a process-wide counter, so it depends on
+  // how many tests ran before this one.
+  const auto expectedToString = fmt::format(
+      "Memory Manager[capacity UNLIMITED alignment 64B usedBytes 0B number of pools 6\nList of root pools:\n\t__sys_root__\n\t{}\n\trefcount 2\nMemory Allocator[MALLOC capacity UNLIMITED allocated bytes 0 allocated pages 0 mapped pages 0]\nARBIRTATOR[NOOP CAPACITY[UNLIMITED]]]",
+      pool->name());
+  ASSERT_EQ(managerA.toString(), expectedToString);
+  ASSERT_EQ(managerB.toString(), expectedToString);
   child1.reset();
   EXPECT_EQ(
       kSharedPoolCount + 1, managerA.deprecatedSysRootPool().getChildCount());
@@ -459,7 +460,11 @@ TEST_F(MemoryManagerTest, memoryPoolManagement) {
 // effects for other tests using process singleton memory manager. Might need to
 // use folly::Singleton for isolation by tag.
 TEST_F(MemoryManagerTest, globalMemoryManager) {
-  initializeMemoryManager(MemoryManager::Options{});
+  // An earlier test may have created the process-wide manager through
+  // deprecatedDefaultMemoryManager, and there is no way to clear it.
+  if (!MemoryManager::testInstance()) {
+    initializeMemoryManager(MemoryManager::Options{});
+  }
   auto* globalManager = memoryManager();
   ASSERT_TRUE(globalManager != nullptr);
   VELOX_ASSERT_THROW(initializeMemoryManager(MemoryManager::Options{}), "");

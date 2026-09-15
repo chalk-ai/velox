@@ -14,12 +14,15 @@
  * limitations under the License.
  */
 
+#pragma once
+
 #include "velox/common/testutil/TempDirectoryPath.h"
 
 #include <pwd.h>
 #include <unistd.h>
 #include <iostream>
-#include "boost/process.hpp"
+#include <boost/process/v1/environment.hpp>
+#include <boost/process/v1/child.hpp>
 
 namespace facebook::velox::filesystems::test {
 
@@ -52,6 +55,7 @@ class HdfsMiniCluster {
   bool isRunning();
 
   void addFile(std::string source, std::string destination);
+
   virtual ~HdfsMiniCluster();
 
   std::string_view nameNodePort() const {
@@ -70,9 +74,9 @@ class HdfsMiniCluster {
  private:
   void setupEnvironment(const std::string& homeDirectory);
 
-  std::unique_ptr<::boost::process::child> serverProcess_;
+  std::unique_ptr<::boost::process::v1::child> serverProcess_;
   boost::filesystem::path exePath_;
-  boost::process::environment env_;
+  boost::process::v1::environment env_;
   std::string nameNodePort_;
   std::string httpPort_;
   std::string filesystemUrl_;

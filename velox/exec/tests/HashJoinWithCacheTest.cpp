@@ -106,14 +106,10 @@ TEST_F(HashJoinWithCacheTest, sequential) {
   const int numDrivers = 3;
 
   // Create a shared QueryCtx for all tasks.
-  auto queryCtx = core::QueryCtx::create(
-      driverExecutor_.get(),
-      core::QueryConfig({}),
-      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-      cache::AsyncDataCache::getInstance(),
-      nullptr,
-      nullptr,
-      queryId);
+  auto queryCtx = core::QueryCtx::Builder()
+      .executor(driverExecutor_.get())
+      .queryId(queryId)
+      .build();
 
   // Helper to run a task and return the completed task.
   // Both tasks use the same queryCtx so they share the cache entry.
@@ -248,14 +244,10 @@ TEST_F(HashJoinWithCacheTest, concurrent) {
   const int numDrivers = 3;
 
   // Create a shared QueryCtx for all tasks.
-  auto queryCtx = core::QueryCtx::create(
-      driverExecutor_.get(),
-      core::QueryConfig({}),
-      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-      cache::AsyncDataCache::getInstance(),
-      nullptr,
-      nullptr,
-      queryId);
+  auto queryCtx = core::QueryCtx::Builder()
+      .executor(driverExecutor_.get())
+      .queryId(queryId)
+      .build();
 
   // Helper to run a task and return the completed task.
   // All tasks use the same queryCtx so they share the cache entry.
@@ -397,14 +389,10 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, probeCannotSpillWithCachedTable) {
           .build();
   const auto joinNodeId = joinNode->id();
 
-  auto queryCtx = core::QueryCtx::create(
-      driverExecutor_.get(),
-      core::QueryConfig({}),
-      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-      cache::AsyncDataCache::getInstance(),
-      nullptr,
-      nullptr,
-      queryId);
+  auto queryCtx = core::QueryCtx::Builder()
+      .executor(driverExecutor_.get())
+      .queryId(queryId)
+      .build();
 
   // Use TestValue to verify canReclaim() returns false for HashBuild.
   std::atomic_bool hashBuildChecked{false};
@@ -524,14 +512,10 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, probeOOMWithCachedTable) {
 
   // Create QueryCtx with sufficient memory for build but we'll exhaust it
   // during probe via TestValue injection.
-  auto queryCtx = core::QueryCtx::create(
-      driverExecutor_.get(),
-      core::QueryConfig({}),
-      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-      cache::AsyncDataCache::getInstance(),
-      nullptr,
-      nullptr,
-      queryId);
+  auto queryCtx = core::QueryCtx::Builder()
+      .executor(driverExecutor_.get())
+      .queryId(queryId)
+      .build();
 
   // Use a pool with limited capacity. Build uses ~10MB, so 20MB should be
   // enough for build but tight for additional allocations during probe.
@@ -648,6 +632,7 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, cachePoolArbitration) {
       core::QueryConfig({}),
       std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
       cache::AsyncDataCache::getInstance(),
+      nullptr,
       nullptr,
       nullptr,
       queryId);
@@ -783,6 +768,7 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, nonLastDriverSpinLoop) {
       core::QueryConfig({}),
       std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
       cache::AsyncDataCache::getInstance(),
+      nullptr,
       nullptr,
       nullptr,
       queryId);
