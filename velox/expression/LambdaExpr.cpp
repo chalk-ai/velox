@@ -231,9 +231,12 @@ std::string LambdaExpr::toSql(std::vector<VectorPtr>* complexConstants) const {
   return out.str();
 }
 
-void LambdaExpr::clearCache() {
-  SpecialForm::clearCache();
-  body_->clearCache();
+bool LambdaExpr::clearCache(uint64_t epoch) {
+  if (!SpecialForm::clearCache(epoch)) {
+    return false;
+  }
+  body_->clearCache(epoch);
+  return true;
 }
 
 void LambdaExpr::evalSpecialForm(
