@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -251,13 +252,34 @@ class Expr {
     cachedDictionaryIndices_ = nullptr;
   }
 
-  virtual void clearCache() {
+  /// Clears the cached evaluation state of this expression and, recursively,
+  /// of its inputs.
+  void clearCache() {
+    clearCache(nextClearEpoch());
+  }
+
+  /// Epoch-stamped form of clearCache(). Common sub-expressions are shared
+  /// between parents, so a plain recursion visits each one once per path,
+  /// which on a deep, heavily shared tree turns a few thousand nodes into
+  /// millions of visits. A node stamped with 'epoch' has already been cleared
+  /// by this call and is skipped. Returns false in that case so overrides can
+  /// skip their own per-node work too.
+  virtual bool clearCache(uint64_t epoch) {
+    if (clearCacheEpoch_ == epoch) {
+      return false;
+    }
+    clearCacheEpoch_ = epoch;
     sharedSubexprResults_.clear();
     clearMemo();
     for (auto& input : inputs_) {
-      input->clearCache();
+      input->clearCache(epoch);
     }
+    return true;
   }
+
+  /// A fresh epoch for one clearCache() traversal. Process-wide and never
+  /// zero, so a freshly built expression (epoch 0) is always visited.
+  static uint64_t nextClearEpoch();
 
   const TypePtr& type() const {
     return type_;
@@ -779,6 +801,9 @@ class Expr {
   /// Runtime statistics. CPU time, wall time and number of processed rows.
   ExprStats stats_;
 
+  // Last clearCache() traversal that visited this node.
+  uint64_t clearCacheEpoch_{0};
+
   /// Per-function adaptive CPU sampling state machine.
   enum class AdaptiveCpuSamplingState : uint8_t {
     /// First batch: warm up caches, discard timing.
@@ -988,7 +1013,6 @@ class ExprSetSimplified : public ExprSet {
       EvalCtx& ctx,
       std::vector<VectorPtr>& result) override;
 };
-
 
 class ExprSetPool {
  public:
