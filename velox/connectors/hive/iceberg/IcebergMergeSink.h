@@ -117,7 +117,7 @@ class IcebergMergeSink : public DataSink {
   // `deleteIndices` buffer. Returned RowVector has type
   // `deletionVectorInputType_`.
   RowVectorPtr makeDeleteBatch(
-      const RowVectorPtr& input,
+      const RowVector* rowIdRowVector,
       const BufferPtr& deleteIndices,
       vector_size_t deleteSize) const;
 
