@@ -52,9 +52,13 @@ class SwitchExpr : public SpecialForm {
     return true;
   }
 
-  void clearCache() override {
-    Expr::clearCache();
+  using Expr::clearCache;
+  bool clearCache(uint64_t epoch) override {
+    if (!Expr::clearCache(epoch)) {
+      return false;
+    }
     tempValues_.reset();
+    return true;
   }
 
  private:

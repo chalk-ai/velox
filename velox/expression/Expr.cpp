@@ -31,6 +31,8 @@
 #include "velox/common/EnumDefine.h"
 #include "velox/expression/ConstantExpr.h"
 #include "velox/expression/Expr.h"
+
+#include <atomic>
 #include "velox/expression/ExprCompiler.h"
 #include "velox/expression/FieldReference.h"
 #include "velox/expression/LambdaExpr.h"
@@ -1949,24 +1951,20 @@ common::Subfield extractSubfield(
     }
     switch (index->value()->typeKind()) {
       case TypeKind::TINYINT:
-        path.push_back(
-            std::make_unique<common::Subfield::LongSubscript>(
-                index->value()->as<ConstantVector<int8_t>>()->value()));
+        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
+            index->value()->as<ConstantVector<int8_t>>()->value()));
         break;
       case TypeKind::SMALLINT:
-        path.push_back(
-            std::make_unique<common::Subfield::LongSubscript>(
-                index->value()->as<ConstantVector<int16_t>>()->value()));
+        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
+            index->value()->as<ConstantVector<int16_t>>()->value()));
         break;
       case TypeKind::INTEGER:
-        path.push_back(
-            std::make_unique<common::Subfield::LongSubscript>(
-                index->value()->as<ConstantVector<int32_t>>()->value()));
+        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
+            index->value()->as<ConstantVector<int32_t>>()->value()));
         break;
       case TypeKind::BIGINT:
-        path.push_back(
-            std::make_unique<common::Subfield::LongSubscript>(
-                index->value()->as<ConstantVector<int64_t>>()->value()));
+        path.push_back(std::make_unique<common::Subfield::LongSubscript>(
+            index->value()->as<ConstantVector<int64_t>>()->value()));
         break;
       case TypeKind::VARCHAR:
         path.push_back(
@@ -2185,11 +2183,21 @@ std::string makeUuid() {
 }
 } // namespace
 
-void Expr::clearStats() {
+void Expr::clearStats(uint64_t epoch) {
+  if (clearStatsEpoch_ == epoch) {
+    return;
+  }
+  clearStatsEpoch_ = epoch;
   stats_ = ExprStats{};
   for (auto& input : inputs_) {
-    input->clearStats();
+    input->clearStats(epoch);
   }
+}
+
+// static
+uint64_t Expr::nextClearEpoch() {
+  static std::atomic<uint64_t> epoch{0};
+  return epoch.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 std::unordered_map<std::string, exec::ExprStats> ExprSet::stats(
@@ -2300,9 +2308,7 @@ void ExprSet::initializeAdaptiveCpuSampling(EvalCtx& context) {
   if (!timerOverheadMeasured_) {
     CpuWallTiming dummyTiming;
     DeltaCpuWallTimeStopWatch overheadWatch;
-    {
-      auto dummy = std::make_unique<CpuWallTimer>(dummyTiming);
-    }
+    { auto dummy = std::make_unique<CpuWallTimer>(dummyTiming); }
     timerOverheadNanos_ = overheadWatch.elapsed().wallNanos;
     timerOverheadMeasured_ = true;
   }
@@ -2378,14 +2384,18 @@ void ExprSet::clear() {
 }
 
 void ExprSet::clearCache() {
+  // One epoch for the whole set: a sub-expression shared between two of its
+  // expressions is cleared once.
+  const auto epoch = Expr::nextClearEpoch();
   for (auto& expr : exprs_) {
-    expr->clearCache();
+    expr->clearCache(epoch);
   }
 }
 
 void ExprSet::clearStats() {
+  const auto epoch = Expr::nextClearEpoch();
   for (auto& expr : exprs_) {
-    expr->clearStats();
+    expr->clearStats(epoch);
   }
 }
 
