@@ -49,7 +49,8 @@ class LambdaExpr : public SpecialForm {
       EvalCtx& context,
       VectorPtr& result) override;
 
-  virtual void clearCache() override;
+  using Expr::clearCache;
+  bool clearCache(uint64_t epoch) override;
 
   const ExprPtr& body() const {
     return body_;
