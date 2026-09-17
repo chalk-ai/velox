@@ -274,6 +274,104 @@ TEST_F(IcebergMergeSinkTest, mixedBatchProducesBothKinds) {
   EXPECT_EQ(countContent(messages, "POSITION_DELETES"), 1u);
 }
 
+// A plan that tags a whole branch with a literal operation byte hands the
+// sink a ConstantVector, and a union upstream may wrap row_id in a
+// dictionary. The sink must decode both rather than require flat input.
+TEST_F(IcebergMergeSinkTest, encodedOperationAndRowIdColumnsAreDecoded) {
+  auto tempDir = TempDirectoryPath::create();
+  auto* pool = opPool_.get();
+  velox::test::VectorMaker maker(pool);
+  const std::string dataFile = tempDir->getPath() + "/e.parquet";
+
+  // Insert-only batch: constant INSERT byte, all-null constant row_id.
+  {
+    auto sink = makeSink(tempDir->getPath());
+    const vector_size_t numRows = 3;
+    auto input = std::make_shared<RowVector>(
+        pool,
+        kMergeInputType,
+        /*nulls=*/nullptr,
+        numRows,
+        std::vector<VectorPtr>{
+            maker.flatVector<int64_t>({1, 2, 3}),
+            maker.flatVector<StringView>(
+                std::vector<StringView>{
+                    StringView("a"), StringView("b"), StringView("c")}),
+            BaseVector::createConstant(
+                TINYINT(),
+                variant(static_cast<int8_t>(IMS::kInsertOperationNumber)),
+                numRows,
+                pool),
+            BaseVector::createNullConstant(kRowIdType, numRows, pool),
+            maker.flatVector<int8_t>({0, 0, 0})});
+    sink->appendData(input);
+    EXPECT_TRUE(sink->finish());
+    auto messages = sink->close();
+    EXPECT_EQ(countContent(messages, "DATA"), 1u);
+    EXPECT_EQ(countContent(messages, "POSITION_DELETES"), 0u);
+  }
+
+  // Delete-only batch: constant DELETE byte, dictionary-encoded row_id whose
+  // base ROW is larger than the batch and read in a shuffled order.
+  {
+    auto sink = makeSink(tempDir->getPath());
+    const vector_size_t numRows = 2;
+    auto baseRowId = std::make_shared<RowVector>(
+        pool,
+        kRowIdType,
+        /*nulls=*/nullptr,
+        3,
+        std::vector<VectorPtr>{
+            maker.flatVector<StringView>(
+                {StringView(dataFile), StringView(dataFile), StringView(dataFile)}),
+            maker.flatVector<int64_t>({10, 11, 12})});
+    auto indices = AlignedBuffer::allocate<vector_size_t>(numRows, pool);
+    auto* rawIndices = indices->asMutable<vector_size_t>();
+    rawIndices[0] = 2;
+    rawIndices[1] = 0;
+    auto input = std::make_shared<RowVector>(
+        pool,
+        kMergeInputType,
+        /*nulls=*/nullptr,
+        numRows,
+        std::vector<VectorPtr>{
+            maker.flatVectorNullable<int64_t>({std::nullopt, std::nullopt}),
+            maker.flatVectorNullable<StringView>({std::nullopt, std::nullopt}),
+            BaseVector::createConstant(
+                TINYINT(),
+                variant(static_cast<int8_t>(IMS::kDeleteOperationNumber)),
+                numRows,
+                pool),
+            BaseVector::wrapInDictionary(
+                /*nulls=*/nullptr, indices, numRows, baseRowId),
+            maker.flatVector<int8_t>({0, 0})});
+    sink->appendData(input);
+    EXPECT_TRUE(sink->finish());
+    auto messages = sink->close();
+    EXPECT_EQ(countContent(messages, "DATA"), 0u);
+    EXPECT_EQ(countContent(messages, "POSITION_DELETES"), 1u);
+  }
+
+  // A DELETE whose row_id is null is a plan bug, not a silent no-op.
+  {
+    auto sink = makeSink(tempDir->getPath());
+    const vector_size_t numRows = 1;
+    auto input = std::make_shared<RowVector>(
+        pool,
+        kMergeInputType,
+        /*nulls=*/nullptr,
+        numRows,
+        std::vector<VectorPtr>{
+            maker.flatVectorNullable<int64_t>({std::nullopt}),
+            maker.flatVectorNullable<StringView>({std::nullopt}),
+            maker.flatVector<int8_t>({IMS::kDeleteOperationNumber}),
+            BaseVector::createNullConstant(kRowIdType, numRows, pool),
+            maker.flatVector<int8_t>({0})});
+    VELOX_ASSERT_USER_THROW(
+        sink->appendData(input), "row_id is null at DELETE row 0");
+  }
+}
+
 TEST_F(IcebergMergeSinkTest, emptyBatchProducesNoCommitMessages) {
   auto tempDir = TempDirectoryPath::create();
   auto sink = makeSink(tempDir->getPath());
