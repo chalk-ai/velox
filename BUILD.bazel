@@ -4062,6 +4062,7 @@ cc_library(
         "velox/connectors/hive/HivePartitionName.h",
         "velox/connectors/hive/PartitionIdGenerator.h",
         "velox/connectors/hive/TableHandle.h",
+        "velox/connectors/hive/iceberg/DeletionVectorFormat.h",
         "velox/connectors/hive/iceberg/DeletionVectorReader.h",
         "velox/connectors/hive/iceberg/DeletionVectorWriter.h",
         "velox/connectors/hive/iceberg/EqualityDeleteFileReader.h",
