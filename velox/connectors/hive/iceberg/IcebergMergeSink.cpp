@@ -16,37 +16,38 @@
 
 #include "velox/connectors/hive/iceberg/IcebergMergeSink.h"
 
+#include <optional>
+
 #include "velox/common/base/Exceptions.h"
+#include "velox/vector/DecodedVector.h"
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::connector::hive::iceberg {
 
 namespace {
 
-// Returns the operation TINYINT child as a flat vector. Throws if the
-// operation column at `channel` is not a flat TINYINT.
-const FlatVector<int8_t>* asOperationFlatVector(
+// Decodes the operation TINYINT child at `channel`. Any encoding is
+// accepted: a plan that tags every row of a branch with a literal 1 or 2
+// hands the sink a ConstantVector, and a union or filter upstream may hand it
+// a DictionaryVector.
+DecodedVector decodeOperationColumn(
     const RowVectorPtr& input,
     column_index_t channel) {
   const auto& column = input->childAt(channel);
   VELOX_USER_CHECK_NOT_NULL(column, "operation column is null");
-  const auto* flat = column->loadedVector()->asFlatVector<int8_t>();
-  VELOX_USER_CHECK_NOT_NULL(
-      flat, "operation column must be a flat TINYINT vector");
-  return flat;
+  VELOX_USER_CHECK(
+      column->type()->isTinyint(), "operation column must be TINYINT");
+  return DecodedVector(*column);
 }
 
-// Returns the row_id ROW child. Throws if the row_id column at `channel` is
-// not a RowVector with at least 2 children whose first two field types are
-// VARCHAR and BIGINT (matching the DV sub-sink's input contract).
-const RowVector* asRowIdRowVector(
-    const RowVectorPtr& input,
-    column_index_t channel) {
-  const auto& column = input->childAt(channel);
-  VELOX_USER_CHECK_NOT_NULL(column, "row_id column is null");
-  const auto* rowVector = column->loadedVector()->as<RowVector>();
+// Validates the ROW backing a decoded row_id column: at least 2 children
+// whose first two field types are VARCHAR and BIGINT (matching the DV
+// sub-sink's input contract). Returns the base RowVector the decoded indices
+// address.
+const RowVector* asRowIdBaseRowVector(const DecodedVector& decodedRowId) {
+  const auto* rowVector = decodedRowId.base()->as<RowVector>();
   VELOX_USER_CHECK_NOT_NULL(
-      rowVector, "row_id column must be a flat ROW vector");
+      rowVector, "row_id column must be backed by a ROW vector");
   VELOX_USER_CHECK_GE(
       rowVector->childrenSize(),
       2,
@@ -250,13 +251,15 @@ RowVectorPtr IcebergMergeSink::makeInsertBatch(
 }
 
 RowVectorPtr IcebergMergeSink::makeDeleteBatch(
-    const RowVectorPtr& input,
+    const RowVector* rowIdRowVector,
     const BufferPtr& deleteIndices,
     vector_size_t deleteSize) const {
-  const auto* rowIdRowVector = asRowIdRowVector(input, rowIdChannel_);
   // The DV sink consumes (file_path, pos). The first two children of the
   // row_id ROW carry exactly these. Extra trailing fields (spec_id,
   // partition_data on the full Iceberg row id) are tolerated and ignored.
+  // `deleteIndices` already address the base ROW vector, so wrapping its
+  // children directly is correct for a dictionary- or constant-encoded
+  // row_id column too.
   auto wrappedFilePath = BaseVector::wrapInDictionary(
       /*nulls=*/nullptr, deleteIndices, deleteSize, rowIdRowVector->childAt(0));
   auto wrappedPos = BaseVector::wrapInDictionary(
@@ -278,15 +281,15 @@ void IcebergMergeSink::appendData(RowVectorPtr input) {
   }
 
   const auto numRows = input->size();
-  const auto* operationVector = asOperationFlatVector(input, operationChannel_);
+  const auto decodedOperation = decodeOperationColumn(input, operationChannel_);
 
   // First pass: count inserts/deletes and validate operation bytes.
   vector_size_t numInserts = 0;
   vector_size_t numDeletes = 0;
   for (vector_size_t i = 0; i < numRows; ++i) {
     VELOX_USER_CHECK(
-        !operationVector->isNullAt(i), "operation byte is null at row {}", i);
-    const int8_t op = operationVector->valueAt(i);
+        !decodedOperation.isNullAt(i), "operation byte is null at row {}", i);
+    const int8_t op = decodedOperation.valueAt<int8_t>(i);
     switch (op) {
       case kInsertOperationNumber:
         ++numInserts;
@@ -304,12 +307,17 @@ void IcebergMergeSink::appendData(RowVectorPtr input) {
     }
   }
 
-  // Second pass: bucket row indices by op type.
+  // Second pass: bucket row indices by op type. Insert indices address the
+  // input rows (target columns are wrapped as-is); delete indices address the
+  // row_id column's base ROW vector, which is only decoded when a delete is
+  // present -- an insert-only batch may carry an all-null constant row_id.
   auto* pool = connectorQueryCtx_->memoryPool();
   BufferPtr insertIndices;
   BufferPtr deleteIndices;
   vector_size_t* rawInsertIndices = nullptr;
   vector_size_t* rawDeleteIndices = nullptr;
+  std::optional<DecodedVector> decodedRowId;
+  const RowVector* rowIdBase = nullptr;
   if (numInserts > 0) {
     insertIndices = allocateIndicesBuffer(numInserts, pool);
     rawInsertIndices = insertIndices->asMutable<vector_size_t>();
@@ -317,15 +325,21 @@ void IcebergMergeSink::appendData(RowVectorPtr input) {
   if (numDeletes > 0) {
     deleteIndices = allocateIndicesBuffer(numDeletes, pool);
     rawDeleteIndices = deleteIndices->asMutable<vector_size_t>();
+    const auto& rowIdColumn = input->childAt(rowIdChannel_);
+    VELOX_USER_CHECK_NOT_NULL(rowIdColumn, "row_id column is null");
+    decodedRowId.emplace(*rowIdColumn);
+    rowIdBase = asRowIdBaseRowVector(*decodedRowId);
   }
   vector_size_t insertPos = 0;
   vector_size_t deletePos = 0;
   for (vector_size_t i = 0; i < numRows; ++i) {
-    const int8_t op = operationVector->valueAt(i);
+    const int8_t op = decodedOperation.valueAt<int8_t>(i);
     if (op == kInsertOperationNumber) {
       rawInsertIndices[insertPos++] = i;
     } else {
-      rawDeleteIndices[deletePos++] = i;
+      VELOX_USER_CHECK(
+          !decodedRowId->isNullAt(i), "row_id is null at DELETE row {}", i);
+      rawDeleteIndices[deletePos++] = decodedRowId->index(i);
     }
   }
 
@@ -334,7 +348,7 @@ void IcebergMergeSink::appendData(RowVectorPtr input) {
   }
   if (numDeletes > 0) {
     deletionVectorSink_->appendData(
-        makeDeleteBatch(input, deleteIndices, numDeletes));
+        makeDeleteBatch(rowIdBase, deleteIndices, numDeletes));
   }
 }
 
