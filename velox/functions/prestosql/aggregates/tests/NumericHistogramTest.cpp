@@ -717,5 +717,58 @@ TEST_F(NumericHistogramTest, allDuplicateValues) {
       {valuesAndWeights}, {}, {"numeric_histogram(3, c0)"}, {expected});
 }
 
+// The auto-generated companions (numeric_histogram_partial / _merge /
+// _merge_extract_*) invoke the aggregate factory with only the varbinary
+// intermediate type, never the parent's (bigint, value) arguments. Verify
+// that path builds a usable aggregate rather than failing the arity check.
+// Buckets >= the number of distinct values keeps the histogram exact, so the
+// expectation does not depend on how the harness splits rows across partials.
+TEST_F(NumericHistogramTest, companionFunctionsDouble) {
+  disableTestIncremental();
+  auto data = makeRowVector({
+      makeNullableFlatVector<double>({1.0, 2.0, 3.0, 4.0}),
+  });
+
+  auto expected = makeRowVector({
+      makeMapVector<double, double>({
+          {{1.0, 1}, {2.0, 1}, {3.0, 1}, {4.0, 1}},
+      }),
+  });
+
+  testAggregationsWithCompanion(
+      {data},
+      [](auto& /*builder*/) {},
+      {},
+      {"numeric_histogram(4, c0)"},
+      {{BIGINT(), DOUBLE()}},
+      {},
+      {expected});
+}
+
+// Same, for the REAL value type: it resolves to a differently suffixed
+// merge_extract companion (map(real,real)) and a different adapter
+// instantiation than the DOUBLE case above.
+TEST_F(NumericHistogramTest, companionFunctionsReal) {
+  disableTestIncremental();
+  auto data = makeRowVector({
+      makeNullableFlatVector<float>({1.0, 2.0, 3.0, 4.0}),
+  });
+
+  auto expected = makeRowVector({
+      makeMapVector<float, float>({
+          {{1.0, 1}, {2.0, 1}, {3.0, 1}, {4.0, 1}},
+      }),
+  });
+
+  testAggregationsWithCompanion(
+      {data},
+      [](auto& /*builder*/) {},
+      {},
+      {"numeric_histogram(4, c0)"},
+      {{BIGINT(), REAL()}},
+      {},
+      {expected});
+}
+
 } // namespace
 } // namespace facebook::velox::aggregate::test
