@@ -5444,6 +5444,16 @@ class WindowNode : public PlanNode {
     Frame frame;
     bool ignoreNulls;
 
+    /// Optional BOOLEAN input column. When set, the function is evaluated only
+    /// for rows where it is true; every other row gets the function's
+    /// empty-frame result. Frame bounds are unaffected, so masked-out rows
+    /// still contribute to other rows' frames. This lets a plan that needs a
+    /// result at a few rows of a partition (e.g. query points interleaved with
+    /// events) skip per-row result extraction, which dominates a sliding
+    /// aggregation otherwise. Functions that ignore frames (e.g. ranking
+    /// functions) ignore the mask.
+    FieldAccessTypedExprPtr emitMask{nullptr};
+
     folly::dynamic serialize() const;
 
     static Function deserialize(const folly::dynamic& obj);

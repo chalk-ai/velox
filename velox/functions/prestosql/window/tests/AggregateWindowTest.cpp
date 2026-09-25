@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/PlanNode.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/exec/tests/utils/AssertQueryBuilder.h"
+#include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/functions/lib/window/tests/WindowTestBase.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 
@@ -557,6 +561,67 @@ TEST_F(AggregateWindowTest, slidingWindowFloat) {
       "avg(c2)",
       {"partition by c0 order by c1"},
       {"rows between 3 preceding and 3 following"});
+}
+
+// A per-function emit mask restricts which rows get a result without changing
+// any frame: masked-in rows must match the unmasked run exactly, and masked-out
+// rows get the empty-frame result (NULL for sum). The RANGE frame with a
+// column bound is monotonic, so this runs the sliding (retract) path, and the
+// small output batch makes it resume across blocks with gaps between the
+// evaluated rows.
+TEST_F(AggregateWindowTest, emitMaskSlidingRange) {
+  const vector_size_t kSize = 5'000;
+  const vector_size_t kPartitionSize = 2'500;
+  auto p = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return row / kPartitionSize; });
+  auto o = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return (row % kPartitionSize) * 3; });
+  // RANGE bounds are values of the ORDER BY key: the frame is [o - 20, o].
+  auto lo = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return (row % kPartitionSize) * 3 - 20; });
+  auto v = makeFlatVector<int64_t>(
+      kSize, [](auto row) { return (row * 7) % 113; });
+  auto m = makeFlatVector<bool>(kSize, [](auto row) { return row % 7 == 0; });
+  auto input = makeRowVector({"p", "o", "lo", "v", "m"}, {p, o, lo, v, m});
+
+  auto plan =
+      PlanBuilder()
+          .values({input})
+          .window(
+              {"sum(v) over (partition by p order by o range between lo preceding and current row)"})
+          .planNode();
+  const auto& window = dynamic_cast<const core::WindowNode&>(*plan);
+  auto functions = window.windowFunctions();
+  functions[0].emitMask =
+      std::make_shared<core::FieldAccessTypedExpr>(BOOLEAN(), "m");
+  auto maskedPlan =
+      core::WindowNode::Builder(window).windowFunctions(functions).build();
+
+  auto run = [&](const core::PlanNodePtr& node) {
+    return AssertQueryBuilder(node)
+        .config(core::QueryConfig::kPreferredOutputBatchRows, "97")
+        .copyResults(pool());
+  };
+  auto unmasked = run(plan);
+  auto masked = run(maskedPlan);
+  ASSERT_EQ(unmasked->size(), kSize);
+  ASSERT_EQ(masked->size(), kSize);
+
+  // Both runs emit rows in the same (partition, order key) order.
+  auto maskColumn = masked->childAt(4)->as<SimpleVector<bool>>();
+  auto maskedSum = masked->childAt(5);
+  auto unmaskedSum = unmasked->childAt(5);
+  vector_size_t numEvaluated = 0;
+  for (vector_size_t row = 0; row < kSize; ++row) {
+    if (maskColumn->valueAt(row)) {
+      ++numEvaluated;
+      ASSERT_TRUE(maskedSum->equalValueAt(unmaskedSum.get(), row, row))
+          << "row " << row;
+    } else {
+      ASSERT_TRUE(maskedSum->isNullAt(row)) << "row " << row;
+    }
+  }
+  ASSERT_GT(numEvaluated, 0);
 }
 
 TEST_F(AggregateWindowTest, singlePartitionColumnForPrefixSort) {
