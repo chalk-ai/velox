@@ -800,7 +800,8 @@ TEST_F(PlanNodeSerdeTest, window) {
   functions[0].emitMask =
       std::make_shared<core::FieldAccessTypedExpr>(BOOLEAN(), "c4");
   plan = core::WindowNode::Builder(window).windowFunctions(functions).build();
-  ASSERT_NE(plan->toString(true, false).find("EMIT WHERE c4"), std::string::npos);
+  ASSERT_NE(
+      plan->toString(true, false).find("EMIT WHERE c4"), std::string::npos);
   testSerde(plan);
 }
 

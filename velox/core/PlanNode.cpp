@@ -2556,7 +2556,8 @@ WindowNode::Function WindowNode::Function::deserialize(
     const folly::dynamic& obj) {
   FieldAccessTypedExprPtr emitMask;
   if (obj.count("emitMask")) {
-    emitMask = ISerializable::deserialize<FieldAccessTypedExpr>(obj["emitMask"]);
+    emitMask =
+        ISerializable::deserialize<FieldAccessTypedExpr>(obj["emitMask"]);
   }
   return {
       ISerializable::deserialize<CallTypedExpr>(obj["functionCall"]),
