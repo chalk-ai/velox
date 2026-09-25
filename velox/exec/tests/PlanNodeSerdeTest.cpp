@@ -787,6 +787,22 @@ TEST_F(PlanNodeSerdeTest, window) {
              .planNode();
 
   testSerde(plan);
+
+  // Test the optional per-function emit mask.
+  plan =
+      PlanBuilder()
+          .values({data_})
+          .window(
+              {"sum(c0) over (partition by c1 order by c2 rows between 10 preceding and 5 following)"})
+          .planNode();
+  const auto& window = dynamic_cast<const core::WindowNode&>(*plan);
+  auto functions = window.windowFunctions();
+  functions[0].emitMask =
+      std::make_shared<core::FieldAccessTypedExpr>(BOOLEAN(), "c4");
+  plan = core::WindowNode::Builder(window).windowFunctions(functions).build();
+  ASSERT_NE(
+      plan->toString(true, false).find("EMIT WHERE c4"), std::string::npos);
+  testSerde(plan);
 }
 
 TEST_F(PlanNodeSerdeTest, rowNumber) {

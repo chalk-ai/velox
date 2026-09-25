@@ -2378,6 +2378,9 @@ void addWindowFunction(
     stream << " ";
   }
   stream << WindowNode::toName(frame.endType);
+  if (windowFunction.emitMask) {
+    stream << " EMIT WHERE " << windowFunction.emitMask->name();
+  }
 }
 
 } // namespace
@@ -2428,6 +2431,12 @@ WindowNode::WindowNode(
   }
 
   for (const auto& windowFunction : windowFunctions_) {
+    if (windowFunction.emitMask) {
+      VELOX_USER_CHECK(
+          windowFunction.emitMask->type()->isBoolean(),
+          "Window function emit mask must be BOOLEAN: {}",
+          windowFunction.emitMask->name());
+    }
     if (windowFunction.frame.type == WindowType::kRange) {
       if (windowFunction.frame.startValue || windowFunction.frame.endValue) {
         // This is RANGE frame with a k limit bound like
@@ -2536,16 +2545,25 @@ folly::dynamic WindowNode::Function::serialize() const {
   obj["functionCall"] = functionCall->serialize();
   obj["frame"] = frame.serialize();
   obj["ignoreNulls"] = ignoreNulls;
+  if (emitMask) {
+    obj["emitMask"] = emitMask->serialize();
+  }
   return obj;
 }
 
 // static
 WindowNode::Function WindowNode::Function::deserialize(
     const folly::dynamic& obj) {
+  FieldAccessTypedExprPtr emitMask;
+  if (obj.count("emitMask")) {
+    emitMask =
+        ISerializable::deserialize<FieldAccessTypedExpr>(obj["emitMask"]);
+  }
   return {
       ISerializable::deserialize<CallTypedExpr>(obj["functionCall"]),
       WindowNode::Frame::deserialize(obj["frame"]),
-      obj["ignoreNulls"].asBool()};
+      obj["ignoreNulls"].asBool(),
+      std::move(emitMask)};
 }
 
 folly::dynamic WindowNode::serialize() const {
