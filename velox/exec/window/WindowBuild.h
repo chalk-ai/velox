@@ -92,6 +92,14 @@ class WindowBuild {
       const char* rhs,
       const std::vector<std::pair<column_index_t, core::SortOrder>>& keys);
 
+  // Returns true if 'lhs' and 'rhs' hold equal values (nulls equal) in every
+  // column of 'keys'. Unlike compareRowsWithKeys, the result does not depend on
+  // the order the keys were sorted in.
+  bool equalRowsOnKeys(
+      const char* lhs,
+      const char* rhs,
+      const std::vector<std::pair<column_index_t, core::SortOrder>>& keys);
+
   // Initializes the RowContainer for WindowBuild implementations that
   // materialize input rows.
   void initializeRowContainer(velox::memory::MemoryPool* pool);
