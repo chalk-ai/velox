@@ -107,7 +107,7 @@ TEST_F(GeometryAggregateTest, convexHullMultipleLineStrings) {
 
 TEST_F(GeometryAggregateTest, convexHullMultiPoint) {
   testGeometryAggregate(
-      {"MULTIPOINT (0 0, 1 1, 2 0)"},
+      {"MULTIPOINT ((0 0), (1 1), (2 0))"},
       "convex_hull_agg",
       "POLYGON ((0 0, 1 1, 2 0, 0 0))");
 }
@@ -202,7 +202,7 @@ TEST_F(GeometryAggregateTest, convexHullMultipleEmpty) {
 
 TEST_F(GeometryAggregateTest, convexHullComplexGeometryCollection) {
   testGeometryAggregate(
-      {"GEOMETRYCOLLECTION (POINT (0 0), MULTIPOINT (1 1, 2 2))",
+      {"GEOMETRYCOLLECTION (POINT (0 0), MULTIPOINT ((1 1), (2 2)))",
        "GEOMETRYCOLLECTION (LINESTRING (3 3, 4 4), POLYGON ((5 5, 6 5, 6 6, 5 6, 5 5)))"},
       "convex_hull_agg",
       "POLYGON ((0 0, 5 6, 6 6, 6 5, 0 0))");
@@ -312,13 +312,13 @@ TEST_F(GeometryAggregateTest, geometryUnionMultiplePoints) {
   testGeometryAggregate(
       {"POINT (0 0)", "POINT (1 1)", "POINT (2 0)"},
       "geometry_union_agg",
-      "MULTIPOINT (0 0, 1 1, 2 0)");
+      "MULTIPOINT ((0 0), (1 1), (2 0))");
 }
 
 TEST_F(GeometryAggregateTest, geometryUnionRepeatedGeometries) {
   testGeometryAggregate(
       {"POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))",
-       "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0)))"},
+       "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"},
       "geometry_union_agg",
       "POLYGON ((0 1, 1 1, 1 0, 0 0, 0 1))");
 }
@@ -367,7 +367,7 @@ TEST_F(GeometryAggregateTest, geometryUnionMixedWithEmpty) {
   testGeometryAggregate(
       {"POINT EMPTY", "POINT (1 1)", "POINT (2 2)"},
       "geometry_union_agg",
-      "MULTIPOINT (1 1, 2 2)");
+      "MULTIPOINT ((1 1), (2 2))");
 }
 
 TEST_F(GeometryAggregateTest, geometryUnionLineStrings) {
@@ -389,9 +389,9 @@ TEST_F(GeometryAggregateTest, geometryUnionAdjacentPolygons) {
 
 TEST_F(GeometryAggregateTest, geometryUnionMultiPoint) {
   testGeometryAggregate(
-      {"MULTIPOINT (0 0, 1 1)", "POINT (2 2)"},
+      {"MULTIPOINT ((0 0), (1 1))", "POINT (2 2)"},
       "geometry_union_agg",
-      "MULTIPOINT (0 0, 1 1, 2 2)");
+      "MULTIPOINT ((0 0), (1 1), (2 2))");
 }
 
 TEST_F(GeometryAggregateTest, geometryUnionMultiLineString) {
@@ -428,14 +428,14 @@ TEST_F(GeometryAggregateTest, geometryUnionNegativeCoordinates) {
   testGeometryAggregate(
       {"POINT (-1 -1)", "POINT (1 1)"},
       "geometry_union_agg",
-      "MULTIPOINT (-1 -1, 1 1)");
+      "MULTIPOINT ((-1 -1), (1 1))");
 }
 
 TEST_F(GeometryAggregateTest, geometryUnionDecimalCoordinates) {
   testGeometryAggregate(
       {"POINT (0.5 0.5)", "POINT (1.5 1.5)"},
       "geometry_union_agg",
-      "MULTIPOINT (0.5 0.5, 1.5 1.5)");
+      "MULTIPOINT ((0.5 0.5), (1.5 1.5))");
 }
 
 } // namespace

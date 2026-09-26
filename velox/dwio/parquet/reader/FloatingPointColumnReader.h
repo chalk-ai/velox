@@ -17,6 +17,7 @@
 #pragma once
 
 #include "velox/dwio/common/SelectiveFloatingPointColumnReader.h"
+#include "velox/dwio/parquet/reader/ParquetData.h"
 
 namespace facebook::velox::parquet {
 

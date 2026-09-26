@@ -26,13 +26,16 @@
 #include <limits>
 
 #include "velox/common/base/Exceptions.h"
+#include "velox/dwio/parquet/common/BitPacking.h"
 
 #include "arrow/util/bit_util.h"
+#include "arrow/util/endian.h"
 #if __has_include("arrow/util/bpacking.h")
 #include "arrow/util/bpacking.h"
 #else
-#include "arrow/util/bpacking_internal.h"
 
+// UnpackOptions and unpack() come from the vendored BitPacking.h above;
+// arrow 23 makes bpacking_internal.h a private header.
 namespace arrow::internal {
 
 inline int unpack32(
@@ -390,45 +393,45 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     }
   }
 
+  // Bulk-unpack only a multiple of 8 values so the consumed bits end on a
+  // byte boundary. The byteOffset advance below would otherwise truncate
+  // sub-byte bit positions. The tail goes through the bit-exact GetValue_
+  // loop at the end.
+  const int alignedSize = (batchSize - i) / 8 * 8;
   if (sizeof(T) == 4) {
-    int numUnpacked = ::arrow::internal::unpack32(
-        reinterpret_cast<const uint32_t*>(buffer + byteOffset),
+    ::arrow::internal::unpack<uint32_t>(
+        buffer + byteOffset,
         reinterpret_cast<uint32_t*>(v + i),
-        batchSize - i,
-        numBits);
-    i += numUnpacked;
-    byteOffset += numUnpacked * numBits / 8;
+        {alignedSize, numBits});
+    i += alignedSize;
+    byteOffset += alignedSize * numBits / 8;
   } else if (sizeof(T) == 8 && numBits > 32) {
     // Use unpack64 only if numBits is larger than 32
     // TODO (ARROW-13677): improve the performance of internal::unpack64
     // and remove the restriction of numBits
-    int numUnpacked = ::arrow::internal::unpack64(
+    ::arrow::internal::unpack<uint64_t>(
         buffer + byteOffset,
         reinterpret_cast<uint64_t*>(v + i),
-        batchSize - i,
-        numBits);
-    i += numUnpacked;
-    byteOffset += numUnpacked * numBits / 8;
+        {alignedSize, numBits});
+    i += alignedSize;
+    byteOffset += alignedSize * numBits / 8;
   } else {
     // TODO: revisit this limit if necessary
     VELOX_DCHECK_LE(numBits, 32);
     const int bufferSize = 1024;
     uint32_t unpackBuffer[bufferSize];
-    while (i < batchSize) {
-      int unpack_size = std::min(bufferSize, batchSize - i);
-      int numUnpacked = ::arrow::internal::unpack32(
-          reinterpret_cast<const uint32_t*>(buffer + byteOffset),
+    const int bulkEnd = i + alignedSize;
+    while (i < bulkEnd) {
+      const int unpackSize = std::min(bufferSize, bulkEnd - i);
+      ::arrow::internal::unpack<uint32_t>(
+          buffer + byteOffset,
           unpackBuffer,
-          unpack_size,
-          numBits);
-      if (numUnpacked == 0) {
-        break;
-      }
-      for (int k = 0; k < numUnpacked; ++k) {
+          {unpackSize, numBits});
+      for (int k = 0; k < unpackSize; ++k) {
         v[i + k] = static_cast<T>(unpackBuffer[k]);
       }
-      i += numUnpacked;
-      byteOffset += numUnpacked * numBits / 8;
+      i += unpackSize;
+      byteOffset += unpackSize * numBits / 8;
     }
   }
 

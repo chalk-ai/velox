@@ -16,7 +16,7 @@
 #pragma once
 
 #include <boost/algorithm/string/case_conv.hpp>
-#include <velox/type/Timestamp.h>
+#include "velox/type/Timestamp.h"
 #include "velox/core/QueryConfig.h"
 #include "velox/expression/ComplexViewTypes.h"
 #include "velox/external/date/date.h"

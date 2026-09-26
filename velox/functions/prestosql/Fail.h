@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "velox/common/base/Status.h"
 #include "velox/functions/Macros.h"
 #include "velox/functions/prestosql/json/SIMDJsonExtractor.h"
 #include "velox/functions/prestosql/json/SIMDJsonWrapper.h"

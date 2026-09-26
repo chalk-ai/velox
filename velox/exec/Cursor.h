@@ -43,6 +43,15 @@ struct CursorParameters {
   /// Optional, created if not present.
   std::shared_ptr<core::QueryCtx> queryCtx{nullptr};
 
+  /// Optional expression memory pool for the QueryCtx that the cursor creates
+  /// when 'queryCtx' is not supplied. Expression evaluation allocates from the
+  /// query-scoped expression pool, which must outlive the plan and results that
+  /// reference constants folded into it; pointing it at a long-lived (e.g.
+  /// fixture-owned) pool avoids the pool leak check tripping when the per-query
+  /// expression pool would otherwise be destroyed first. Ignored when 'queryCtx'
+  /// is supplied.
+  std::shared_ptr<memory::MemoryPool> exprPool{nullptr};
+
   uint64_t bufferedBytes{512 * 1024};
 
   /// An optional memory pool to be used to allocate vectors returned by the

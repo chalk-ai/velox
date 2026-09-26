@@ -14,14 +14,20 @@
  * limitations under the License.
  */
 
+#include <boost/process/v1/env.hpp>
+#include <boost/process/v1/child.hpp>
+#include <boost/process/v1/search_path.hpp>
+#include <boost/process/v1/environment.hpp>
+
 #include "velox/connectors/hive/storage_adapters/hdfs/tests/HdfsMiniCluster.h"
 
 #include "velox/exec/tests/utils/PortUtil.h"
 
 namespace facebook::velox::filesystems::test {
+
 void HdfsMiniCluster::start() {
   try {
-    serverProcess_ = std::make_unique<boost::process::child>(
+    serverProcess_ = std::make_unique<boost::process::v1::child>(
         env_,
         exePath_,
         kJarCommand,
@@ -35,7 +41,7 @@ void HdfsMiniCluster::start() {
         nameNodePort_,
         kConfigurationOption,
         kTurnOffPermissions);
-    serverProcess_->wait_for(std::chrono::duration<int, std::milli>(60000));
+    serverProcess_->wait_for(std::chrono::milliseconds(60000));
     VELOX_CHECK_EQ(
         serverProcess_->exit_code(),
         383,
@@ -63,10 +69,10 @@ bool HdfsMiniCluster::isRunning() {
 
 // requires hadoop executable to be on the PATH
 HdfsMiniCluster::HdfsMiniCluster() {
-  env_ = (boost::process::environment)boost::this_process::environment();
+  env_ = (boost::process::v1::environment)boost::this_process::environment();
   env_["PATH"] = env_["PATH"].to_string() + kHadoopSearchPath;
   auto path = env_["PATH"].to_vector();
-  exePath_ = boost::process::search_path(
+  exePath_ = boost::process::v1::search_path(
       kMiniClusterExecutableName,
       std::vector<boost::filesystem::path>(path.begin(), path.end()));
   if (exePath_.empty()) {
@@ -79,13 +85,12 @@ HdfsMiniCluster::HdfsMiniCluster() {
   nameNodePort_ = fmt::format("{}", ports[0]);
   httpPort_ = fmt::format("{}", ports[1]);
   filesystemUrl_ = fmt::format(kHostAddressTemplate, host(), nameNodePort_);
-  boost::filesystem::path hadoopHomeDirectory = exePath_;
-  hadoopHomeDirectory.remove_leaf().remove_leaf();
+  const auto hadoopHomeDirectory = exePath_.parent_path().parent_path();
   setupEnvironment(hadoopHomeDirectory.string());
 }
 
 void HdfsMiniCluster::addFile(std::string source, std::string destination) {
-  auto filePutProcess = std::make_shared<boost::process::child>(
+  auto filePutProcess = std::make_shared<boost::process::v1::child>(
       env_,
       exePath_,
       kFilesystemCommand,
@@ -94,8 +99,8 @@ void HdfsMiniCluster::addFile(std::string source, std::string destination) {
       kFilePutOption,
       source,
       destination);
-  bool isExited =
-      filePutProcess->wait_for(std::chrono::duration<int, std::milli>(15000));
+  const bool isExited =
+      filePutProcess->wait_for(std::chrono::milliseconds(15000));
   if (!isExited) {
     VELOX_FAIL(
         "Failed to add file to hdfs, exit code: {}",
@@ -115,7 +120,6 @@ void HdfsMiniCluster::setupEnvironment(const std::string& homeDirectory) {
   env_["HADOOP_HDFS_HOME"] = homeDirectory;
   env_["YARN_HOME"] = homeDirectory;
   env_["HADOOP_COMMON_LIB_NATIVE_DIR"] = homeDirectory + "/lib/native";
-  env_["HADOOP_CONF_DIR"] = homeDirectory;
   env_["HADOOP_PREFIX"] = homeDirectory;
   env_["HADOOP_LIBEXEC_DIR"] = homeDirectory + "/libexec";
   env_["HADOOP_CONF_DIR"] = homeDirectory + "/etc/hadoop";

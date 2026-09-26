@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <folly/Conv.h>
+
 #include "velox/external/utf8proc/utf8procImpl.h"
 #include "velox/functions/Macros.h"
 #include "velox/functions/lib/Utf8Utils.h"
@@ -325,7 +327,8 @@ struct UrlExtractPortFunction {
 
     if (!uri.port.empty()) {
       try {
-        result = to<int64_t>(uri.port);
+        result = folly::to<int64_t>(
+            static_cast<folly::StringPiece>(uri.port));
         return true;
       } catch (folly::ConversionError const&) {
       }

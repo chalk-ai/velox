@@ -54,13 +54,17 @@ class FilterProjectTest : public test::HiveConnectorTestBase {
 
     auto task = assertQuery(plan, "SELECT c0, c1, c0 + c1 FROM tmp");
 
-    // A quick sanity check for memory usage reporting. Check that peak total
-    // memory usage for the project node is > 0.
+    // A quick sanity check for memory usage reporting. The project node's own
+    // operator pool can legitimately report zero peak bytes because expression
+    // evaluation (e.g. the "c0 + c1" result) allocates from the query-scoped
+    // expression pool rather than the operator pool. That expression pool is a
+    // sibling of the task pool under the query's root pool, so assert on the
+    // query root peak, which accounts for it.
     auto planStats = toPlanStats(task->taskStats());
     auto projectNodeId = plan->id();
     auto it = planStats.find(projectNodeId);
     ASSERT_TRUE(it != planStats.end());
-    ASSERT_GT(it->second.peakMemoryBytes, 0);
+    ASSERT_GT(task->queryCtx()->pool()->peakBytes(), 0);
   }
 
   RowVectorPtr makeTestVector(vector_size_t size = 100) const {

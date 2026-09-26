@@ -24,6 +24,11 @@ using namespace facebook::velox;
 class UnorderedStreamReaderTest : public testing::Test,
                                   public velox::test::VectorTestBase {
  protected:
+  // The gtest main does not initialize the velox memory manager.
+  static void SetUpTestCase() {
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
+  }
+
   void SetUp() override {
     rowType_ = ROW(
         {"c0", "c1", "c2", "c3"}, {BIGINT(), VARCHAR(), INTEGER(), BIGINT()});

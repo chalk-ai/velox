@@ -39,6 +39,8 @@ class RleEncoder;
 
 namespace facebook::velox::parquet::arrow {
 
+class BloomFilter;
+
 namespace util {
 class CodecOptions;
 } // namespace util
@@ -159,10 +161,14 @@ class PARQUET_EXPORT ColumnWriter {
  public:
   virtual ~ColumnWriter() = default;
 
+  /// \param bloomFilter The file-level bloom filter for this column chunk, or
+  /// nullptr when bloom filters are disabled for the column. Owned by the
+  /// file writer's BloomFilterBuilder and must outlive the column writer.
   static std::shared_ptr<ColumnWriter> make(
       ColumnChunkMetaDataBuilder*,
       std::unique_ptr<PageWriter>,
-      const WriterProperties* properties);
+      const WriterProperties* properties,
+      BloomFilter* bloomFilter = nullptr);
 
   /// \brief Closes the ColumnWriter, commits any buffered values to pages.
   /// \return Total size of the column in bytes.

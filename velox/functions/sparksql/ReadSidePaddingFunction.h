@@ -16,6 +16,7 @@
 #pragma once
 
 #include "velox/functions/lib/string/StringImpl.h"
+#include "velox/functions/Macros.h"
 
 namespace facebook::velox::functions::sparksql {
 

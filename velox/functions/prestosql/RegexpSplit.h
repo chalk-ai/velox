@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include "velox/functions/lib/Re2Functions.h"
+
 namespace facebook::velox::functions {
 template <typename TExec>
 struct Re2RegexpSplit {

@@ -25,7 +25,8 @@
 #include <pwd.h>
 #include <unistd.h>
 #include <iostream>
-#include "boost/process.hpp"
+#include <boost/process/v1/child.hpp>
+#include <boost/process/v1/environment.hpp>
 
 namespace facebook::velox::filesystems {
 
@@ -74,8 +75,8 @@ class AzuriteServer {
   const std::string key_{
       "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="};
   std::vector<std::string> commandOptions_;
-  std::unique_ptr<::boost::process::child> serverProcess_;
+  std::unique_ptr<::boost::process::v1::child> serverProcess_;
   boost::filesystem::path exePath_;
-  boost::process::environment env_;
+  boost::process::v1::environment env_;
 };
 } // namespace facebook::velox::filesystems

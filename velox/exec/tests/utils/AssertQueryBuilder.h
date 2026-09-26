@@ -142,6 +142,18 @@ class AssertQueryBuilder {
     return *this;
   }
 
+  /// Sets the expression memory pool used by the QueryCtx that this builder
+  /// generates when one is not supplied via queryCtx(). Expression evaluation
+  /// allocates from the query-scoped expression pool, which must outlive the
+  /// plan and results that reference constants folded into it; pointing it at a
+  /// long-lived (e.g. fixture-owned) pool avoids the pool leak check tripping
+  /// when the per-query expression pool would otherwise be destroyed first.
+  /// Ignored when queryCtx() is provided.
+  AssertQueryBuilder& exprPool(std::shared_ptr<memory::MemoryPool> pool) {
+    exprPool_ = std::move(pool);
+    return *this;
+  }
+
   /// Set the maximum time to wait for task completion after all results have
   /// been consumed. Default is 5 seconds.
   AssertQueryBuilder& maxWaitMicros(uint64_t maxWaitMicros) {
@@ -235,6 +247,7 @@ class AssertQueryBuilder {
   std::unique_ptr<folly::Executor> executor_{newExecutor()};
   DuckDbQueryRunner* const duckDbQueryRunner_;
   CursorParameters params_;
+  std::shared_ptr<memory::MemoryPool> exprPool_;
   std::unordered_map<std::string, std::string> configs_;
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       connectorSessionProperties_;
