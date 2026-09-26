@@ -118,6 +118,10 @@ class Window : public Operator {
   // Updates all the state for the next partition.
   void callResetPartition();
 
+  // Unselects, in each masked function's validFrames_, the rows of the
+  // current block whose emit mask is false or null.
+  void applyEmitMasks(vector_size_t numRows);
+
   // Computes the result vector for a subset of the current
   // partition rows starting from startRow to endRow. A single partition
   // could span multiple output blocks and a single output block could
@@ -193,6 +197,12 @@ class Window : public Operator {
   // Vector of WindowFrames corresponding to each windowFunction above.
   // It represents the frame spec for the function computation.
   std::vector<WindowFrame> windowFrames_;
+
+  // Per window function, the input channel of its emit mask, if it has one.
+  std::vector<std::optional<column_index_t>> emitMaskChannels_;
+
+  // Scratch vector the emit mask values are read into for each block.
+  VectorPtr emitMaskValues_;
 
   // The following 4 Buffers are used to pass peer and frame start and end
   // values to the WindowFunction::apply method. These buffers can be allocated

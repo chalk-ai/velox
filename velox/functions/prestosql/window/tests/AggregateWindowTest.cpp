@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/core/PlanNode.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/exec/tests/utils/AssertQueryBuilder.h"
+#include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/functions/lib/window/tests/WindowTestBase.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 
@@ -420,6 +424,204 @@ TEST_F(AggregateWindowTest, zeroRangeFrame) {
   expected = makeFlatVector<int64_t>({3, 3, 1, 4, 2});
   test("range between k preceding and unbounded following", expected);
   test("range between k following and unbounded following", expected);
+}
+
+// Tests the sliding-window (retract) optimization path with a small
+// deterministic input. The frame "rows between 1 preceding and 1 following"
+// makes both starts and ends non-decreasing, triggering the retract path for
+// aggregates that support it. Results are validated against expected values
+// hand-computed for SUM/COUNT/AVG.
+TEST_F(AggregateWindowTest, slidingWindowRetractBasic) {
+  auto c0 = makeFlatVector<int64_t>({1, 1, 1, 1, 1});
+  auto c1 = makeFlatVector<int64_t>({1, 2, 3, 4, 5});
+  auto c2 = makeFlatVector<int64_t>({10, 20, 30, 40, 50});
+  auto input = makeRowVector({"c0", "c1", "c2"}, {c0, c1, c2});
+
+  // Frame is [i-1, i+1] capped at partition boundaries. With c2 = 10,20,30,40,50:
+  // row 0: {10, 20}    -> sum=30 count=2 avg=15
+  // row 1: {10, 20, 30}-> sum=60 count=3 avg=20
+  // row 2: {20, 30, 40}-> sum=90 count=3 avg=30
+  // row 3: {30, 40, 50}-> sum=120 count=3 avg=40
+  // row 4: {40, 50}    -> sum=90 count=2 avg=45
+  auto expectedSum = makeRowVector(
+      {c0, c1, c2, makeFlatVector<int64_t>({30, 60, 90, 120, 90})});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "sum(c2)",
+      "partition by c0 order by c1",
+      "rows between 1 preceding and 1 following",
+      expectedSum);
+
+  auto expectedCount = makeRowVector(
+      {c0, c1, c2, makeFlatVector<int64_t>({2, 3, 3, 3, 2})});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "count(c2)",
+      "partition by c0 order by c1",
+      "rows between 1 preceding and 1 following",
+      expectedCount);
+
+  auto expectedAvg = makeRowVector(
+      {c0, c1, c2, makeFlatVector<double>({15.0, 20.0, 30.0, 40.0, 45.0})});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "avg(c2)",
+      "partition by c0 order by c1",
+      "rows between 1 preceding and 1 following",
+      expectedAvg);
+}
+
+// Tests that sliding sum correctly returns NULL when every row in the frame
+// is NULL. The retract path tracks non-null contributions externally because
+// the accumulator's null flag is not restored on retract; without that
+// tracking, sum would report 0 here instead of NULL.
+TEST_F(AggregateWindowTest, slidingWindowAllNullFrame) {
+  auto c0 = makeFlatVector<int64_t>({1, 1, 1, 1, 1});
+  auto c1 = makeFlatVector<int64_t>({1, 2, 3, 4, 5});
+  // Non-null at positions 0 and 4; nulls in the middle three rows.
+  auto c2 = makeNullableFlatVector<int64_t>(
+      {10, std::nullopt, std::nullopt, std::nullopt, 50});
+  auto input = makeRowVector({"c0", "c1", "c2"}, {c0, c1, c2});
+
+  // Frame "rows between 1 preceding and 1 following":
+  // row 0: {10, NULL}    -> 10
+  // row 1: {10, NULL, NULL} -> 10
+  // row 2: {NULL, NULL, NULL} -> NULL (only nulls in frame)
+  // row 3: {NULL, NULL, 50} -> 50
+  // row 4: {NULL, 50}    -> 50
+  auto expected = makeRowVector(
+      {c0,
+       c1,
+       c2,
+       makeNullableFlatVector<int64_t>(
+           {10, 10, std::nullopt, 50, 50})});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "sum(c2)",
+      "partition by c0 order by c1",
+      "rows between 1 preceding and 1 following",
+      expected);
+}
+
+// Tests sliding-window evaluation across multiple output blocks within a
+// single partition. The default output batch is large enough that small
+// inputs never split, but on a partition longer than the configured batch
+// the Window operator calls apply() multiple times. The sliding path must
+// then resume the accumulator state from the saved SlidingState between
+// blocks.
+TEST_F(AggregateWindowTest, slidingWindowAcrossBlocks) {
+  // Use a 5000-row partition with a small output batch to force the
+  // multi-block path. The frame "rows between 5 preceding and 5 following"
+  // is monotonic so the sliding path is selected; the DuckDB oracle in
+  // WindowTestBase validates correctness.
+  const vector_size_t kSize = 5'000;
+  auto c0 = makeFlatVector<int64_t>(kSize, [](auto) { return 1; });
+  auto c1 = makeFlatVector<int64_t>(kSize, [](auto row) { return row; });
+  auto c2 = makeFlatVector<int64_t>(
+      kSize, [](auto row) { return (row * 7) % 113; });
+  auto input = makeRowVector({"c0", "c1", "c2"}, {c0, c1, c2});
+
+  WindowTestBase::testWindowFunction(
+      {input},
+      "sum(c2)",
+      {"partition by c0 order by c1"},
+      {"rows between 5 preceding and 5 following"});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "count(c2)",
+      {"partition by c0 order by c1"},
+      {"rows between 5 preceding and 5 following"});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "avg(c2)",
+      {"partition by c0 order by c1"},
+      {"rows between 5 preceding and 5 following"});
+}
+
+// Tests floating-point SUM/AVG over a sliding window. Retract subtraction
+// is subject to catastrophic cancellation, but for moderately scaled inputs
+// the result should match DuckDB within tolerance. WindowTestBase compares
+// against DuckDB using the standard test harness; this exercise confirms
+// the retract path produces the right answer for non-integer inputs.
+TEST_F(AggregateWindowTest, slidingWindowFloat) {
+  const vector_size_t kSize = 200;
+  auto c0 = makeFlatVector<int64_t>(kSize, [](auto) { return 1; });
+  auto c1 = makeFlatVector<int64_t>(kSize, [](auto row) { return row; });
+  auto c2 = makeFlatVector<double>(
+      kSize, [](auto row) { return 0.125 * static_cast<double>(row + 1); });
+  auto input = makeRowVector({"c0", "c1", "c2"}, {c0, c1, c2});
+
+  WindowTestBase::testWindowFunction(
+      {input},
+      "sum(c2)",
+      {"partition by c0 order by c1"},
+      {"rows between 3 preceding and 3 following"});
+  WindowTestBase::testWindowFunction(
+      {input},
+      "avg(c2)",
+      {"partition by c0 order by c1"},
+      {"rows between 3 preceding and 3 following"});
+}
+
+// A per-function emit mask restricts which rows get a result without changing
+// any frame: masked-in rows must match the unmasked run exactly, and masked-out
+// rows get the empty-frame result (NULL for sum). The RANGE frame with a
+// column bound is monotonic, so this runs the sliding (retract) path, and the
+// small output batch makes it resume across blocks with gaps between the
+// evaluated rows.
+TEST_F(AggregateWindowTest, emitMaskSlidingRange) {
+  const vector_size_t kSize = 5'000;
+  const vector_size_t kPartitionSize = 2'500;
+  auto p = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return row / kPartitionSize; });
+  auto o = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return (row % kPartitionSize) * 3; });
+  // RANGE bounds are values of the ORDER BY key: the frame is [o - 20, o].
+  auto lo = makeFlatVector<int64_t>(
+      kSize, [&](auto row) { return (row % kPartitionSize) * 3 - 20; });
+  auto v = makeFlatVector<int64_t>(
+      kSize, [](auto row) { return (row * 7) % 113; });
+  auto m = makeFlatVector<bool>(kSize, [](auto row) { return row % 7 == 0; });
+  auto input = makeRowVector({"p", "o", "lo", "v", "m"}, {p, o, lo, v, m});
+
+  auto plan =
+      PlanBuilder()
+          .values({input})
+          .window(
+              {"sum(v) over (partition by p order by o range between lo preceding and current row)"})
+          .planNode();
+  const auto& window = dynamic_cast<const core::WindowNode&>(*plan);
+  auto functions = window.windowFunctions();
+  functions[0].emitMask =
+      std::make_shared<core::FieldAccessTypedExpr>(BOOLEAN(), "m");
+  auto maskedPlan =
+      core::WindowNode::Builder(window).windowFunctions(functions).build();
+
+  auto run = [&](const core::PlanNodePtr& node) {
+    return AssertQueryBuilder(node)
+        .config(core::QueryConfig::kPreferredOutputBatchRows, "97")
+        .copyResults(pool());
+  };
+  auto unmasked = run(plan);
+  auto masked = run(maskedPlan);
+  ASSERT_EQ(unmasked->size(), kSize);
+  ASSERT_EQ(masked->size(), kSize);
+
+  // Both runs emit rows in the same (partition, order key) order.
+  auto maskColumn = masked->childAt(4)->as<SimpleVector<bool>>();
+  auto maskedSum = masked->childAt(5);
+  auto unmaskedSum = unmasked->childAt(5);
+  vector_size_t numEvaluated = 0;
+  for (vector_size_t row = 0; row < kSize; ++row) {
+    if (maskColumn->valueAt(row)) {
+      ++numEvaluated;
+      ASSERT_TRUE(maskedSum->equalValueAt(unmaskedSum.get(), row, row))
+          << "row " << row;
+    } else {
+      ASSERT_TRUE(maskedSum->isNullAt(row)) << "row " << row;
+    }
+  }
+  ASSERT_GT(numEvaluated, 0);
 }
 
 TEST_F(AggregateWindowTest, singlePartitionColumnForPrefixSort) {
