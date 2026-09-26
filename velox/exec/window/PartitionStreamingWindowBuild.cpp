@@ -46,8 +46,12 @@ void PartitionStreamingWindowBuild::addInput(RowVectorPtr input) {
       data_->store(decodedInputVectors_[col], row, newRow, col);
     }
 
+    // Sorted input only guarantees that each partition's rows are contiguous:
+    // the keys may be sorted descending, nulls last, or in another key order.
+    // A partition therefore starts wherever any key changes, not only where
+    // the keys increase.
     if (previousRow_ != nullptr &&
-        compareRowsWithKeys(previousRow_, newRow, partitionKeyInfo_)) {
+        !equalRowsOnKeys(previousRow_, newRow, partitionKeyInfo_)) {
       buildNextPartition();
     }
 
