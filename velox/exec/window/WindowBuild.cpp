@@ -140,4 +140,24 @@ bool WindowBuild::compareRowsWithKeys(
   return false;
 }
 
+bool WindowBuild::equalRowsOnKeys(
+    const char* lhs,
+    const char* rhs,
+    const std::vector<std::pair<column_index_t, core::SortOrder>>& keys) {
+  if (lhs == rhs) {
+    return true;
+  }
+  for (auto& key : keys) {
+    if (data_->compare(
+            lhs,
+            rhs,
+            key.first,
+            {key.second.isNullsFirst(), key.second.isAscending(), false}) !=
+        0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace facebook::velox::exec::window
