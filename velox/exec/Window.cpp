@@ -243,6 +243,45 @@ void Window::createWindowFunctions() {
 
     windowFrames_.push_back(
         createWindowFrame(windowNode_, windowNodeFunction.frame, inputType));
+
+    if (windowNodeFunction.emitMask) {
+      const auto channel =
+          exprToChannel(windowNodeFunction.emitMask.get(), inputType);
+      VELOX_USER_CHECK_NE(
+          channel,
+          kConstantChannel,
+          "Window function emit mask must be an input column");
+      emitMaskChannels_.push_back(channel);
+    } else {
+      emitMaskChannels_.push_back(std::nullopt);
+    }
+  }
+}
+
+void Window::applyEmitMasks(vector_size_t numRows) {
+  for (auto i = 0; i < windowFunctions_.size(); ++i) {
+    if (!emitMaskChannels_[i].has_value()) {
+      continue;
+    }
+    if (emitMaskValues_ == nullptr) {
+      emitMaskValues_ = BaseVector::create(BOOLEAN(), numRows, pool());
+    }
+    // Same row coordinates as getInputColumns: partitionOffset_ is the
+    // position of startRow among the rows the partition still holds.
+    currentPartition_->extractColumn(
+        emitMaskChannels_[i].value(),
+        partitionOffset_,
+        numRows,
+        0,
+        emitMaskValues_);
+    DecodedVector decoded(*emitMaskValues_, SelectivityVector(numRows));
+    auto& validFrames = validFrames_[i];
+    for (vector_size_t row = 0; row < numRows; ++row) {
+      if (decoded.isNullAt(row) || !decoded.valueAt<bool>(row)) {
+        validFrames.setValid(row, false);
+      }
+    }
+    validFrames.updateBounds();
   }
 }
 
@@ -659,6 +698,7 @@ void Window::callApplyForPartitionRows(
   computePeerAndFrameBuffers(startRow, endRow);
 
   getInputColumns(startRow, endRow, resultOffset, result);
+  applyEmitMasks(endRow - startRow);
   vector_size_t numFuncs = windowFunctions_.size();
   for (auto i = 0; i < numFuncs; ++i) {
     windowFunctions_[i]->apply(
