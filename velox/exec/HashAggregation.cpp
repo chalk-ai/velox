@@ -15,6 +15,7 @@
  */
 #include "velox/exec/HashAggregation.h"
 
+#include <algorithm>
 #include <optional>
 #include "velox/common/testutil/TestValue.h"
 #include "velox/exec/OperatorType.h"
@@ -87,6 +88,10 @@ void HashAggregation::initialize() {
   std::shared_ptr<core::ExpressionEvaluator> expressionEvaluator;
   std::vector<AggregateInfo> aggregateInfos = toAggregateInfo(
       *aggregationNode_, *operatorCtx_, numHashers, expressionEvaluator);
+  for (const auto& info : aggregateInfos) {
+    accumulatorsUseExternalMemory_ |=
+        info.function->accumulatorUsesExternalMemory();
+  }
 
   // Check that aggregate result type match the output type.
   for (auto i = 0; i < aggregateInfos.size(); i++) {
@@ -188,6 +193,22 @@ bool HashAggregation::abandonPartialAggregationEarly(int64_t numOutput) const {
       100 * numOutput / numInputRows_ >= abandonPartialAggregationMinPct_;
 }
 
+int64_t HashAggregation::partialAggregationBytes() const {
+  // Some accumulators (e.g. sketch libraries using a pool-backed STL
+  // allocator) allocate from the operator pool rather than the grouping set's
+  // HashStringAllocator. Without counting them the flush limit only bounds the
+  // hash table, while the accumulators behind it grow without limit. Pool growth
+  // also includes lookup and hasher buffers, so it is only used when some
+  // accumulator keeps out-of-line memory; otherwise the grouping set's own
+  // accounting is exact.
+  if (!accumulatorsUseExternalMemory_) {
+    return groupingSet_->allocatedBytes();
+  }
+  return std::max<int64_t>(
+      groupingSet_->allocatedBytes(),
+      pool()->usedBytes() - poolUsedBytesAtReset_);
+}
+
 void HashAggregation::addInput(RowVectorPtr input) {
   // needsInput() returns false while input_ is set, so the driver must drain
   // the previous batch via getOutput() before feeding another. Fail loudly if
@@ -215,7 +236,8 @@ void HashAggregation::addInput(RowVectorPtr input) {
       abandonPartialAggregationEarly(groupingSet_->numDistinct());
   if (isPartialOutput_ && !isGlobal_ &&
       (abandonPartialEarly ||
-       groupingSet_->isPartialFull(maxPartialAggregationMemoryUsage_))) {
+       groupingSet_->isPartialFull(maxPartialAggregationMemoryUsage_) ||
+       partialAggregationBytes() > maxPartialAggregationMemoryUsage_)) {
     partialFull_ = true;
   }
 
@@ -309,6 +331,7 @@ void HashAggregation::resetPartialOutputIfNeed() {
         RuntimeCounter(saturateCast(aggregationPct)));
   }
   groupingSet_->resetTable(/*freeTable=*/false);
+  poolUsedBytesAtReset_ = pool()->usedBytes();
   partialFull_ = false;
   if (!finished_) {
     maybeIncreasePartialAggregationMemoryUsage(aggregationPct);
@@ -340,8 +363,7 @@ void HashAggregation::maybeIncreasePartialAggregationMemoryUsage(
   // the memory reservation below succeeds, it ensures the partial aggregator
   // can allocate that much memory in next run.
   const int64_t memoryToReserve = std::max<int64_t>(
-      0,
-      extendedPartialAggregationMemoryUsage - groupingSet_->allocatedBytes());
+      0, extendedPartialAggregationMemoryUsage - partialAggregationBytes());
   if (!pool()->maybeReserve(memoryToReserve)) {
     return;
   }

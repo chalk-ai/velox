@@ -16,7 +16,10 @@
 
 #include <fmt/format.h>
 #include <folly/Math.h>
+#include <gtest/gtest.h>
 #include <re2/re2.h>
+#include <memory>
+#include <utility>
 
 #include "folly/synchronization/EventCount.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -44,6 +47,7 @@
 #include "velox/exec/tests/utils/SumNonPODAggregate.h"
 
 #include "velox/type/tests/utils/CustomTypesForTesting.h"
+#include "velox/vector/DecodedVector.h"
 #include "velox/vector/LazyVector.h"
 
 namespace facebook::velox::exec::test {
@@ -1098,6 +1102,170 @@ TEST_F(AggregationTest, largeValueRangeArray) {
   // The partial agg is expected to flush just once. The final agg gets one
   // batch.
   EXPECT_EQ(1, stats.at(finalAggId).inputVectors);
+}
+
+namespace {
+// Counts rows per group. Each group's accumulator also holds a block allocated
+// from the operator pool directly, the way a sketch library's pool-backed STL
+// allocator does, so its memory is invisible to GroupingSet::allocatedBytes().
+class PoolBlockCountAggregate : public Aggregate {
+ public:
+  static constexpr int64_t kBlockBytes = 64 << 10;
+
+  explicit PoolBlockCountAggregate(TypePtr resultType)
+      : Aggregate(std::move(resultType)) {}
+
+  int32_t accumulatorFixedWidthSize() const override {
+    return sizeof(Accumulator);
+  }
+
+  bool accumulatorUsesExternalMemory() const override {
+    return true;
+  }
+
+  void addRawInput(
+      char** groups,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& /*args*/,
+      bool /*mayPushdown*/) override {
+    rows.applyToSelected([&](auto row) { add(groups[row], 1); });
+  }
+
+  void addIntermediateResults(
+      char** groups,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args,
+      bool /*mayPushdown*/) override {
+    DecodedVector counts(*args[0], rows);
+    rows.applyToSelected(
+        [&](auto row) { add(groups[row], counts.valueAt<int64_t>(row)); });
+  }
+
+  void addSingleGroupRawInput(
+      char* group,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& /*args*/,
+      bool /*mayPushdown*/) override {
+    add(group, rows.countSelected());
+  }
+
+  void addSingleGroupIntermediateResults(
+      char* group,
+      const SelectivityVector& rows,
+      const std::vector<VectorPtr>& args,
+      bool /*mayPushdown*/) override {
+    DecodedVector counts(*args[0], rows);
+    rows.applyToSelected(
+        [&](auto row) { add(group, counts.valueAt<int64_t>(row)); });
+  }
+
+  void extractValues(char** groups, int32_t numGroups, VectorPtr* result)
+      override {
+    auto* counts = (*result)->as<FlatVector<int64_t>>();
+    counts->resize(numGroups);
+    for (auto i = 0; i < numGroups; ++i) {
+      counts->set(i, value<Accumulator>(groups[i])->count);
+    }
+  }
+
+  void extractAccumulators(char** groups, int32_t numGroups, VectorPtr* result)
+      override {
+    extractValues(groups, numGroups, result);
+  }
+
+ protected:
+  void initializeNewGroupsInternal(
+      char** groups,
+      folly::Range<const vector_size_t*> indices) override {
+    for (auto index : indices) {
+      new (groups[index] + offset_) Accumulator{};
+    }
+  }
+
+  void destroyInternal(folly::Range<char**> groups) override {
+    for (auto* group : groups) {
+      auto* accumulator = value<Accumulator>(group);
+      if (isInitialized(group) && accumulator->block != nullptr) {
+        allocator_->pool()->free(accumulator->block, kBlockBytes);
+        accumulator->block = nullptr;
+      }
+    }
+  }
+
+ private:
+  struct Accumulator {
+    int64_t count{0};
+    void* block{nullptr};
+  };
+
+  void add(char* group, int64_t count) {
+    clearNull(group);
+    auto* accumulator = value<Accumulator>(group);
+    if (accumulator->block == nullptr) {
+      accumulator->block = allocator_->pool()->allocate(kBlockBytes);
+    }
+    accumulator->count += count;
+  }
+};
+
+void registerPoolBlockCount() {
+  registerAggregateFunction(
+      "pool_block_count",
+      {AggregateFunctionSignatureBuilder()
+           .returnType("bigint")
+           .intermediateType("bigint")
+           .argumentType("bigint")
+           .build()},
+      [](core::AggregationNode::Step /*step*/,
+         const std::vector<TypePtr>& /*argTypes*/,
+         const TypePtr& resultType,
+         const core::QueryConfig& /*config*/)
+          -> std::unique_ptr<exec::Aggregate> {
+        return std::make_unique<PoolBlockCountAggregate>(resultType);
+      },
+      false /*registerCompanionFunctions*/,
+      true /*overwrite*/);
+}
+} // namespace
+
+TEST_F(AggregationTest, partialAggregationMemoryLimitCountsPoolMemory) {
+  registerPoolBlockCount();
+  // 2'000 groups hold ~125MB of accumulator blocks, far above the 1MB partial
+  // limit, while the grouping set itself accounts for well under 1MB.
+  // The limit is checked between input batches, so feed small batches.
+  constexpr int32_t kNumGroups = 2'000;
+  constexpr int32_t kBatchRows = 10;
+  auto keys = makeFlatVector<int64_t>(kNumGroups, [](auto row) { return row; });
+  std::vector<RowVectorPtr> batches;
+  for (auto pass = 0; pass < 3; ++pass) {
+    for (auto start = 0; start < kNumGroups; start += kBatchRows) {
+      auto batchKeys = makeFlatVector<int64_t>(
+          kBatchRows, [start](auto row) { return start + row; });
+      batches.push_back(makeRowVector({batchKeys, batchKeys}));
+    }
+  }
+
+  core::PlanNodeId partialAggNodeId;
+  auto task =
+      AssertQueryBuilder(
+          PlanBuilder()
+              .values(batches)
+              .partialAggregation({"c0"}, {"pool_block_count(c1)"})
+              .capturePlanNodeId(partialAggNodeId)
+              .finalAggregation()
+              .planNode())
+          .config(QueryConfig::kMaxPartialAggregationMemory, 1 << 20)
+          .config(QueryConfig::kMaxExtendedPartialAggregationMemory, 1 << 20)
+          .assertResults(makeRowVector(
+              {keys, makeConstant<int64_t>(3, kNumGroups)}));
+
+  const auto planStats = toPlanStats(task->taskStats());
+  const auto& stats = planStats.at(partialAggNodeId);
+  // The partial aggregation either flushed or gave up on partial aggregation;
+  // either way it stopped accumulating long before holding every block.
+  EXPECT_LT(
+      stats.peakMemoryBytes,
+      PoolBlockCountAggregate::kBlockBytes * kNumGroups / 4);
 }
 
 TEST_F(AggregationTest, partialAggregationMemoryLimitIncrease) {
