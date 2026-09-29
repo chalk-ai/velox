@@ -496,6 +496,22 @@ std::unique_ptr<WriteFile> S3FileSystem::openFileForWrite(
   return s3file;
 }
 
+void S3FileSystem::remove(std::string_view path) {
+  std::string bucket;
+  std::string key;
+  getBucketAndKeyFromPath(getPath(path), bucket, key);
+
+  Aws::S3::Model::DeleteObjectRequest request;
+  request.SetBucket(awsString(bucket));
+  request.SetKey(awsString(key));
+
+  VELOX_CHECK_AWS_OUTCOME(
+      impl_->s3Client()->DeleteObject(request),
+      "Failed to delete object in S3",
+      bucket,
+      key);
+}
+
 std::string S3FileSystem::name() const {
   return "S3";
 }
