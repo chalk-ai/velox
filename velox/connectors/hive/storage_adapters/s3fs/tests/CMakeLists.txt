@@ -37,6 +37,17 @@ target_link_libraries(
   GTest::gtest_main
 )
 
+add_executable(velox_s3remove_test S3FileSystemRemoveTest.cpp)
+add_test(velox_s3remove_test velox_s3remove_test)
+target_link_libraries(
+  velox_s3remove_test
+  velox_file
+  velox_s3fs
+  velox_exec_test_lib
+  GTest::gtest
+  GTest::gtest_main
+)
+
 add_executable(velox_s3registration_test S3FileSystemRegistrationTest.cpp)
 add_test(velox_s3registration_test velox_s3registration_test)
 target_link_libraries(

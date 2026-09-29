@@ -60,9 +60,8 @@ class S3FileSystem : public FileSystem {
       std::string_view s3Path,
       const FileOptions& options) override;
 
-  void remove(std::string_view path) override {
-    VELOX_UNSUPPORTED("remove for S3 not implemented");
-  }
+  /// Deletes the object, succeeding if the key is already absent.
+  void remove(std::string_view path) override;
 
   // Renames the path.
   void rename(
