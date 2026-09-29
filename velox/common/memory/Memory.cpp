@@ -18,6 +18,7 @@
 
 #include <atomic>
 
+#include "velox/common/base/ConcurrentCounter.h"
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/memory/MallocAllocator.h"
@@ -380,8 +381,7 @@ void MemoryManager::dropPool(MemoryPool* pool) {
 }
 
 MemoryPool& MemoryManager::deprecatedSharedLeafPool() {
-  const auto idx = std::hash<std::thread::id>{}(std::this_thread::get_id());
-  return *sharedLeafPools_.at(idx % sharedLeafPools_.size());
+  return *sharedLeafPools_.at(threadIdShardHash() % sharedLeafPools_.size());
 }
 
 int64_t MemoryManager::getTotalBytes() const {

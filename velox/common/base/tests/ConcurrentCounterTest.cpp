@@ -16,6 +16,10 @@
 
 #include "velox/common/base/ConcurrentCounter.h"
 
+#include <atomic>
+#include <thread>
+#include <vector>
+
 #include <fmt/format.h>
 #include <folly/Random.h>
 #include <folly/system/HardwareConcurrency.h>
@@ -106,6 +110,36 @@ TEST_P(ConcurrentCounterTest, multithread) {
     }
     ASSERT_EQ(read(), expectedCount);
   }
+}
+
+// Concurrently live threads must land on many shards; if the thread-id hash
+// is not mixed, libc++ maps every thread to one shard and one mutex.
+TEST(ConcurrentCounterShardTest, threadsSpreadAcrossShards) {
+  constexpr int kNumThreads = 64;
+  ConcurrentCounter<int64_t> counter(kNumThreads);
+  std::atomic<int> started{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (int i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([&]() {
+      counter.update(1);
+      // Keeps every thread alive until all have updated, so no two share a
+      // thread id.
+      started.fetch_add(1);
+      while (started.load() < kNumThreads) {
+        std::this_thread::yield();
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  ASSERT_EQ(counter.read(), kNumThreads);
+  int usedShards{0};
+  for (int i = 0; i < kNumThreads; ++i) {
+    usedShards += counter.testingRead(i) > 0 ? 1 : 0;
+  }
+  ASSERT_GE(usedShards, kNumThreads / 4);
 }
 
 VELOX_INSTANTIATE_TEST_SUITE_P(

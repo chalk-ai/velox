@@ -17,6 +17,7 @@
 #include "velox/exec/SpillStats.h"
 #include <folly/system/HardwareConcurrency.h>
 #include <sstream>
+#include "velox/common/base/ConcurrentCounter.h"
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/base/SuccinctPrinter.h"
@@ -29,9 +30,8 @@ std::vector<SpillStats>& allSpillStats() {
 }
 
 SpillStats& localSpillStats() {
-  const auto idx = std::hash<std::thread::id>{}(std::this_thread::get_id());
   auto& spillStatsVector = allSpillStats();
-  return spillStatsVector[idx % spillStatsVector.size()];
+  return spillStatsVector[threadIdShardHash() % spillStatsVector.size()];
 }
 } // namespace
 

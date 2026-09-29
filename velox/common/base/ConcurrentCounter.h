@@ -21,10 +21,22 @@
 #include <new>
 #include <thread>
 
+#include <folly/hash/Hash.h>
+
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::velox {
+
+/// Hash of the calling thread's id for picking a per-thread shard by mask or
+/// modulo. libc++'s std::hash<std::thread::id> is the identity on pthread_t,
+/// whose low bits are the same in every thread (it sits at a fixed offset in a
+/// page-aligned stack mapping), so masking the raw hash sends every thread to
+/// the same shard. Mixing spreads the high bits into the low ones.
+inline size_t threadIdShardHash() {
+  return folly::hash::twang_mix64(
+      std::hash<std::thread::id>{}(std::this_thread::get_id()));
+}
 
 /// The class provides concurrent updates to a counter with minimum lock
 /// contention. The template argument T specifies the counter type. The counter
@@ -106,9 +118,7 @@ class ConcurrentCounter {
   };
 
   size_t shardIndex() const {
-    const size_t hash =
-        std::hash<std::thread::id>{}(std::this_thread::get_id());
-    const size_t index = hash & shardMask_;
+    const size_t index = threadIdShardHash() & shardMask_;
     VELOX_DCHECK_LT(index, counters_.size());
     return index;
   }
