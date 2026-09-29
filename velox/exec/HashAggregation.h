@@ -103,6 +103,10 @@ class HashAggregation : public Operator {
   // 'abandonPartialAggregationMinPct_' % of rows are unique.
   bool abandonPartialAggregationEarly(int64_t numOutput) const;
 
+  // Memory held by the partial aggregation: the grouping set's own accounting,
+  // or the operator pool's growth since the last flush if that is larger.
+  int64_t partialAggregationBytes() const;
+
   RowVectorPtr getDistinctOutput();
 
   // Setups the projections for accessing grouping keys stored in grouping
@@ -161,6 +165,15 @@ class HashAggregation : public Operator {
   std::optional<int64_t> estimatedOutputRowSize_;
 
   bool partialFull_ = false;
+
+  // Whether some aggregate keeps out-of-line accumulator memory, which may be
+  // allocated from the operator pool rather than the grouping set's allocator.
+  bool accumulatorsUseExternalMemory_{false};
+
+  // Operator pool usage right after the partial table was last reset. Pool
+  // growth since then includes accumulator memory allocated from the pool
+  // directly, which GroupingSet::allocatedBytes() does not see.
+  int64_t poolUsedBytesAtReset_{0};
   bool newDistincts_ = false;
   bool finished_ = false;
   // True if partial aggregation has been found to be non-reducing.
