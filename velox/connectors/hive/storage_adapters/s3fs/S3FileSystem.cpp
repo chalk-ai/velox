@@ -235,9 +235,9 @@ class S3FileSystem::Impl {
     Aws::Client::ClientConfigurationInitValues initValues;
     initValues.shouldDisableIMDS = !s3Config_->useIMDS();
     Aws::S3::S3ClientConfiguration clientConfig(initValues);
-#if AWS_SDK_VERSION_MAJOR > 1 || \
-    (AWS_SDK_VERSION_MAJOR == 1 &&                      \
-     (AWS_SDK_VERSION_MINOR > 11 ||                      \
+#if AWS_SDK_VERSION_MAJOR > 1 ||    \
+    (AWS_SDK_VERSION_MAJOR == 1 &&  \
+     (AWS_SDK_VERSION_MINOR > 11 || \
       (AWS_SDK_VERSION_MINOR == 11 && AWS_SDK_VERSION_PATCH >= 654)))
     clientConfig.checksumConfig.requestChecksumCalculation =
         Aws::Client::RequestChecksumCalculation::WHEN_REQUIRED;
@@ -505,11 +505,9 @@ void S3FileSystem::remove(std::string_view path) {
   request.SetBucket(awsString(bucket));
   request.SetKey(awsString(key));
 
+  const auto outcome = impl_->s3Client()->DeleteObject(request);
   VELOX_CHECK_AWS_OUTCOME(
-      impl_->s3Client()->DeleteObject(request),
-      "Failed to delete object in S3",
-      bucket,
-      key);
+      outcome, "Failed to delete object in S3", bucket, key);
 }
 
 std::string S3FileSystem::name() const {
