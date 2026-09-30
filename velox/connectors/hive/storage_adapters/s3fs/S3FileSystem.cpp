@@ -505,11 +505,9 @@ void S3FileSystem::remove(std::string_view path) {
   request.SetBucket(awsString(bucket));
   request.SetKey(awsString(key));
 
+  const auto outcome = impl_->s3Client()->DeleteObject(request);
   VELOX_CHECK_AWS_OUTCOME(
-      impl_->s3Client()->DeleteObject(request),
-      "Failed to delete object in S3",
-      bucket,
-      key);
+      outcome, "Failed to delete object in S3", bucket, key);
 }
 
 std::string S3FileSystem::name() const {
