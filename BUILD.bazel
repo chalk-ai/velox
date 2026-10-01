@@ -717,7 +717,6 @@ cc_library(
         "velox/common/base/tests/BitUtilTest.cpp",
         "velox/common/base/tests/BloomFilterTest.cpp",
         "velox/common/base/tests/CoalesceIoTest.cpp",
-        "velox/common/base/tests/ConcurrentCounterTest.cpp",
         "velox/common/base/tests/ExceptionTest.cpp",
         "velox/common/base/tests/FsTest.cpp",
         "velox/common/base/tests/IdMapTest.cpp",
@@ -5011,5 +5010,40 @@ cc_library(
         "@folly//folly/hash",
         "@glog",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "velox_common_base_tests_ConcurrentCounterTest",
+    srcs = ["velox/common/base/tests/ConcurrentCounterTest.cpp"],
+    deps = [
+        ":base",
+        ":test_utils_base",
+        "@fmt",
+        "@folly//folly:random",
+        "@folly//folly/system:hardware_concurrency",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "velox_common_memory_tests_MallocAllocatorReservationTest",
+    srcs = ["velox/common/memory/tests/MallocAllocatorReservationTest.cpp"],
+    deps = [
+        ":base",
+        "@folly//folly/system:hardware_concurrency",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_binary(
+    name = "velox_common_base_benchmarks_ConcurrentCounterBenchmark",
+    srcs = ["velox/common/base/benchmarks/ConcurrentCounterBenchmark.cpp"],
+    deps = [
+        ":base",
+        "@folly//folly/system:hardware_concurrency",
+        "@gflags",
     ],
 )

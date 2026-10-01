@@ -1,0 +1,2 @@
+- Mix thread-ID hashes before masking ConcurrentCounter shards to avoid allocator reservation contention on libc++.
+- Add concurrent reservation correctness coverage and repeatable counter and allocator contention benchmarks.
