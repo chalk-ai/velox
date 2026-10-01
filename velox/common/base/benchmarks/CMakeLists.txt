@@ -50,3 +50,10 @@ target_link_libraries(
   PUBLIC Folly::follybenchmark
   PRIVATE velox_common_base Folly::folly
 )
+
+add_executable(velox_concurrent_counter_benchmark ConcurrentCounterBenchmark.cpp)
+
+target_link_libraries(
+  velox_concurrent_counter_benchmark
+  PRIVATE velox_common_base velox_memory Folly::folly gflags::gflags
+)
