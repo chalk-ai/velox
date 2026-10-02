@@ -624,6 +624,78 @@ TEST_F(AggregateWindowTest, emitMaskSlidingRange) {
   ASSERT_GT(numEvaluated, 0);
 }
 
+// An emit mask over the default frame (unbounded preceding to current row) on
+// pre-sorted input. Such a window is otherwise eligible for the rows-streaming
+// build, which discards rows once their output is produced, while the
+// incremental aggregate only accumulates up to the frame end of the last
+// unmasked row of each output block. Masked rows at the end of a block must
+// still be counted by later rows: masked-in rows match the unmasked run, and
+// masked-out rows get the empty-frame result.
+TEST_F(AggregateWindowTest, emitMaskStreamingDefaultFrame) {
+  const vector_size_t kBatchSize = 50;
+  const vector_size_t kNumBatches = 40;
+  const vector_size_t kPartitionSize = 700;
+  std::vector<RowVectorPtr> input;
+  for (vector_size_t batch = 0; batch < kNumBatches; ++batch) {
+    const vector_size_t offset = batch * kBatchSize;
+    input.push_back(makeRowVector(
+        {"p", "o", "v", "m"},
+        {
+            makeFlatVector<int64_t>(
+                kBatchSize,
+                [&](auto row) { return (offset + row) / kPartitionSize; }),
+            makeFlatVector<int64_t>(
+                kBatchSize,
+                [&](auto row) { return (offset + row) % kPartitionSize; }),
+            makeFlatVector<int64_t>(
+                kBatchSize,
+                [&](auto row) { return ((offset + row) * 7) % 113; }),
+            // Sparse, so most output blocks end on masked-out rows.
+            makeFlatVector<bool>(
+                kBatchSize, [&](auto row) { return (offset + row) % 31 == 0; }),
+        }));
+  }
+
+  auto plan =
+      PlanBuilder()
+          .values(input)
+          .streamingWindow(
+              {"sum(v) over (partition by p order by o rows between unbounded preceding and current row)"})
+          .planNode();
+  const auto& window = dynamic_cast<const core::WindowNode&>(*plan);
+  auto functions = window.windowFunctions();
+  functions[0].emitMask =
+      std::make_shared<core::FieldAccessTypedExpr>(BOOLEAN(), "m");
+  auto maskedPlan =
+      core::WindowNode::Builder(window).windowFunctions(functions).build();
+
+  auto run = [&](const core::PlanNodePtr& node) {
+    return AssertQueryBuilder(node)
+        .config(core::QueryConfig::kPreferredOutputBatchRows, "23")
+        .copyResults(pool());
+  };
+  auto unmasked = run(plan);
+  auto masked = run(maskedPlan);
+  const vector_size_t kSize = kBatchSize * kNumBatches;
+  ASSERT_EQ(unmasked->size(), kSize);
+  ASSERT_EQ(masked->size(), kSize);
+
+  auto maskColumn = masked->childAt(3)->as<SimpleVector<bool>>();
+  auto maskedSum = masked->childAt(4);
+  auto unmaskedSum = unmasked->childAt(4);
+  vector_size_t numEvaluated = 0;
+  for (vector_size_t row = 0; row < kSize; ++row) {
+    if (maskColumn->valueAt(row)) {
+      ++numEvaluated;
+      ASSERT_TRUE(maskedSum->equalValueAt(unmaskedSum.get(), row, row))
+          << "row " << row;
+    } else {
+      ASSERT_TRUE(maskedSum->isNullAt(row)) << "row " << row;
+    }
+  }
+  ASSERT_GT(numEvaluated, 0);
+}
+
 TEST_F(AggregateWindowTest, singlePartitionColumnForPrefixSort) {
   auto size = 100;
   auto input = makeRowVector(

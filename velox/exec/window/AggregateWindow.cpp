@@ -129,7 +129,14 @@ class AggregateWindowFunction : public exec::WindowFunction {
       const SelectivityVector& validRows,
       vector_size_t resultOffset,
       const VectorPtr& result) override {
-    if (handleAllEmptyFrames(validRows, resultOffset, result)) {
+    // The rows with a frame. Under an emit mask this is wider than validRows,
+    // the rows that get a result: the incremental and sliding accumulators
+    // advance across every row with a frame and only extract at validRows. A
+    // streaming build releases a block's rows once it is processed, so the
+    // accumulator must consume them while they are present, even when they
+    // are masked out.
+    const auto& framedRows = frameRows(validRows);
+    if (handleAllEmptyFrames(framedRows, validRows, resultOffset, result)) {
       return;
     }
 
@@ -137,7 +144,7 @@ class AggregateWindowFunction : public exec::WindowFunction {
     auto rawFrameEnds = frameEnds->as<vector_size_t>();
 
     FrameMetadata frameMetadata =
-        analyzeFrameValues(validRows, rawFrameStarts, rawFrameEnds);
+        analyzeFrameValues(framedRows, rawFrameStarts, rawFrameEnds);
 
     if (frameMetadata.incrementalAggregation) {
       vector_size_t startRow;
@@ -163,6 +170,7 @@ class AggregateWindowFunction : public exec::WindowFunction {
 
       fillArgVectors(startRow, frameMetadata.lastRow);
       incrementalAggregation(
+          framedRows,
           validRows,
           startRow,
           frameMetadata.lastRow,
@@ -172,6 +180,7 @@ class AggregateWindowFunction : public exec::WindowFunction {
     } else if (frameMetadata.slidingAggregation) {
       fillArgVectors(frameMetadata.firstRow, frameMetadata.lastRow);
       slidingAggregation(
+          framedRows,
           validRows,
           frameMetadata.firstRow,
           frameMetadata.lastRow,
@@ -244,11 +253,14 @@ class AggregateWindowFunction : public exec::WindowFunction {
     int64_t nonNullCount;
   };
 
+  // Handles a block in which no row has a frame. A block whose rows are all
+  // masked out but framed still runs, so that it advances the accumulator.
   bool handleAllEmptyFrames(
+      const SelectivityVector& framedRows,
       const SelectivityVector& validRows,
       vector_size_t resultOffset,
       const VectorPtr& result) {
-    if (!validRows.hasSelections()) {
+    if (!framedRows.hasSelections()) {
       setEmptyFramesResult(validRows, resultOffset, emptyResult_, result);
       return true;
     }
@@ -349,22 +361,32 @@ class AggregateWindowFunction : public exec::WindowFunction {
     }
   }
 
-  void computeAggregate(
-      SelectivityVector rows,
+  void addFrameRows(
+      SelectivityVector& rows,
       vector_size_t startFrame,
       vector_size_t endFrame) {
     rows.clearAll();
     rows.setValidRange(startFrame, endFrame, true);
     rows.updateBounds();
-
-    BaseVector::prepareForReuse(aggregateResultVector_, 1);
-
     aggregate_->addSingleGroupRawInput(
         rawSingleGroupRow_, rows, argVectors_, false);
+  }
+
+  void extractAggregate() {
+    BaseVector::prepareForReuse(aggregateResultVector_, 1);
     aggregate_->extractValues(&rawSingleGroupRow_, 1, &aggregateResultVector_);
   }
 
+  void computeAggregate(
+      SelectivityVector rows,
+      vector_size_t startFrame,
+      vector_size_t endFrame) {
+    addFrameRows(rows, startFrame, endFrame);
+    extractAggregate();
+  }
+
   void incrementalAggregation(
+      const SelectivityVector& framedRows,
       const SelectivityVector& validRows,
       vector_size_t startFrame,
       vector_size_t endFrame,
@@ -375,18 +397,29 @@ class AggregateWindowFunction : public exec::WindowFunction {
     rows.resize(endFrame + 1 - startFrame);
 
     auto prevFrameEnd = 0;
+    // A fresh accumulator, or one resumed with new rows, has not been
+    // extracted yet.
+    bool extracted = false;
     // This is a simple optimization for frames that have a fixed startFrame
     // and increasing frameEnd values. In that case, we can
     // incrementally aggregate over the new rows seen in the frame between
     // the previous and current row.
-    validRows.applyToSelected([&](auto i) {
+    framedRows.applyToSelected([&](auto i) {
       auto currentFrameEnd = rawFrameEnds[i] - startFrame + 1;
       if (currentFrameEnd > prevFrameEnd) {
-        computeAggregate(rows, prevFrameEnd, currentFrameEnd);
+        addFrameRows(rows, prevFrameEnd, currentFrameEnd);
+        extracted = false;
       }
-
-      result->copy(aggregateResultVector_.get(), resultOffset + i, 0, 1);
       prevFrameEnd = currentFrameEnd;
+
+      if (!validRows.isValid(i)) {
+        return;
+      }
+      if (!extracted) {
+        extractAggregate();
+        extracted = true;
+      }
+      result->copy(aggregateResultVector_.get(), resultOffset + i, 0, 1);
     });
 
     // Set null values for empty (non valid) frames in the output block.
@@ -400,6 +433,7 @@ class AggregateWindowFunction : public exec::WindowFunction {
   // rows that entered on the trailing edge — linear in the partition size
   // rather than quadratic in the frame width.
   void slidingAggregation(
+      const SelectivityVector& framedRows,
       const SelectivityVector& validRows,
       vector_size_t firstRow,
       vector_size_t lastRow,
@@ -456,12 +490,12 @@ class AggregateWindowFunction : public exec::WindowFunction {
       aggregate_->destroy(folly::Range<char**>(&rawSingleGroupRow_, 1));
       aggregate_->initializeNewGroups(&rawSingleGroupRow_, kSingleGroup);
       aggregateInitialized_ = true;
-      accumStart = rawFrameStarts[validRows.begin()] - firstRow;
+      accumStart = rawFrameStarts[framedRows.begin()] - firstRow;
       accumEnd = accumStart;
       nonNullCount = 0;
     }
 
-    validRows.applyToSelected([&](auto i) {
+    framedRows.applyToSelected([&](auto i) {
       const auto localStart = rawFrameStarts[i] - firstRow;
       const auto localEndExcl = rawFrameEnds[i] - firstRow + 1;
 
@@ -495,6 +529,9 @@ class AggregateWindowFunction : public exec::WindowFunction {
       accumStart = localStart;
       accumEnd = localEndExcl;
 
+      if (!validRows.isValid(i)) {
+        return;
+      }
       if (nonNullCount == 0) {
         result->copy(emptyResult_.get(), resultOffset + i, 0, 1);
       } else {

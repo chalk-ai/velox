@@ -276,6 +276,7 @@ void Window::applyEmitMasks(vector_size_t numRows) {
         emitMaskValues_);
     DecodedVector decoded(*emitMaskValues_, SelectivityVector(numRows));
     auto& validFrames = validFrames_[i];
+    frameRows_[i] = validFrames;
     for (vector_size_t row = 0; row < numRows; ++row) {
       if (decoded.isNullAt(row) || !decoded.valueAt<bool>(row)) {
         validFrames.setValid(row, false);
@@ -377,6 +378,7 @@ void Window::createPeerAndFrameBuffers() {
     frameEndBuffers_.push_back(frameEndBuffer);
     validFrames_.push_back(SelectivityVector(numRowsPerOutput_));
   }
+  frameRows_.resize(numFuncs);
 }
 
 void Window::noMoreInput() {
@@ -701,6 +703,8 @@ void Window::callApplyForPartitionRows(
   applyEmitMasks(endRow - startRow);
   vector_size_t numFuncs = windowFunctions_.size();
   for (auto i = 0; i < numFuncs; ++i) {
+    windowFunctions_[i]->setFrameRows(
+        emitMaskChannels_[i].has_value() ? &frameRows_[i] : nullptr);
     windowFunctions_[i]->apply(
         peerStartBuffer_,
         peerEndBuffer_,
