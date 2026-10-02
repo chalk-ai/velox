@@ -69,10 +69,14 @@ class ConjunctExpr : public SpecialForm {
   std::string toSql(
       std::vector<VectorPtr>* complexConstants = nullptr) const override;
 
-  void clearCache() override {
-    Expr::clearCache();
+  using Expr::clearCache;
+  bool clearCache(uint64_t epoch) override {
+    if (!Expr::clearCache(epoch)) {
+      return false;
+    }
     tempValues_.reset();
     tempNulls_.reset();
+    return true;
   }
 
  private:
