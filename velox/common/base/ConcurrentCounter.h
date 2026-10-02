@@ -21,6 +21,8 @@
 #include <new>
 #include <thread>
 
+#include <folly/hash/Hash.h>
+
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/Exceptions.h"
 
@@ -71,6 +73,10 @@ class ConcurrentCounter {
     return counters_[shardIndex()].update(delta, updateFn);
   }
 
+  size_t testingShardIndex(size_t hash) const {
+    return shardIndex(hash);
+  }
+
   void testingClear() {
     for (auto& counter : counters_) {
       counter.value = T();
@@ -108,7 +114,13 @@ class ConcurrentCounter {
   size_t shardIndex() const {
     const size_t hash =
         std::hash<std::thread::id>{}(std::this_thread::get_id());
-    const size_t index = hash & shardMask_;
+    return shardIndex(hash);
+  }
+
+  size_t shardIndex(size_t hash) const {
+    // Thread hashes can be aligned pthread IDs with identical low bits. Mix
+    // the full hash before selecting a shard to avoid collapsing onto one lock.
+    const size_t index = folly::hash::twang_mix64(hash) & shardMask_;
     VELOX_DCHECK_LT(index, counters_.size());
     return index;
   }
