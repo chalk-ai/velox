@@ -19,7 +19,7 @@
 #include "velox/dwio/parquet/writer/arrow/tests/BloomFilterReader.h"
 #include "velox/dwio/parquet/writer/arrow/Exception.h"
 #include "velox/dwio/parquet/writer/arrow/Metadata.h"
-#include "velox/dwio/parquet/writer/arrow/tests/BloomFilter.h"
+#include "velox/dwio/parquet/writer/arrow/BloomFilter.h"
 
 namespace facebook::velox::parquet::arrow {
 

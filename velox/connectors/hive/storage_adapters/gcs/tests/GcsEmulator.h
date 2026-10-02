@@ -15,7 +15,10 @@
  */
 #pragma once
 
-#include <boost/process.hpp>
+#include <boost/process/v1/child.hpp>
+#include <boost/process/v1/env.hpp>
+#include <boost/process/v1/group.hpp>
+#include <boost/process/v1/search_path.hpp>
 #include <gmock/gmock-matchers.h>
 #include <gmock/gmock-more-matchers.h>
 #include <google/cloud/storage/client.h>
@@ -26,7 +29,7 @@
 #include "velox/connectors/hive/storage_adapters/gcs/GcsUtil.h"
 #include "velox/exec/tests/utils/PortUtil.h"
 
-namespace bp = boost::process;
+namespace bp = boost::process::v1;
 namespace gc = google::cloud;
 namespace gcs = google::cloud::storage;
 

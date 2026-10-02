@@ -24,15 +24,15 @@
 #include <geos/geom/LineString.h>
 #include <geos/geom/LinearRing.h>
 #include <geos/geom/Polygon.h>
-#include <s2/s2cell.h>
-#include <s2/s2cell_id.h>
-#include <s2/s2earth.h>
-#include <s2/s2latlng.h>
-#include <s2/s2loop.h>
-#include <s2/s2point.h>
-#include <s2/s2polygon.h>
-#include <s2/s2polyline.h>
-#include <s2/s2region_coverer.h>
+#include "s2/s2cell.h"
+#include "s2/s2cell_id.h"
+#include "s2/s2earth.h"
+#include "s2/s2latlng.h"
+#include "s2/s2loop.h"
+#include "s2/s2point.h"
+#include "s2/s2polygon.h"
+#include "s2/s2polyline.h"
+#include "s2/s2region_coverer.h"
 
 namespace facebook::velox::functions {
 

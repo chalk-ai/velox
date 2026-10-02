@@ -101,14 +101,10 @@ DEBUG_ONLY_TEST_F(ThreadDebugInfoDeathTest, withinTheCallingThread) {
   auto plan =
       PlanBuilder().values({vector}).project({"segFault(c0)"}).planFragment();
 
-  auto queryCtx = core::QueryCtx::create(
-      executor_.get(),
-      core::QueryConfig({}),
-      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-      cache::AsyncDataCache::getInstance(),
-      nullptr,
-      nullptr,
-      "TaskCursorQuery_0");
+  auto queryCtx = core::QueryCtx::Builder()
+      .executor(executor_.get())
+      .queryId("TaskCursorQuery_0")
+      .build();
   auto task = exec::Task::create(
       "single.execution.task.0",
       std::move(plan),

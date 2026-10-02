@@ -3776,6 +3776,7 @@ TEST_P(ParameterizedExprTest, flatNoNullsFastPathDisabledByConfig) {
 
   result = evaluateMultiple({"a + b"}, data, std::nullopt, execCtx.get())[0];
   assertEqualVectors(expected, result);
+  result.reset();
 }
 
 TEST_P(ParameterizedExprTest, commonSubExpressionWithEncodedInput) {
@@ -5480,6 +5481,7 @@ TEST_F(ExprTest, disablePeeling) {
 
   std::tie(result, stats) = evaluateMultipleWithStats(
       expressions, makeRowVector({dictInput}), {}, execCtx.get());
+  result.clear();
 
   ASSERT_TRUE(stats.find("plus") != stats.end());
   ASSERT_EQ(stats["plus"].numProcessedRows, dictSize);
@@ -5549,6 +5551,7 @@ TEST_F(ExprTest, disableSharedSubExpressionReuse) {
 
   ASSERT_TRUE(stats.find("plus") != stats.end());
   ASSERT_EQ(stats["plus"].numProcessedRows, 2 * flatSize);
+  result.clear();
 }
 
 TEST_F(ExprTest, disableMemoization) {
@@ -5589,6 +5592,7 @@ TEST_F(ExprTest, disableMemoization) {
 
   ASSERT_TRUE(stats.find("plus") != stats.end());
   ASSERT_EQ(stats["plus"].numProcessedRows, 3 * flatSize);
+  result.reset();
 }
 
 TEST_F(ExprTest, disabledeferredLazyLoading) {
@@ -5618,6 +5622,7 @@ TEST_F(ExprTest, disabledeferredLazyLoading) {
   c1 = makeLazyFlatVector<int64_t>(3, valueAt, nullptr, 3);
   std::tie(result, stats) = evaluateMultipleWithStats(
       expressions, makeRowVector({c0, c1}), {}, execCtx.get());
+  result.clear();
 }
 
 TEST_F(ExprTest, evaluateConstantExpression) {

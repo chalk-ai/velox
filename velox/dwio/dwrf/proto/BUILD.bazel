@@ -1,0 +1,26 @@
+load("@protobuf//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "dwrf_proto",
+    srcs = ["dwrf_proto.proto"],
+    tags = ["no-lint"],
+)
+
+cc_proto_library(
+    name = "dwrf_cc_proto",
+    deps = [":dwrf_proto"],
+)
+
+proto_library(
+    name = "orc_proto",
+    srcs = ["orc_proto.proto"],
+    tags = ["no-lint"],
+)
+
+cc_proto_library(
+    name = "orc_cc_proto",
+    deps = [":orc_proto"],
+)

@@ -18,6 +18,7 @@
 
 #include "velox/dwio/common/SelectiveFloatingPointColumnReader.h"
 #include "velox/dwio/dwrf/common/FloatingPointDecoder.h"
+#include "velox/dwio/dwrf/reader/DwrfData.h"
 
 namespace facebook::velox::dwrf {
 

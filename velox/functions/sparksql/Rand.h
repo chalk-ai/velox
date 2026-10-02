@@ -17,6 +17,7 @@
 
 #include <folly/Random.h>
 
+#include "velox/core/QueryConfig.h"
 #include "velox/functions/Macros.h"
 #include "velox/functions/lib/XORShiftRandom.h"
 #include "velox/functions/sparksql/SparkQueryConfig.h"

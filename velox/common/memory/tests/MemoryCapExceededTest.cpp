@@ -74,15 +74,19 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
       "ARBITRATOR[SHARED CAPACITY[6.00GB] STATS[numRequests 1 numRunning 1 "
       "numSucceded 0 numAborted 0 numFailures 0 numNonReclaimableAttempts 0 "
       "reclaimedFreeCapacity 0B reclaimedUsedCapacity 0B maxCapacity 6.00GB "
-      "freeCapacity 5.50GB freeReservedCapacity 0B] CONFIG[kind=SHARED;"
-      "capacity=6.00GB;arbitrationStateCheckCb=(set);"
-      "memory-pool-abort-capacity-limit=0B;memory-pool-min-reclaim-pct=0;"
-      "memory-pool-reserved-capacity=0B;"
-      "memory-pool-initial-capacity=536870912B;"
-      "global-arbitration-enabled=true;memory-pool-min-reclaim-bytes=0B;"
-      "reserved-capacity=0B;]]"
-      "\n\n"
-      "Memory Pool[",
+      "freeCapacity 5.50GB freeReservedCapacity 0B]",
+      // CONFIG[...] pairs, matched individually so key order does not matter.
+      "CONFIG[",
+      "kind=SHARED;",
+      "capacity=6.00GB;",
+      "arbitrationStateCheckCb=(set);",
+      "memory-pool-abort-capacity-limit=0B;",
+      "memory-pool-min-reclaim-pct=0;",
+      "memory-pool-reserved-capacity=0B;",
+      "memory-pool-initial-capacity=536870912B;",
+      "global-arbitration-enabled=true;",
+      "memory-pool-min-reclaim-bytes=0B;",
+      "reserved-capacity=0B;",
       " AGGREGATE root[",
       "] parent[null] MALLOC track-usage thread-safe]<max capacity 5.00MB "
       "capacity 5.00MB used 3.75MB available 0B reservation [used 0B, reserved "
@@ -90,8 +94,7 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
       "collisions 0, external-allocs 0, external-frees 0, cumulative-external "
       "0B])>"};
   std::vector<std::string> expectedDetailedTexts = {
-      "node.1 usage 12.00KB reserved 1.00MB peak 1.00MB",
-      "op.1.0.0.FilterProject usage 12.00KB reserved 1.00MB peak 12.00KB",
+      "expression pool usage 12.00KB reserved 1.00MB peak 12.00KB",
       "node.2 usage 3.74MB reserved 4.00MB peak 4.00MB",
       "op.2.0.0.Aggregation usage 3.74MB reserved 4.00MB peak 3.76MB",
       "Top 2 leaf memory pool usages:"};
@@ -113,10 +116,13 @@ TEST_P(MemoryCapExceededTest, singleDriver) {
                   .singleAggregation({"c0"}, {"sum(p1)"})
                   .orderBy({"c0"}, false)
                   .planNode();
-  auto queryCtx = core::QueryCtx::create(executor_.get());
-  queryCtx->testingOverrideMemoryPool(
-      memory::memoryManager()->addRootPool(
-          queryCtx->queryId(), kMaxBytes, exec::MemoryReclaimer::create()));
+  auto queryCtx = core::QueryCtx::Builder()
+                  .executor(executor_.get()).pool(
+                    memory::memoryManager()->addRootPool(
+                      "mem_cap_exceeded_test_pool", kMaxBytes, exec::MemoryReclaimer::create()
+                    )
+                  )
+                  .build();
   CursorParameters params;
   params.planNode = plan;
   params.queryCtx = queryCtx;

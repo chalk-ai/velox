@@ -24,6 +24,7 @@
 #include "velox/functions/Macros.h"
 #include "velox/functions/lib/CheckedArithmetic.h"
 #include "velox/type/SimpleFunctionApi.h"
+#include "velox/vector/TypeAliases.h"
 
 namespace facebook::velox::functions {
 

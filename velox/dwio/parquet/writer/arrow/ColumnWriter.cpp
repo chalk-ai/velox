@@ -18,6 +18,8 @@
 
 #include "velox/dwio/parquet/writer/arrow/ColumnWriter.h"
 
+#include "velox/dwio/parquet/writer/arrow/BloomFilterWriter.h"
+
 #include <glog/logging.h>
 #include <algorithm>
 #include <cstdint>
@@ -1451,13 +1453,18 @@ class TypedColumnWriterImpl : public ColumnWriterImpl,
       std::unique_ptr<PageWriter> pager,
       const bool useDictionary,
       Encoding::type encoding,
-      const WriterProperties* properties)
+      const WriterProperties* properties,
+      BloomFilter* bloomFilter = nullptr)
       : ColumnWriterImpl(
             metadata,
             std::move(pager),
             useDictionary,
             encoding,
             properties) {
+    if (bloomFilter != nullptr) {
+      bloomFilterWriter_ =
+          std::make_unique<TypedBloomFilterWriter<DType>>(descr_, bloomFilter);
+    }
     currentEncoder_ = makeEncoder(
         DType::typeNum,
         encoding,
@@ -1743,6 +1750,7 @@ class TypedColumnWriterImpl : public ColumnWriterImpl,
   // to virtual inheritance.
   ValueEncoderType* currentValueEncoder_;
   DictEncoder<DType>* currentDictEncoder_;
+  std::unique_ptr<TypedBloomFilterWriter<DType>> bloomFilterWriter_;
   std::shared_ptr<TypedStats> pageStatistics_;
   std::shared_ptr<TypedStats> chunkStatistics_;
   bool pagesChangeOnRecordBoundaries_;
@@ -1949,6 +1957,9 @@ class TypedColumnWriterImpl : public ColumnWriterImpl,
     if (pageStatistics_ != nullptr) {
       pageStatistics_->update(values, numValues, numNulls);
     }
+    if (bloomFilterWriter_ != nullptr) {
+      bloomFilterWriter_->update(values, numValues);
+    }
   }
 
   /// \brief Write values with spaces and update page statistics accordingly.
@@ -1989,6 +2000,14 @@ class TypedColumnWriterImpl : public ColumnWriterImpl,
           numSpacedValues,
           numValues,
           numNulls);
+    }
+    if (bloomFilterWriter_ != nullptr) {
+      if (numValues != numSpacedValues) {
+        bloomFilterWriter_->updateSpaced(
+            values, numSpacedValues, validBits, validBitsOffset);
+      } else {
+        bloomFilterWriter_->update(values, numValues);
+      }
     }
   }
 };
@@ -2071,10 +2090,16 @@ Status TypedColumnWriterImpl<DType>::writeArrowDictionary(
       referencedDictionary = referencedDictionaryDatum.make_array();
     }
 
-    int64_t nonNullCount = chunkIndices->length() - chunkIndices->null_count();
-    pageStatistics_->incrementNullCount(numChunkLevels - nonNullCount);
-    pageStatistics_->incrementNumValues(nonNullCount);
-    pageStatistics_->update(*referencedDictionary, false);
+    if (pageStatistics_ != nullptr) {
+      int64_t nonNullCount =
+          chunkIndices->length() - chunkIndices->null_count();
+      pageStatistics_->incrementNullCount(numChunkLevels - nonNullCount);
+      pageStatistics_->incrementNumValues(nonNullCount);
+      pageStatistics_->update(*referencedDictionary, false);
+    }
+    if (bloomFilterWriter_ != nullptr) {
+      bloomFilterWriter_->update(*referencedDictionary);
+    }
   };
 
   int64_t valueOffset = 0;
@@ -2099,7 +2124,7 @@ Status TypedColumnWriterImpl<DType>::writeArrowDictionary(
             addIfNotNull(repLevels, offset));
         std::shared_ptr<Array> writeableIndices =
             indices->Slice(valueOffset, batchNumSpacedValues);
-        if (pageStatistics_) {
+        if (pageStatistics_ || bloomFilterWriter_) {
           updateStats(batchSize, writeableIndices);
         }
         PARQUET_ASSIGN_OR_THROW(
@@ -2692,6 +2717,9 @@ Status TypedColumnWriterImpl<ByteArrayType>::writeArrowDense(
       pageStatistics_->incrementNullCount(batchSize - nonNull);
       pageStatistics_->incrementNumValues(nonNull);
     }
+    if (bloomFilterWriter_ != nullptr) {
+      bloomFilterWriter_->update(*dataSlice);
+    }
     commitWriteAndCheckPageLimit(
         batchSize, batchNumValues, batchSize - nonNull, checkPage);
     checkDictionarySizeLimit();
@@ -2841,7 +2869,8 @@ Status TypedColumnWriterImpl<FLBAType>::writeArrowDense(
 std::shared_ptr<ColumnWriter> ColumnWriter::make(
     ColumnChunkMetaDataBuilder* metadata,
     std::unique_ptr<PageWriter> pager,
-    const WriterProperties* properties) {
+    const WriterProperties* properties,
+    BloomFilter* bloomFilter) {
   const ColumnDescriptor* descr = metadata->descr();
   const bool useDictionary = properties->dictionaryEnabled(descr->path()) &&
       descr->physicalType() != Type::kBoolean;
@@ -2862,29 +2891,70 @@ std::shared_ptr<ColumnWriter> ColumnWriter::make(
   }
   switch (descr->physicalType()) {
     case Type::kBoolean:
+      // Bloom filters are not supported for boolean columns.
       return std::make_shared<TypedColumnWriterImpl<BooleanType>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          /*bloomFilter=*/nullptr);
     case Type::kInt32:
       return std::make_shared<TypedColumnWriterImpl<Int32Type>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kInt64:
       return std::make_shared<TypedColumnWriterImpl<Int64Type>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kInt96:
       return std::make_shared<TypedColumnWriterImpl<Int96Type>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kFloat:
       return std::make_shared<TypedColumnWriterImpl<FloatType>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kDouble:
       return std::make_shared<TypedColumnWriterImpl<DoubleType>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kByteArray:
       return std::make_shared<TypedColumnWriterImpl<ByteArrayType>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     case Type::kFixedLenByteArray:
       return std::make_shared<TypedColumnWriterImpl<FLBAType>>(
-          metadata, std::move(pager), useDictionary, encoding, properties);
+          metadata,
+          std::move(pager),
+          useDictionary,
+          encoding,
+          properties,
+          bloomFilter);
     default:
       ParquetException::NYI("type reader not implemented");
   }

@@ -18,6 +18,11 @@
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
 
+#include <boost/process/v1/child.hpp>
+#include <boost/process/v1/environment.hpp>
+#include <boost/process/v1/search_path.hpp>
+#include <boost/process/v1/env.hpp>
+
 namespace facebook::velox::filesystems {
 
 std::string AzuriteServer::URI() const {
@@ -48,7 +53,7 @@ std::shared_ptr<const config::ConfigBase> AzuriteServer::hiveConfig(
 
 void AzuriteServer::start() {
   try {
-    serverProcess_ = std::make_unique<boost::process::child>(
+    serverProcess_ = std::make_unique<boost::process::v1::child>(
         env_, exePath_, commandOptions_);
     serverProcess_->wait_for(std::chrono::duration<int, std::milli>(5000));
     VELOX_CHECK_EQ(
@@ -94,11 +99,11 @@ AzuriteServer::AzuriteServer(int64_t port) : port_(port) {
       "--debug",
       logFilePath,
   };
-  env_ = (boost::process::environment)boost::this_process::environment();
+  env_ = boost::process::v1::environment(boost::this_process::environment());
   env_["PATH"] = env_["PATH"].to_string() + std::string(kAzuriteSearchPath);
   env_["AZURITE_ACCOUNTS"] = fmt::format("{}:{}", account_, key_);
   auto path = env_["PATH"].to_vector();
-  exePath_ = boost::process::search_path(
+  exePath_ = boost::process::v1::search_path(
       kAzuriteServerExecutableName,
       std::vector<boost::filesystem::path>(path.begin(), path.end()));
   std::printf("AzuriteServer executable path: %s\n", exePath_.c_str());

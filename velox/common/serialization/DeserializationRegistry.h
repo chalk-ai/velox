@@ -17,7 +17,7 @@
 #pragma once
 #include <string>
 #include <type_traits>
-#include "Registry.h"
+#include "velox/common/serialization/Registry.h"
 #include "folly/dynamic.h"
 #include "folly/hash/Hash.h"
 

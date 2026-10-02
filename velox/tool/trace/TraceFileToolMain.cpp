@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <date/date.h>
 #include <gflags/gflags.h>
+#include "velox/external/date/date.h"
 #include "velox/tool/trace/TraceFileToolRunner.h"
 
 int main(int argc, char** argv) {

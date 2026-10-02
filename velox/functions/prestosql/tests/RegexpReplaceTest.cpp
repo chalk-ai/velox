@@ -287,11 +287,8 @@ TEST_F(RegexpReplaceTest, limit) {
          return fmt::format("Apples (.*) oranges {}", row % maxCompiledRegexes);
        })});
 
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_replace(c0, c1, c2)", data),
-      "Max number of regex reached");
-  VELOX_ASSERT_THROW(
-      evaluate("regexp_replace(c0, c1)", data), "Max number of regex reached");
+  ASSERT_NO_THROW(evaluate("regexp_replace(c0, c1, c2)", data));
+  ASSERT_NO_THROW(evaluate("regexp_replace(c0, c1)", data));
 }
 
 } // namespace

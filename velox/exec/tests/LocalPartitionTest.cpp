@@ -647,19 +647,20 @@ TEST_F(LocalPartitionTest, blockingOnLocalExchangeQueue) {
 
   struct {
     RowVectorPtr input;
-    int64_t numBlocked;
+    bool expectBlocked;
 
     std::string debugString() const {
       return fmt::format(
-          "inputBatchBytes: {}, numBlocked: {}",
+          "inputBatchBytes: {}, expectBlocked: {}",
           input->estimateFlatSize(),
-          numBlocked);
+          expectBlocked);
     }
   } testSettings[] = {
-      {smallInput, 0}, // Small input will not make LocalPartition blocked.
-      {dictionaryInput, 1}, // Large dictiionary values will make LocalPartition
-                            // blocked.
-      {largeInput, 1}}; // Large input will make LocalPartition blocked.
+      {smallInput, false}, // Small input will not make LocalPartition blocked.
+      // The exchange buffer accounts the estimated flat size, so a one-row
+      // dictionary over a large base stays small and never blocks.
+      {dictionaryInput, false},
+      {largeInput, true}}; // Large input will make LocalPartition blocked.
 
   for (const auto& test : testSettings) {
     SCOPED_TRACE(test.debugString());
@@ -668,28 +669,33 @@ TEST_F(LocalPartitionTest, blockingOnLocalExchangeQueue) {
 
     auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
     core::PlanNodeId nodeId;
+    // Produce the input many times so that with a large input at least one
+    // producer add reliably observes a full exchange buffer. A single batch
+    // per driver may drain before the next add and never block.
+    constexpr int32_t kRepeats = 50;
     auto plan = PlanBuilder(planNodeIdGenerator)
                     .localPartition(
                         {"c0"},
                         {PlanBuilder(planNodeIdGenerator)
-                             .values({test.input})
+                             .values({test.input}, false, kRepeats)
                              .planNode()})
                     .capturePlanNodeId(nodeId)
                     .singleAggregation({"c0"}, {"count(1)"})
                     .planNode();
-    auto task = AssertQueryBuilder(duckDbQueryRunner_)
-                    .plan(plan)
-                    .maxDrivers(4)
-                    .config(
-                        core::QueryConfig::kMaxLocalExchangeBufferSize,
-                        localExchangeBufferSize)
-                    .assertResults("SELECT c0, count(1) FROM tmp GROUP BY c0");
-    ASSERT_EQ(
-        exec::toPlanStats(task->taskStats())
-            .at(nodeId)
-            .customStats["blockedWaitForConsumerTimes"]
-            .sum,
-        test.numBlocked);
+    auto task =
+        AssertQueryBuilder(duckDbQueryRunner_)
+            .plan(plan)
+            .maxDrivers(4)
+            .config(
+                core::QueryConfig::kMaxLocalExchangeBufferSize,
+                localExchangeBufferSize)
+            .assertResults(fmt::format(
+                "SELECT c0, count(1) * {} FROM tmp GROUP BY c0", kRepeats));
+    const auto numBlocked = exec::toPlanStats(task->taskStats())
+                                .at(nodeId)
+                                .customStats["blockedWaitForConsumerTimes"]
+                                .sum;
+    ASSERT_EQ(numBlocked > 0, test.expectBlocked);
   }
 }
 

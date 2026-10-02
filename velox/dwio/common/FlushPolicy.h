@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace facebook::velox::dwio::common {
 
 /// Format-specific writers may use different underlying metrics.

@@ -16,6 +16,12 @@
 
 #include "velox/common/base/ConcurrentCounter.h"
 
+#include <algorithm>
+#include <atomic>
+#include <barrier>
+#include <limits>
+#include <stdexcept>
+
 #include <fmt/format.h>
 #include <folly/Random.h>
 #include <folly/system/HardwareConcurrency.h>
@@ -67,6 +73,121 @@ TEST_P(ConcurrentCounterTest, basic) {
   ASSERT_EQ(read(), 1);
   update(-3);
   ASSERT_EQ(read(), -2);
+}
+
+TEST_P(ConcurrentCounterTest, alignedThreadHashes) {
+  // Model aligned pthread IDs independently of the host's standard library.
+  for (const size_t requestedShards : {3, 16, 127, 256}) {
+    const auto numShards = bits::nextPowerOfTwo(requestedShards);
+    ConcurrentCounter<int64_t> counter(requestedShards);
+    for (const size_t offset : {0, 0x6c0}) {
+      for (const size_t stride : {256, 4096, 1 << 20}) {
+        SCOPED_TRACE(
+            fmt::format(
+                "shards: {}, offset: {}, stride: {}",
+                numShards,
+                offset,
+                stride));
+        std::vector<size_t> occupancy(numShards, 0);
+        for (size_t thread = 0; thread < numShards * 32; ++thread) {
+          const size_t hash = offset + thread * stride;
+          const auto shard = counter.testingShardIndex(hash);
+          ASSERT_LT(shard, numShards);
+          ASSERT_EQ(counter.testingShardIndex(hash), shard);
+          ++occupancy[shard];
+        }
+        // Generous bounds detect collapsed low bits without prescribing a hash.
+        EXPECT_GE(
+            std::count_if(
+                occupancy.begin(),
+                occupancy.end(),
+                [](auto count) { return count != 0; }),
+            numShards * 3 / 4);
+        EXPECT_LT(*std::max_element(occupancy.begin(), occupancy.end()), 128);
+        EXPECT_LT(
+            counter.testingShardIndex(std::numeric_limits<size_t>::max()),
+            numShards);
+      }
+    }
+  }
+}
+
+TEST_P(ConcurrentCounterTest, forcedCollisionsAndConcurrentReads) {
+  constexpr int kNumThreads = 16;
+  constexpr int kNumUpdates = 2'000;
+  for (const size_t shards : {1, 3, 64}) {
+    SCOPED_TRACE(fmt::format("shards: {}", shards));
+    counter_ = std::make_unique<ConcurrentCounter<int64_t>>(shards);
+    std::barrier start(kNumThreads + 1);
+    std::atomic<int> remaining{kNumThreads};
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kNumThreads; ++thread) {
+      threads.emplace_back([&] {
+        start.arrive_and_wait();
+        for (int iteration = 0; iteration < kNumUpdates; ++iteration) {
+          update(1);
+        }
+        remaining.fetch_sub(1);
+      });
+    }
+    start.arrive_and_wait();
+    int64_t previous = 0;
+    while (remaining.load() != 0) {
+      const auto current = read();
+      EXPECT_GE(current, previous);
+      EXPECT_LE(current, kNumThreads * kNumUpdates);
+      previous = current;
+      std::this_thread::yield();
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+    EXPECT_EQ(read(), kNumThreads * kNumUpdates);
+    update(-kNumThreads * kNumUpdates);
+    EXPECT_EQ(read(), 0);
+  }
+}
+
+TEST_P(ConcurrentCounterTest, rejectedAndThrowingUpdates) {
+  ConcurrentCounter<int64_t> counter(1);
+  constexpr int kNumThreads = 16;
+  constexpr int64_t kCapacity = 257;
+  std::barrier start(kNumThreads);
+  std::atomic<int64_t> successes{0};
+  std::vector<std::thread> threads;
+  for (int thread = 0; thread < kNumThreads; ++thread) {
+    threads.emplace_back([&] {
+      start.arrive_and_wait();
+      for (int attempt = 0; attempt < 100; ++attempt) {
+        const bool accepted = counter.update(
+            1, [](int64_t& value, int64_t delta, std::mutex& mutex) {
+              std::lock_guard<std::mutex> lock(mutex);
+              if (value + delta > kCapacity) {
+                return false;
+              }
+              value += delta;
+              return true;
+            });
+        successes.fetch_add(accepted);
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(successes.load(), kCapacity);
+  EXPECT_EQ(counter.read(), kCapacity);
+  EXPECT_THROW(
+      counter.update(
+          1,
+          [](int64_t&, int64_t, std::mutex& mutex) -> bool {
+            std::lock_guard<std::mutex> lock(mutex);
+            throw std::runtime_error("reject before modifying the reservation");
+          }),
+      std::runtime_error);
+  EXPECT_EQ(counter.read(), kCapacity);
+  counter.update(-kCapacity);
+  EXPECT_EQ(counter.read(), 0);
 }
 
 TEST_P(ConcurrentCounterTest, multithread) {

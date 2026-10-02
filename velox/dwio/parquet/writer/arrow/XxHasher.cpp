@@ -16,7 +16,7 @@
 
 // Adapted from Apache Arrow.
 
-#include "velox/dwio/parquet/writer/arrow/tests/XxHasher.h"
+#include "velox/dwio/parquet/writer/arrow/XxHasher.h"
 
 #include "velox/common/base/XxHashInline.h"
 

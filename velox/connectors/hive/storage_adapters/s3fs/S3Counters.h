@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <string_view>
+
 namespace facebook::velox::filesystems {
 
 // The number of connections open for S3 read operations.

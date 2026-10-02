@@ -16,7 +16,7 @@
 
 #include <folly/Benchmark.h>
 #include <folly/init/Init.h>
-#include <functions/FunctionRegistry.h>
+#include <velox/functions/FunctionRegistry.h>
 
 #include "velox/benchmarks/ExpressionBenchmarkBuilder.h"
 #include "velox/functions/sparksql/registration/Register.h"

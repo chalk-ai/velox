@@ -43,8 +43,8 @@ class MyDynamicAbfsSasTokenProvider : public SasTokenProvider {
     const auto blobName = path.substr(lastSlash + 1);
 
     Azure::Storage::Sas::BlobSasBuilder sasBuilder;
-    sasBuilder.ExpiresOn = Azure::DateTime::clock::now() +
-        std::chrono::seconds(expirationSeconds_);
+    sasBuilder.ExpiresOn = Azure::DateTime(Azure::DateTime::clock::now() +
+        std::chrono::seconds(expirationSeconds_));
     sasBuilder.BlobContainerName = containerName;
     sasBuilder.BlobName = blobName;
     sasBuilder.Resource = Azure::Storage::Sas::BlobSasResource::Blob;

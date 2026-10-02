@@ -570,6 +570,8 @@ class PARQUET_EXPORT RowGroupMetaDataBuilder {
 };
 
 /// \brief Public struct for location to all page indexes in a Parquet file.
+struct BloomFilterLocation;
+
 struct PageIndexLocation {
   /// Alias type of page index location of a row group. The index location
   /// is located by column ordinal. If the column does not have the page index,
@@ -582,6 +584,14 @@ struct PageIndexLocation {
   FileIndexLocation columnIndexLocation;
   /// Row group offset index locations which use row group ordinal as the key.
   FileIndexLocation offsetIndexLocation;
+};
+
+/// \brief Public struct for location of all bloom filters in a parquet file.
+struct BloomFilterLocation {
+  /// Alias of the same map shape used for the page index.
+  /// Key: row group ordinal. Value: bloom filter location of each column chunk
+  /// in the row group; std::nullopt for columns without a bloom filter.
+  PageIndexLocation::FileIndexLocation bloomFilterLocation;
 };
 
 class PARQUET_EXPORT FileMetaDataBuilder {
@@ -605,6 +615,10 @@ class PARQUET_EXPORT FileMetaDataBuilder {
 
   // Update location to all page indexes in the Parquet file.
   void setPageIndexLocation(const PageIndexLocation& location);
+
+  /// Set the location of bloom filters in the file so far, keyed like
+  /// PageIndexLocation: row group ordinal -> per-column optional location.
+  void setBloomFilterLocation(const BloomFilterLocation& location);
 
   // Complete the Thrift structure.
   std::unique_ptr<FileMetaData> finish(

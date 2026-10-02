@@ -51,7 +51,8 @@ class ParquetReaderTest : public ParquetTestBase {
         reader.fileMetaData(),
         readerOptions.sessionTimezone(),
         TimestampPrecision::kMilliseconds,
-        /*nullStructIfAllFieldsMissing=*/false);
+        /*nullStructIfAllFieldsMissing=*/false,
+        /*bufferedInput=*/nullptr);
     auto rootReader = ParquetColumnReader::build(
         makeColumnReaderOptions(readerOptions),
         reader.rowType(),

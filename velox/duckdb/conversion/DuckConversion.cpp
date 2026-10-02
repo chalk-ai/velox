@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "velox/duckdb/conversion/DuckConversion.h"
+
 #include "velox/type/Variant.h"
 
 namespace facebook::velox::duckdb {
@@ -136,6 +137,7 @@ TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
       type.GetDecimalProperties(width, scale);
       return DECIMAL(width, scale);
     case LogicalTypeId::HUGEINT:
+      return HUGEINT();
     case LogicalTypeId::DOUBLE:
       return DOUBLE();
     case LogicalTypeId::VARCHAR:
@@ -194,7 +196,7 @@ TypePtr toVeloxType(LogicalType type, bool fileColumnNamesReadAsLowerCase) {
       [[fallthrough]];
     }
     case LogicalTypeId::USER: {
-      const auto name = ::duckdb::UserType::GetTypeName(type);
+      const auto& name = ::duckdb::UserType::GetTypeName(type);
       if (auto customType = getCustomType(name, {})) {
         return customType;
       }

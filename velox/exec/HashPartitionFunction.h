@@ -15,8 +15,8 @@
  */
 #pragma once
 
-#include <velox/exec/HashBitRange.h>
-#include <velox/exec/VectorHasher.h>
+#include "velox/exec/HashBitRange.h"
+#include "velox/exec/VectorHasher.h"
 #include "velox/core/PlanNode.h"
 
 namespace facebook::velox::exec {
