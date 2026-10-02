@@ -124,6 +124,17 @@ class WindowFunction {
       vector_size_t resultOffset,
       const VectorPtr& result) = 0;
 
+  /// Sets the rows of the next apply() call that have a frame, when that set
+  /// is wider than apply()'s validRows. The Window operator sets it for a
+  /// function with an emit mask: validRows then excludes masked-out rows, which
+  /// still have well-formed frame bounds and may still feed later rows' frames.
+  /// A function that carries state across rows can advance that state over
+  /// these rows while producing results only for validRows. nullptr (the
+  /// default) means the rows with a frame are exactly validRows.
+  void setFrameRows(const SelectivityVector* frameRows) {
+    frameRows_ = frameRows;
+  }
+
   static std::unique_ptr<WindowFunction> create(
       const std::string& name,
       const std::vector<WindowFunctionArg>& args,
@@ -144,12 +155,21 @@ class WindowFunction {
       const VectorPtr& defaultResult,
       const VectorPtr& result);
 
+  /// The rows of the current apply() call that have a frame: a superset of
+  /// 'validRows'. See setFrameRows().
+  const SelectivityVector& frameRows(const SelectivityVector& validRows) const {
+    return frameRows_ != nullptr ? *frameRows_ : validRows;
+  }
+
   const TypePtr resultType_;
   memory::MemoryPool* pool_;
   HashStringAllocator* const stringAllocator_;
 
   // Used for setting null for empty frames.
   SelectivityVector invalidRows_;
+
+ private:
+  const SelectivityVector* frameRows_{nullptr};
 };
 
 /// Information from the Window operator that is useful for the function logic.
