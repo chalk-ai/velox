@@ -119,7 +119,8 @@ class Window : public Operator {
   void callResetPartition();
 
   // Unselects, in each masked function's validFrames_, the rows of the
-  // current block whose emit mask is false or null.
+  // current block whose emit mask is false or null, first saving the unmasked
+  // validFrames_ in frameRows_.
   void applyEmitMasks(vector_size_t numRows);
 
   // Computes the result vector for a subset of the current
@@ -225,6 +226,12 @@ class Window : public Operator {
   // being worked on. The window function can use this to compute output values.
   // There is one SelectivityVector per window function.
   std::vector<SelectivityVector> validFrames_;
+
+  // For a function with an emit mask, the rows of the current block that have
+  // a frame, i.e. validFrames_ before the mask is applied. Passed to the
+  // function with setFrameRows() so it can advance across masked-out rows.
+  // Unused for functions without an emit mask.
+  std::vector<SelectivityVector> frameRows_;
 
   // Number of input rows.
   vector_size_t numRows_ = 0;
