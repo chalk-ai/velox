@@ -16,6 +16,7 @@
 
 #include <arrow/c/abi.h>
 #include <arrow/c/bridge.h>
+#include <arrow/record_batch.h>
 #include <arrow/testing/gtest_util.h>
 #include <arrow/util/config.h>
 #include <gtest/gtest.h>
@@ -365,6 +366,62 @@ TEST_F(ArrowBridgeSchemaExportTest, constant) {
   VELOX_ASSERT_THROW(
       testConstant(ROW({BOOLEAN(), REAL()}), "+s", {false, true}),
       "Flattening is only supported for scalar types.");
+}
+
+// Returns a lazy vector that loads as 'loaded' itself.
+VectorPtr makeLazy(memory::MemoryPool* pool, const VectorPtr& loaded) {
+  return std::make_shared<LazyVector>(
+      pool,
+      loaded->type(),
+      loaded->size(),
+      std::make_unique<SimpleVectorLoader>(
+          [loaded](RowSet /*rows*/) { return loaded; }));
+}
+
+// A lazy vector's schema describes the vector it loads into, which is what the
+// array export emits. For complex types this also must not treat the LazyVector
+// itself as the RowVector/ArrayVector/MapVector it wraps.
+TEST_F(ArrowBridgeSchemaExportTest, lazy) {
+  auto dictionary = wrapInDictionary(
+      makeIndicesInReverse(3), makeFlatVector<std::string>({"a", "b", "c"}));
+  ArrowSchema schema;
+  velox::exportToArrow(makeLazy(pool(), dictionary), schema);
+  EXPECT_STREQ("i", schema.format);
+  ASSERT_NE(nullptr, schema.dictionary);
+  EXPECT_STREQ("u", schema.dictionary->format);
+  schema.release(&schema);
+
+  const std::vector<std::pair<VectorPtr, const char*>> complexCases = {
+      {makeArrayVector<int32_t>({{1, 2}, {3}}), "+l"},
+      {makeMapVector<int32_t, double>({{{1, 1.5}}, {{2, 2.5}}}), "+m"},
+      {makeRowVector(
+           {"x", "y"},
+           {makeFlatVector<int64_t>({1, 2}),
+            makeFlatVector<std::string>({"p", "q"})}),
+       "+s"},
+  };
+  for (const auto& [loaded, format] : complexCases) {
+    SCOPED_TRACE(loaded->type()->toString());
+    velox::exportToArrow(makeLazy(pool(), loaded), schema);
+    EXPECT_STREQ(format, schema.format);
+    EXPECT_EQ(*loaded->type(), *importFromArrow(schema));
+    schema.release(&schema);
+  }
+}
+
+// A row whose child is a lazy dictionary must export a schema and an array that
+// Arrow accepts together.
+TEST_F(ArrowBridgeSchemaExportTest, lazyChildSchemaMatchesArray) {
+  auto dictionary = wrapInDictionary(
+      makeIndicesInReverse(3), makeFlatVector<std::string>({"a", "b", "c"}));
+  auto row = makeRowVector({makeLazy(pool(), dictionary)});
+
+  ArrowArray array;
+  velox::exportToArrow(row, array, pool());
+  ArrowSchema schema;
+  velox::exportToArrow(row, schema);
+  ASSERT_OK_AND_ASSIGN(auto batch, arrow::ImportRecordBatch(&array, &schema));
+  EXPECT_EQ(3, batch->num_rows());
 }
 
 TEST_F(ArrowBridgeSchemaExportTest, dictionaryTimestampUtc) {
