@@ -470,6 +470,24 @@ TEST_F(ArrowBridgeArrayExportTest, flatNotNull) {
   EXPECT_EQ(nullptr, arrowArray.private_data);
 }
 
+// A top-level lazy vector exports the data it loads into.
+TEST_F(ArrowBridgeArrayExportTest, lazy) {
+  auto loaded = vectorMaker_.flatVector<int64_t>({1, 2, 3});
+  VectorPtr lazy = std::make_shared<LazyVector>(
+      pool_.get(),
+      loaded->type(),
+      loaded->size(),
+      std::make_unique<SimpleVectorLoader>(
+          [loaded](RowSet /*rows*/) { return loaded; }));
+
+  ArrowArray arrowArray;
+  velox::exportToArrow(lazy, arrowArray, pool_.get(), options_);
+  EXPECT_EQ(3, arrowArray.length);
+  EXPECT_EQ(2, arrowArray.n_buffers);
+  EXPECT_EQ(2, reinterpret_cast<const int64_t*>(arrowArray.buffers[1])[1]);
+  arrowArray.release(&arrowArray);
+}
+
 TEST_F(ArrowBridgeArrayExportTest, flatBool) {
   testFlatVector<bool>({
       true,

@@ -1598,14 +1598,22 @@ void exportToArrow(
     ArrowArray& arrowArray,
     memory::MemoryPool* pool,
     const ArrowOptions& options) {
+  // Nested children are exported from their loaded vectors; load the top level
+  // the same way so a lazy vector exports its data instead of hitting NYI.
+  const auto& loaded = BaseVector::loadedVectorShared(vector);
   exportToArrowImpl(
-      *vector, Selection(vector->size()), options, arrowArray, pool);
+      *loaded, Selection(loaded->size()), options, arrowArray, pool);
 }
 
 void exportToArrow(
-    const VectorPtr& vec,
+    const VectorPtr& vector,
     ArrowSchema& arrowSchema,
     const ArrowOptions& options) {
+  // The array export describes each vector's loaded form, so the schema must be
+  // derived from it too: a lazy vector that loads as a dictionary otherwise gets
+  // a plain value-type schema over dictionary indices, and the ROW/ARRAY/MAP
+  // branches below would cast a LazyVector to the complex vector it wraps.
+  const auto& vec = BaseVector::loadedVectorShared(vector);
   auto& type = vec->type();
 
   arrowSchema.name = nullptr;
