@@ -791,7 +791,19 @@ VectorPtr Writer::flattenIfNeeded(const VectorPtr& data) const {
   VELOX_CHECK_NOT_NULL(
       rowVector, "Arrow export expects a RowVector as input data.");
 
-  const auto& children = rowVector->children();
+  // Load lazy children before deciding anything. exportToArrow() exports the
+  // array from each child's loaded vector but derives the schema from the
+  // vector it is handed, so a lazy column that loads as a dictionary would
+  // export a plain value-type schema over dictionary-shaped data ("Expected 3
+  // buffers for imported type string, ArrowArray struct has 2"). The encoding
+  // checks below would likewise only see LAZY and skip the dictionary rules.
+  std::vector<VectorPtr> children;
+  children.reserve(rowVector->childrenSize());
+  bool anyLoaded = false;
+  for (const auto& child : rowVector->children()) {
+    children.push_back(BaseVector::loadedVectorShared(child));
+    anyLoaded |= children.back().get() != child.get();
+  }
 
   // Decide per-column whether it must be flattened before Arrow export. A
   // column is flattened when childNeedsFlatten() requires it, or when the
@@ -845,7 +857,7 @@ VectorPtr Writer::flattenIfNeeded(const VectorPtr& data) const {
     }
   }
 
-  if (!anyNeedsFlatten) {
+  if (!anyNeedsFlatten && !anyLoaded) {
     return data;
   }
 
