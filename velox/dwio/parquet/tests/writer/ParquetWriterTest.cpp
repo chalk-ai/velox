@@ -1841,6 +1841,69 @@ TEST_F(ParquetWriterTest, constantWrappingDictionaryFlattens) {
   assertFlattenedRoundTrip(makeRowVector({constColumn}));
 }
 
+// Returns a lazy vector that loads as 'loaded' itself, the way a table scan
+// hands the writer a column the Parquet reader decodes as a dictionary.
+VectorPtr makeLazy(memory::MemoryPool* pool, const VectorPtr& loaded) {
+  return std::make_shared<LazyVector>(
+      pool,
+      loaded->type(),
+      loaded->size(),
+      std::make_unique<facebook::velox::test::SimpleVectorLoader>(
+          [loaded](RowSet /*rows*/) { return loaded; }));
+}
+
+// The writer must export the Arrow schema and the data from the same loaded
+// vector. Deriving the schema from the lazy vector yields a plain string field
+// over dictionary indices, which Arrow rejects with "Expected 3 buffers for
+// imported type string, ArrowArray struct has 2". One row is the shape a
+// single-row table scan feeds a TableWrite.
+TEST_F(ParquetWriterTest, lazyDictionaryVarchar) {
+  for (vector_size_t size : {1, 1'000}) {
+    SCOPED_TRACE(fmt::format("size={}", size));
+    auto dictionary = makeFlatVector<std::string>({"alpha", "beta", "gamma"});
+    auto dictVector =
+        makeDictionaryColumn(size, dictionary, [](auto row) { return row % 3; });
+    auto lazy = makeLazy(pool(), dictVector);
+    ASSERT_EQ(lazy->encoding(), VectorEncoding::Simple::LAZY);
+    auto ids = makeFlatVector<int64_t>(size, [](auto row) { return row; });
+
+    assertRoundTrip(
+        makeRowVector({lazy, ids}), makeRowVector({flatten(dictVector), ids}));
+  }
+}
+
+// A lazy dictionary batch after a flat first batch must match the schema the
+// writer cached from that first batch.
+TEST_F(ParquetWriterTest, lazyDictionaryAfterFlatBatch) {
+  constexpr vector_size_t kBatchSize = 100;
+  auto schema = ROW({"c0"}, {VARCHAR()});
+  auto flat = makeFlatVector<std::string>(
+      kBatchSize, [](auto row) { return fmt::format("flat_{}", row); });
+  auto dictionary = makeFlatVector<std::string>({"alpha", "beta", "gamma"});
+  auto dictVector = makeDictionaryColumn(
+      kBatchSize, dictionary, [](auto row) { return row % 3; });
+
+  dwio::common::WriterOptions options;
+  options.memoryPool = rootPool_.get();
+  options.schema = schema;
+  auto* sinkPtr = write(
+      {makeRowVector({flat}), makeRowVector({makeLazy(pool(), dictVector)})},
+      options,
+      ParquetWriterOptions{});
+
+  auto reader = createReaderInMemory(*sinkPtr);
+  ASSERT_EQ(reader->numberOfRows(), static_cast<uint64_t>(kBatchSize) * 2);
+  auto expected = makeRowVector({makeFlatVector<std::string>(
+      kBatchSize * 2, [&](auto row) {
+        return row < kBatchSize
+            ? fmt::format("flat_{}", row)
+            : std::string(dictVector->asUnchecked<SimpleVector<StringView>>()
+                              ->valueAt(row - kBatchSize));
+      })});
+  auto rowReader = createRowReaderFromReader(*reader, schema);
+  assertReadWithReaderAndExpected(schema, *rowReader, expected, *leafPool_);
+}
+
 // Verifies that an empty dictionary vector (0 rows) can be written without
 // crashing.  The Parquet reader rejects empty files, so this test only
 // verifies the write path.
