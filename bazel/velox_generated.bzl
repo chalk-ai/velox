@@ -24851,6 +24851,7 @@ def velox_generated_targets():
             "velox/type/tz/TimeZoneNames.h",
         ],
         defines = ["VELOX_ENABLE_COMPRESSION_LZ4"],
+        tags = ["no-dwyu"],
         strip_include_prefix = ".",
         implementation_deps = [
             ":tzdb",
@@ -26962,6 +26963,7 @@ def velox_generated_targets():
             "velox/functions/sparksql/specialforms/SparkCastHooks.h",
             "velox/functions/sparksql/window/WindowFunctionsRegistration.h",
         ],
+        tags = ["no-dwyu"],
         strip_include_prefix = ".",
         implementation_deps = [
             ":date",
@@ -27640,6 +27642,7 @@ def velox_generated_targets():
             "velox/vector/arrow/Bridge.h",
             "velox/vector/tests/utils/VectorMaker-inl.h",
         ],
+        tags = ["no-dwyu"],
         strip_include_prefix = ".",
         deps = [
             ":hdr/velox/vector/AggregationHook.h",
@@ -27864,6 +27867,7 @@ def velox_generated_targets():
             "VELOX_ENABLE_S3",
             "SIMDJSON_EXPERIMENTAL_ALLOW_INCOMPLETE_JSON",
         ],
+        tags = ["no-dwyu"],
         strip_include_prefix = ".",
         implementation_deps = [
             ":tzdb",

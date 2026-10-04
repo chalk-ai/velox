@@ -58,6 +58,17 @@ repos:
         pass_filenames: false
         files: (\.h|CMakeLists\.txt)$
 
+      - id: velox-bazel-targets
+        name: velox-bazel-targets
+        description: >-
+          Verify bazel/velox_generated.bzl matches the layer lists and the
+          current #includes. Fix with:
+          scripts/bazel/generate_velox_targets.py generate
+        entry: python3 scripts/bazel/generate_velox_targets.py generate --check
+        language: python
+        pass_filenames: false
+        files: ^(velox/.*\.(cpp|cc|c|h|hpp|inc)|bazel/velox_(layers|generated)\.bzl|(.*/)?BUILD\.bazel|scripts/bazel/generate_velox_targets\.py)$
+
       - id: check-readme-blogs
         name: check-readme-blogs
         description: Ensure README lists the 3 most recent blog posts.

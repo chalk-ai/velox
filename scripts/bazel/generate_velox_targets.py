@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Generate fine-grained Bazel targets for Velox's core layers.
 
 Velox's non-test sources are grouped into a few coarse layers (base, vector,
@@ -286,7 +299,9 @@ class Generator:
     def _load_layer_files(self) -> dict[str, FileInfo]:
         files: dict[str, FileInfo] = {}
         for name, layer in self.layers.items():
-            entries = [(p, False) for p in layer.get("srcs", []) + layer.get("hdrs", [])]
+            entries = [
+                (p, False) for p in layer.get("srcs", []) + layer.get("hdrs", [])
+            ]
             entries += [(p, True) for p in layer.get("textual_hdrs", [])]
             for path, textual in entries:
                 if path.startswith((":", "//", "@")):
@@ -332,7 +347,11 @@ class Generator:
                 paths.append(f"{prefix}/{f}")
             else:
                 full = f"{rule.package}/{f}" if rule.package else f
-                if strip and strip not in (".", "/") and full.startswith(strip.lstrip("/") + "/"):
+                if (
+                    strip
+                    and strip not in (".", "/")
+                    and full.startswith(strip.lstrip("/") + "/")
+                ):
                     full = full[len(strip.lstrip("/")) + 1 :]
                 paths.append(full)
         return paths
@@ -404,7 +423,9 @@ class Generator:
         """Returns file:<path> or a label for an include, or None if external."""
         candidates = [include]
         if not include.startswith("velox/"):
-            candidates.insert(0, os.path.normpath(f"{os.path.dirname(info.path)}/{include}"))
+            candidates.insert(
+                0, os.path.normpath(f"{os.path.dirname(info.path)}/{include}")
+            )
         for candidate in candidates:
             owner = self._owner(candidate)
             if owner:
@@ -414,7 +435,11 @@ class Generator:
         # Unowned or absent files are normally behind a disabled #if (feature flags,
         # Meta-internal fb/ paths). The Bazel build is the real check: with
         # layering_check, a live include of an unowned header fails to compile.
-        kind = "owned by no Bazel target" if (REPO / include).is_file() else "not in the tree"
+        kind = (
+            "owned by no Bazel target"
+            if (REPO / include).is_file()
+            else "not in the tree"
+        )
         self.warnings[f"#include of a file {kind} (ignored)"].add(
             f"{info.path} -> {include}"
         )
@@ -430,7 +455,10 @@ class Generator:
         """
         if owner.startswith("file:"):
             owner_layer = self.files[path].layer
-            if owner_layer == info.layer or f"//:{owner_layer}" in self.visible[info.layer]:
+            if (
+                owner_layer == info.layer
+                or f"//:{owner_layer}" in self.visible[info.layer]
+            ):
                 return owner
         else:
             base = owner[: -len("_headers")] if owner.endswith("_headers") else owner
@@ -474,7 +502,9 @@ class Generator:
             members = sorted(members)
             layers = {self.files[m].layer for m in members}
             if len(layers) > 1:
-                self.errors.append(f"include cycle spans layers {sorted(layers)}: {members}")
+                self.errors.append(
+                    f"include cycle spans layers {sorted(layers)}: {members}"
+                )
             label = f"//:hdr/{members[0]}"
             group_members[label] = members
             for m in members:
@@ -543,7 +573,11 @@ class Generator:
     # -- output ------------------------------------------------------------
 
     def _render(self, targets: list[dict]) -> str:
-        out = [GENERATED_HEADER, 'load("@rules_cc//cc:cc_library.bzl", "cc_library")', ""]
+        out = [
+            GENERATED_HEADER,
+            'load("@rules_cc//cc:cc_library.bzl", "cc_library")',
+            "",
+        ]
         layer_consts = {}
         for name in sorted(self.layers):
             layer = self.layers[name]
@@ -552,19 +586,24 @@ class Generator:
             external = sorted(
                 {
                     d
-                    for d in layer.get("deps", []) + layer.get("implementation_deps", [])
+                    for d in layer.get("deps", [])
+                    + layer.get("implementation_deps", [])
                     if d.startswith("@")
                 }
             )
             out.append(f"# Third-party deps every file of layer :{name} may use.")
             out.append(f"{const}_EXTERNAL_DEPS = {fmt_list(external, 0)}")
             out.append("")
-            out.append(f"# Defines layer :{name} saw as one cc_library (its own and lower layers').")
+            out.append(
+                f"# Defines layer :{name} saw as one cc_library (its own and lower layers')."
+            )
             out.append(f"{const}_DEFINES = {fmt_list(self._visible_defines(name), 0)}")
             out.append("")
 
         out.append("def velox_generated_targets():")
-        out.append('    """Declares the per-file Velox targets and the layer umbrellas."""')
+        out.append(
+            '    """Declares the per-file Velox targets and the layer umbrellas."""'
+        )
         for t in targets:
             layer = self.layers[t["layer"]]
             const = layer_consts[t["layer"]]
@@ -577,7 +616,12 @@ class Generator:
                     attrs.append((attr, fmt_list(layer[attr], 8)))
             attrs.append(("local_defines", f"{const}_DEFINES"))
             if "hdrs" in t or "textual_hdrs" in t:
-                attrs.append(("strip_include_prefix", fmt_str(layer.get("strip_include_prefix", "."))))
+                attrs.append(
+                    (
+                        "strip_include_prefix",
+                        fmt_str(layer.get("strip_include_prefix", ".")),
+                    )
+                )
             if layer.get("features"):
                 attrs.append(("features", fmt_list(layer["features"], 8)))
             if layer.get("tags"):
@@ -602,14 +646,26 @@ class Generator:
             )
             attrs = [("name", fmt_str(name))]
             attrs.append(("textual_hdrs", fmt_list(headers, 8)))
-            for attr in ("defines", "tags"):
-                if layer.get(attr):
-                    attrs.append((attr, fmt_list(layer[attr], 8)))
-            attrs.append(("strip_include_prefix", fmt_str(layer.get("strip_include_prefix", "."))))
+            if layer.get("defines"):
+                attrs.append(("defines", fmt_list(layer["defines"], 8)))
+            # An umbrella only aggregates its members, so DWYU would report every
+            # member as an unused dep.
+            tags = sorted(set(layer.get("tags", [])) | {"no-dwyu"})
+            attrs.append(("tags", fmt_list(tags, 8)))
+            attrs.append(
+                (
+                    "strip_include_prefix",
+                    fmt_str(layer.get("strip_include_prefix", ".")),
+                )
+            )
             if layer.get("implementation_deps"):
-                attrs.append(("implementation_deps", fmt_list(layer["implementation_deps"], 8)))
+                attrs.append(
+                    ("implementation_deps", fmt_list(layer["implementation_deps"], 8))
+                )
             attrs.append(("deps", fmt_list(members + list(layer.get("deps", [])), 8)))
-            out.append(f"    # Umbrella for layer :{name}; linking and propagated defines match the old target.")
+            out.append(
+                f"    # Umbrella for layer :{name}; linking and propagated defines match the old target."
+            )
             out.append(fmt_call("cc_library", attrs))
         return "\n".join(out).rstrip() + "\n"
 
@@ -725,7 +781,11 @@ def migrate() -> None:
             and getattr(stmt.value.func, "id", None) == "cc_library"
         ):
             name = next(
-                (ast.literal_eval(k.value) for k in stmt.value.keywords if k.arg == "name"),
+                (
+                    ast.literal_eval(k.value)
+                    for k in stmt.value.keywords
+                    if k.arg == "name"
+                ),
                 None,
             )
             if name in LAYER_NAMES:
@@ -754,7 +814,9 @@ def migrate() -> None:
         block = "".join(lines[start - 1 : end])
         if kind == "layer":
             const = f"_{name.upper()}"
-            block = re.sub(r"^cc_library\(", f"{const} = dict(", block, count=1, flags=re.M)
+            block = re.sub(
+                r"^cc_library\(", f"{const} = dict(", block, count=1, flags=re.M
+            )
             order.append(const)
         out.append(block.rstrip("\n") + "\n\n")
     out.append("VELOX_LAYERS = [\n" + "".join(f"    {c},\n" for c in order) + "]\n")
@@ -779,9 +841,7 @@ def migrate() -> None:
             new_lines.append(line)
     new_text = "".join(new_lines)
     load_line = 'load("//bazel:velox_generated.bzl", "velox_generated_targets")\n'
-    new_text = new_text.replace(
-        'load("@fbthrift//', load_line + 'load("@fbthrift//', 1
-    )
+    new_text = new_text.replace('load("@fbthrift//', load_line + 'load("@fbthrift//', 1)
     if load_line not in new_text:
         sys.exit("could not find where to add the load statement")
 
