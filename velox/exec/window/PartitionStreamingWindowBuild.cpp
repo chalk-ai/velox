@@ -46,8 +46,11 @@ void PartitionStreamingWindowBuild::addInput(RowVectorPtr input) {
       data_->store(decodedInputVectors_[col], row, newRow, col);
     }
 
+    // The input is sorted by the partition keys in its producer's direction and
+    // null order, which need not be the ascending, nulls-first order of
+    // partitionKeyInfo_, so any change of key starts a partition.
     if (previousRow_ != nullptr &&
-        compareRowsWithKeys(previousRow_, newRow, partitionKeyInfo_)) {
+        !equalRowsWithKeys(previousRow_, newRow, partitionKeyInfo_)) {
       buildNextPartition();
     }
 
