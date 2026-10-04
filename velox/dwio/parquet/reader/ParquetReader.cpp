@@ -242,6 +242,10 @@ class ReaderBase {
     return pool_;
   }
 
+  const ParquetReaderOptions& parquetReaderOptions() const {
+    return parquetReaderOptions_;
+  }
+
   dwio::common::BufferedInput& bufferedInput() const {
     return *input_;
   }
