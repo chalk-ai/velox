@@ -412,6 +412,38 @@ TEST_F(WindowTest, rowBasedStreamingWindowOOM) {
   testWindowBuild(false);
 }
 
+// PartitionStreamingWindowBuild takes input already sorted by the partition
+// keys, in whatever direction and null order its producer sorted them. Every
+// change of key must start a partition: under NULLS LAST the step from the last
+// non-null key to null is a decrease, and under a descending key every step is.
+TEST_F(WindowTest, partitionStreamingBoundariesAnyKeyOrder) {
+  const auto nullsLast = makeRowVector(
+      {"p", "s"},
+      {makeNullableFlatVector<int64_t>(
+           {1, 1, 2, 2, std::nullopt, std::nullopt}),
+       makeFlatVector<int64_t>({1, 2, 1, 2, 1, 2})});
+  const auto descending = makeRowVector(
+      {"p", "s"},
+      {makeFlatVector<int64_t>({3, 3, 2, 2, 1, 1}),
+       makeFlatVector<int64_t>({1, 2, 1, 2, 1, 2})});
+  for (const auto& data : {nullsLast, descending}) {
+    SCOPED_TRACE(data->toString(0, data->size()));
+    // lead() processes whole partitions, so streamingWindow() selects
+    // PartitionStreamingWindowBuild.
+    const auto plan =
+        PlanBuilder()
+            .values({data})
+            .streamingWindow({"lead(s, 1) over (partition by p order by s)"})
+            .planNode();
+    const auto expected = makeRowVector(
+        {data->childAt(0),
+         data->childAt(1),
+         makeNullableFlatVector<int64_t>(
+             {2, std::nullopt, 2, std::nullopt, 2, std::nullopt})});
+    AssertQueryBuilder(plan).assertResults(expected);
+  }
+}
+
 DEBUG_ONLY_TEST_F(WindowTest, aggWindowResultMismatch) {
   auto data = makeRowVector(
       {"id", "order_num"},
