@@ -5038,6 +5038,17 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "velox_common_memory_tests_SharedLeafPoolSelectionTest",
+    srcs = ["velox/common/memory/tests/SharedLeafPoolSelectionTest.cpp"],
+    deps = [
+        ":base",
+        "@gflags",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "velox_common_base_benchmarks_ConcurrentCounterBenchmark",
     srcs = ["velox/common/base/benchmarks/ConcurrentCounterBenchmark.cpp"],
