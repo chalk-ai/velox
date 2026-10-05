@@ -32,6 +32,18 @@ namespace facebook::velox::parquet {
 class ParquetConfig {
  public:
   VELOX_FORMAT_CONFIG(
+      kBloomFilterPruningEnabledSession,
+      kBloomFilterPruningEnabled,
+      bloomFilterPruningEnabled,
+      "bloom_filter_pruning_enabled",
+      "bloom-filter-pruning-enabled",
+      bool,
+      false,
+      "Prune row groups using parquet bloom filters for point-equality "
+      "filters that statistics could not exclude. Each probe issues one "
+      "extra small read per candidate (row group, column).")
+
+  VELOX_FORMAT_CONFIG(
       kFooterSpeculativeIoSizeSession,
       kFooterSpeculativeIoSize,
       footerSpeculativeIoSize,
@@ -246,6 +258,8 @@ class ParquetConfig {
   static void registerProperties(
       std::vector<config::ConfigProperty>& properties,
       std::string_view sessionPrefix) {
+    dwio::common::registerFormatConfigProperty<
+        kBloomFilterPruningEnabledSessionProperty>(properties, sessionPrefix);
     dwio::common::registerFormatConfigProperty<
         kFooterSpeculativeIoSizeSessionProperty>(properties, sessionPrefix);
     dwio::common::registerFormatConfigProperty<
