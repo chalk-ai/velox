@@ -15,7 +15,9 @@
  */
 
 #include "velox/common/memory/Memory.h"
+#include "velox/common/memory/MemoryPool.h"
 
+#include <cstddef>
 #include <latch>
 #include <mutex>
 #include <thread>
