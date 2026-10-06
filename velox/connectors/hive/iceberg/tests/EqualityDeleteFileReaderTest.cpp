@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/hive/iceberg/tests/IcebergTestBase.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 
@@ -263,6 +264,26 @@ TEST_P(EqualityDeleteFileReaderTestP, equalityColumnNotInProjection) {
       {"value"},
       {makeFlatVector<std::string>({"a", "b", "c", "e", "f", "g", "i", "j"})});
   assertEqualResults({expected}, {result});
+}
+
+TEST_P(EqualityDeleteFileReaderTestP, equalityKeysStayOutOfEmptyProjection) {
+  auto tableType = ROW({"id", "value"}, {BIGINT(), VARCHAR()});
+  auto data = makeRowVector(
+      {"id", "value"},
+      {makeFlatVector<int64_t>({1, 2, 3}),
+       makeFlatVector<std::string>({"a", "b", "c"})});
+  auto dataFile = writeDataFileP({data}, {1, 2});
+  auto deletes = makeRowVector({"id"}, {makeFlatVector<int64_t>({2})});
+  auto deleteFile = writeDataFileP({deletes}, {1});
+  auto descriptor =
+      makeDeleteFile(deleteFile->getPath(), {1}, GetParam().format, 1);
+  auto plan = makeIcebergTableScanPlan(ROW({}, {}), tableType, {1, 2});
+  auto result = AssertQueryBuilder(plan)
+                    .splits(makeSplitsP(dataFile->getPath(), {descriptor}))
+                    .copyResults(pool());
+
+  EXPECT_EQ(result->size(), 2);
+  EXPECT_EQ(result->childrenSize(), 0);
 }
 
 /// Two delete files targeting the same column not in the projection.
@@ -606,6 +627,52 @@ TEST_F(
   assertEqualResults({expected}, {result});
 }
 
+TEST_F(EqualityDeleteFileReaderTest, missingEqualityFieldIdIsRejected) {
+  auto tableType = ROW({"replacement_id", "value"}, {BIGINT(), VARCHAR()});
+  auto data = makeRowVector(
+      {"replacement_id", "value"},
+      {makeFlatVector<int64_t>({1, 2}),
+       makeFlatVector<std::string>({"a", "b"})});
+  auto dataFile = writeDwrfFileWithFieldIds({data}, {3, 2});
+  auto deletes = makeRowVector({"old_id"}, {makeFlatVector<int64_t>({2})});
+  auto deleteFile = writeDataFile({deletes});
+  const FileWriteMode mode{dwio::common::FileFormat::DWRF, true};
+  auto descriptor = makeDeleteFile(deleteFile->getPath(), {1}, mode.format, 1);
+  auto plan = makeIcebergTableScanPlan(tableType, tableType, {3, 2});
+
+  // Field 1 is absent; its old ordinal now belongs to the unrelated field 3.
+  VELOX_ASSERT_THROW(
+      AssertQueryBuilder(plan)
+          .splits(makeSplits(dataFile->getPath(), {}, mode, {descriptor}))
+          .copyResults(pool()),
+      "Equality delete field ID cannot be resolved against table columns: 1");
+}
+
+#ifdef VELOX_ENABLE_PARQUET
+TEST_F(EqualityDeleteFileReaderTest, parquetEqualityKeyUsesFieldIdAfterRename) {
+  auto tableType = ROW({"renamed_id", "value"}, {BIGINT(), VARCHAR()});
+  auto outputType = ROW({"value"}, {VARCHAR()});
+  auto data = makeRowVector(
+      {"old_id", "value"},
+      {makeFlatVector<int64_t>({1, 2, 3}),
+       makeFlatVector<std::string>({"a", "b", "c"})});
+  auto dataFile = writeParquetFile({data}, {1, 2});
+  auto deletes = makeRowVector({"old_id"}, {makeFlatVector<int64_t>({2})});
+  auto deleteFile = writeParquetFile({deletes}, {1});
+  const FileWriteMode mode{dwio::common::FileFormat::PARQUET, true};
+  auto descriptor = makeDeleteFile(deleteFile->getPath(), {1}, mode.format, 1);
+  auto plan = makeIcebergTableScanPlan(outputType, tableType, {1, 2});
+  auto result =
+      AssertQueryBuilder(plan)
+          .splits(makeSplits(dataFile->getPath(), {}, mode, {descriptor}))
+          .copyResults(pool());
+
+  assertEqualResults(
+      {makeRowVector({"value"}, {makeFlatVector<std::string>({"a", "c"})})},
+      {result});
+}
+#endif
+
 /// Verifies the ordinal fallback on a non-first column when full-schema field
 /// IDs are unavailable.
 TEST_P(EqualityDeleteFileReaderTestP, deleteOnSecondColumn) {
@@ -805,6 +872,68 @@ TEST_P(EqualityDeleteFileReaderTestP, mixedSequenceNumbers) {
 // ===========================================================================
 // Non-parameterized tests -- partition columns and evolved schema (DWRF only).
 // ===========================================================================
+
+TEST_F(EqualityDeleteFileReaderTest, identityConstantsRefreshAcrossSplits) {
+  auto tableType = ROW({"id", "part"}, {BIGINT(), BIGINT()});
+  auto partitioned = writeDwrfFileWithFieldIds(
+      {makeRowVector({"id"}, {makeFlatVector<int64_t>({1})})}, {1});
+  auto physical = writeDwrfFileWithFieldIds(
+      {makeRowVector(
+          {"id", "part"},
+          {makeFlatVector<int64_t>({2}), makeFlatVector<int64_t>({9})})},
+      {1, 2});
+  const FileWriteMode mode{dwio::common::FileFormat::DWRF, true};
+  std::vector<std::shared_ptr<ConnectorSplit>> splits;
+  for (const auto& value :
+       {std::optional<std::string>{"7"},
+        std::optional<std::string>{},
+        std::optional<std::string>{"8"}}) {
+    auto next = makeSplits(partitioned->getPath(), {{"part", value}}, mode);
+    splits.insert(splits.end(), next.begin(), next.end());
+  }
+  auto next = makeSplits(physical->getPath(), {}, mode);
+  splits.insert(splits.end(), next.begin(), next.end());
+  next = makeSplits(partitioned->getPath(), {}, mode);
+  splits.insert(splits.end(), next.begin(), next.end());
+  auto plan = makeIcebergTableScanPlan(tableType, tableType, {1, 2});
+  auto result =
+      AssertQueryBuilder(plan).maxDrivers(1).splits(splits).copyResults(pool());
+
+  // One reader crosses identity values, a physical column, and an older file
+  // without that column. Constants belong to a split, not to the shared scan.
+  assertEqualResults(
+      {makeRowVector(
+          {"id", "part"},
+          {makeFlatVector<int64_t>({1, 1, 1, 2, 1}),
+           makeNullableFlatVector<int64_t>(
+               {7, std::nullopt, 8, 9, std::nullopt})})},
+      {result});
+}
+
+TEST_F(
+    EqualityDeleteFileReaderTest,
+    filterOnlyIdentityConstantResetsForPhysicalColumn) {
+  auto tableType = ROW({"id", "part"}, {BIGINT(), BIGINT()});
+  auto outputType = ROW({"id"}, {BIGINT()});
+  auto partitioned = writeDwrfFileWithFieldIds(
+      {makeRowVector({"id"}, {makeFlatVector<int64_t>({1})})}, {1});
+  auto physical = writeDwrfFileWithFieldIds(
+      {makeRowVector(
+          {"id", "part"},
+          {makeFlatVector<int64_t>({2, 3}), makeFlatVector<int64_t>({7, 9})})},
+      {1, 2});
+  const FileWriteMode mode{dwio::common::FileFormat::DWRF, true};
+  auto splits = makeSplits(partitioned->getPath(), {{"part", "7"}}, mode);
+  auto next = makeSplits(physical->getPath(), {}, mode);
+  splits.insert(splits.end(), next.begin(), next.end());
+  auto plan =
+      makeIcebergTableScanPlan(outputType, tableType, {1, 2}, {"part = 7"});
+  auto result =
+      AssertQueryBuilder(plan).maxDrivers(1).splits(splits).copyResults(pool());
+
+  assertEqualResults(
+      {makeRowVector({"id"}, {makeFlatVector<int64_t>({1, 2})})}, {result});
+}
 
 /// Equality delete on a partition column in the data file but not projected.
 TEST_F(

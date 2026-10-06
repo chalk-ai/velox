@@ -615,7 +615,8 @@ std::optional<RowVectorPtr> FileDataSource::next(
     }
   }
 
-  if (outputType_->size() == 0) {
+  // Internal equality keys must not escape an empty user projection.
+  if (outputType_->size() == 0 && rowVector->childrenSize() == 0) {
     return exec::wrap(rowsRemaining, remainingIndices, rowVector);
   }
 
