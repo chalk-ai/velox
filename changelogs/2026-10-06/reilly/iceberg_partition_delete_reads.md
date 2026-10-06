@@ -1,0 +1,1 @@
+- Refresh Iceberg identity partition constants per split, bind Parquet equality deletes by field ID, and keep internal delete keys out of empty projections.

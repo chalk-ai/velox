@@ -20,6 +20,8 @@
 #include "velox/connectors/hive/BufferedInputBuilder.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/iceberg/IcebergMetadataColumns.h"
+#include "velox/dwio/common/Options.h"
+#include "velox/dwio/common/ParquetFieldId.h"
 #include "velox/dwio/common/ReaderFactory.h"
 
 namespace facebook::velox::connector::hive::iceberg {
@@ -193,6 +195,20 @@ EqualityDeleteFileReader::EqualityDeleteFileReader(
       deleteSplit,
       /*tableParameters=*/{},
       deleteReaderOpts);
+
+  if (deleteFile.fileFormat == dwio::common::FileFormat::PARQUET) {
+    // Delete files keep their physical names across table-column renames.
+    VELOX_CHECK_EQ(
+        deleteFile.equalityFieldIds.size(), equalityColumnNames_.size());
+    std::vector<dwio::common::ParquetFieldId> fieldIds;
+    fieldIds.reserve(deleteFile.equalityFieldIds.size());
+    for (const auto fieldId : deleteFile.equalityFieldIds) {
+      fieldIds.push_back(dwio::common::ParquetFieldId{fieldId, {}});
+    }
+    deleteReaderOpts.setColumnMappingMode(
+        dwio::common::ColumnMappingMode::kParquetFieldId);
+    deleteReaderOpts.setFieldIds(std::move(fieldIds));
+  }
 
   const FileHandleKey fileHandleKey{
       .filename = deleteFile.filePath,

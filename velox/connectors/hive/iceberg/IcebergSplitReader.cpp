@@ -757,8 +757,12 @@ IcebergSplitReader::resolveEqualityColumns(
         "Equality delete field ID must be positive: {}",
         equalityFieldId);
     const auto fieldIdIt = columnIndexByFieldId.find(equalityFieldId);
-    // Older plans and tests may not carry full-schema field IDs. Preserve the
-    // legacy ordinal lookup when metadata is unavailable or incomplete.
+    // Explicit IDs are authoritative: an absent key must never bind by ordinal
+    // to an unrelated column after schema evolution.
+    VELOX_CHECK(
+        columnIndexByFieldId.empty() || fieldIdIt != columnIndexByFieldId.end(),
+        "Equality delete field ID cannot be resolved against table columns: {}",
+        equalityFieldId);
     const auto columnIndex = fieldIdIt != columnIndexByFieldId.end()
         ? fieldIdIt->second
         : static_cast<uint32_t>(equalityFieldId - 1);
@@ -1030,10 +1034,32 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
           readTimestampAsLocalTime,
           false);
       childSpec->setConstantValue(constant);
+    } else if (auto partitionIt = fileSplit_->partitionKeys.find(fieldName);
+               partitionIt != fileSplit_->partitionKeys.end()) {
+      // Hidden equality keys retain scan-spec children across splits, even
+      // without applicable deletes. Refresh every present identity value.
+      if (partitionKeys_->count(fieldName) > 0) {
+        setPartitionValue(childSpec.get(), fieldName, partitionIt->second);
+      } else {
+        const auto& dataColumns = tableHandle_->dataColumns();
+        VELOX_CHECK_NOT_NULL(
+            dataColumns, "Iceberg table data columns are missing");
+        auto columnType = dataColumns->findChild(fieldName);
+        VELOX_CHECK_NOT_NULL(
+            columnType,
+            "Partition column '{}' not found in table schema",
+            fieldName);
+        childSpec->setConstantValue(newConstantFromString(
+            columnType,
+            partitionIt->second,
+            connectorQueryCtx_->memoryPool(),
+            readTimestampAsLocalTime,
+            columnType->isDate()));
+      }
     } else {
       auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
       auto outputTypeIdx = readerOutputType_->getChildIdxIfExists(fieldName);
-      if (outputTypeIdx.has_value() && fileTypeIdx.has_value()) {
+      if (fileTypeIdx.has_value()) {
         if (equalityAugmentedPartitionColumns_.count(fieldName) > 0) {
           // This column was pre-installed as a partition-value constant by
           // 'configureEqualityDeleteColumns'. Mirror Java's PARTITION_KEY
@@ -1054,7 +1080,12 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
                   BIGINT(), 1, connectorQueryCtx_->memoryPool()));
           continue;
         }
+        // Older specs can store this column physically. Filter-only columns
+        // also need to discard constants installed for an earlier split.
         childSpec->setConstantValue(nullptr);
+        if (!outputTypeIdx.has_value()) {
+          continue;
+        }
         auto& outputType = readerOutputType_->childAt(*outputTypeIdx);
         auto& columnType = columnTypes[*fileTypeIdx];
         if (childSpec->isFlatMapAsStruct()) {
@@ -1129,9 +1160,10 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
           childSpec->setConstantValue(
               BaseVector::createNullConstant(
                   columnType, 1, connectorQueryCtx_->memoryPool()));
-        } else if (childSpec->isConstant()) {
-          // Constant already set (equality-delete partition column, or set on
-          // a previous prepareSplit call for the same scanSpec). Nothing to do.
+        } else if (equalityAugmentedPartitionColumns_.count(fieldName) > 0) {
+          // Only constants installed for this split are reusable. A missing
+          // column must recompute its default instead of retaining an old
+          // value.
           continue;
         } else if (auto partitionIt = fileSplit_->partitionKeys.find(fieldName);
                    partitionIt != fileSplit_->partitionKeys.end()) {
