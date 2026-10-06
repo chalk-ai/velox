@@ -1021,7 +1021,25 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
   const auto handleByName =
       buildIcebergHandleByName(columnHandles_.get(), tableHandle_.get());
 
-  // Iceberg table stores all column's data in data file.
+  const auto& identityPartitionKeys = icebergSplit_->identityPartitionKeys;
+  const auto* hiveTable = tableHandle_->as<HiveTableHandle>();
+  const auto findIdentityPartition = [&](const std::string& name) {
+    if (auto it = handleByName.find(name); it != handleByName.end()) {
+      return identityPartitionKeys.find(it->second->field().fieldId);
+    }
+    // Hidden equality keys can outlive the delete files that added them to
+    // the scan spec. Resolve them from the full schema on every split.
+    const auto& dataColumns = tableHandle_->dataColumns();
+    if (hiveTable && dataColumns) {
+      const auto index = dataColumns->getChildIdxIfExists(name);
+      const auto& fieldIds = hiveTable->dataColumnFieldIds();
+      if (index.has_value() && *index < fieldIds.size()) {
+        return identityPartitionKeys.find(fieldIds[*index]);
+      }
+    }
+    return identityPartitionKeys.end();
+  };
+
   for (const auto& childSpec : childrenSpecs) {
     const std::string& fieldName = childSpec->fieldName();
     if (auto iter = splitInfoColumns.find(fieldName);
@@ -1034,28 +1052,24 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
           readTimestampAsLocalTime,
           false);
       childSpec->setConstantValue(constant);
-    } else if (auto partitionIt = fileSplit_->partitionKeys.find(fieldName);
-               partitionIt != fileSplit_->partitionKeys.end()) {
-      // Hidden equality keys retain scan-spec children across splits, even
-      // without applicable deletes. Refresh every present identity value.
-      if (partitionKeys_->count(fieldName) > 0) {
-        setPartitionValue(childSpec.get(), fieldName, partitionIt->second);
-      } else {
-        const auto& dataColumns = tableHandle_->dataColumns();
-        VELOX_CHECK_NOT_NULL(
-            dataColumns, "Iceberg table data columns are missing");
-        auto columnType = dataColumns->findChild(fieldName);
-        VELOX_CHECK_NOT_NULL(
-            columnType,
-            "Partition column '{}' not found in table schema",
-            fieldName);
-        childSpec->setConstantValue(newConstantFromString(
-            columnType,
-            partitionIt->second,
-            connectorQueryCtx_->memoryPool(),
-            readTimestampAsLocalTime,
-            columnType->isDate()));
-      }
+    } else if (auto partitionIt = findIdentityPartition(fieldName);
+               partitionIt != identityPartitionKeys.end()) {
+      // Only source-ID identity metadata proves a partition value equals the
+      // column value; bucket and void partition names can collide with it.
+      const auto& dataColumns = tableHandle_->dataColumns();
+      VELOX_CHECK_NOT_NULL(
+          dataColumns, "Iceberg table data columns are missing");
+      auto columnType = dataColumns->findChild(fieldName);
+      VELOX_CHECK_NOT_NULL(
+          columnType,
+          "Partition column '{}' not found in table schema",
+          fieldName);
+      childSpec->setConstantValue(newConstantFromString(
+          columnType,
+          partitionIt->second,
+          connectorQueryCtx_->memoryPool(),
+          readTimestampAsLocalTime,
+          columnType->isDate()));
     } else {
       auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
       auto outputTypeIdx = readerOutputType_->getChildIdxIfExists(fieldName);
@@ -1166,7 +1180,14 @@ std::vector<TypePtr> IcebergSplitReader::adaptColumns(
           // value.
           continue;
         } else if (auto partitionIt = fileSplit_->partitionKeys.find(fieldName);
-                   partitionIt != fileSplit_->partitionKeys.end()) {
+                   partitionIt != fileSplit_->partitionKeys.end() &&
+                   partitionKeys_->count(fieldName) > 0 &&
+                   handleByName.count(fieldName) == 0 &&
+                   identityPartitionKeys.empty() &&
+                   (!hiveTable || hiveTable->dataColumnFieldIds().empty())) {
+          // Legacy Hive plans explicitly mark partition-only columns but
+          // carry no Iceberg IDs. Keep their missing-column fallback after
+          // physical reads; Iceberg-aware plans require identity source IDs.
           setPartitionValue(childSpec.get(), fieldName, partitionIt->second);
         } else {
           // Check if column has an initial-default value (Iceberg V3).
