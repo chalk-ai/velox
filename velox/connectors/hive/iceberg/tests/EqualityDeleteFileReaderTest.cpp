@@ -963,17 +963,19 @@ TEST_F(
   auto outputType = ROW({"id"}, {BIGINT()});
   auto data = writeDwrfFileWithFieldIds(
       {makeRowVector({"id"}, {makeFlatVector<int64_t>({1})})}, {11});
+  auto laterData = writeDwrfFileWithFieldIds(
+      {makeRowVector({"id"}, {makeFlatVector<int64_t>({2})})}, {11});
   auto deleteFile = writeDwrfFileWithFieldIds(
       {makeRowVector({"part"}, {makeFlatVector<int64_t>({9})})}, {22});
   auto equalityDelete = makeDeleteFile(
       deleteFile->getPath(), {22}, dwio::common::FileFormat::DWRF, 1, 10);
   const FileWriteMode mode{dwio::common::FileFormat::DWRF, true};
   auto splits =
-      makeSplits(data->getPath(), {}, mode, {equalityDelete}, 1, {{22, "7"}});
+      makeSplits(data->getPath(), {}, mode, {equalityDelete}, 1, {{22, "8"}});
   // The filter column remains projected internally after equality-delete
   // augmentation, even on a split where the delete file does not apply.
-  auto next =
-      makeSplits(data->getPath(), {}, mode, {equalityDelete}, 11, {{22, "8"}});
+  auto next = makeSplits(
+      laterData->getPath(), {}, mode, {equalityDelete}, 11, {{22, "7"}});
   splits.insert(splits.end(), next.begin(), next.end());
   auto plan =
       makeIcebergTableScanPlan(outputType, tableType, {11, 22}, {"part = 7"});
@@ -981,7 +983,7 @@ TEST_F(
       AssertQueryBuilder(plan).maxDrivers(1).splits(splits).copyResults(pool());
 
   assertEqualResults(
-      {makeRowVector({"id"}, {makeFlatVector<int64_t>({1})})}, {result});
+      {makeRowVector({"id"}, {makeFlatVector<int64_t>({2})})}, {result});
 }
 
 /// Equality delete on a partition column in the data file but not projected.
