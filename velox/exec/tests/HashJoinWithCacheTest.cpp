@@ -417,7 +417,7 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, probeCannotSpillWithCachedTable) {
         if (hashProbeChecked.exchange(true)) {
           return;
         }
-        auto* probe = dynamic_cast<HashProbe*>(op);
+        auto* probe = op->as<HashProbe>();
         ASSERT_NE(probe, nullptr);
         ASSERT_FALSE(probe->canReclaim())
             << "HashProbe should not be reclaimable with cached hash table";
@@ -540,7 +540,7 @@ DEBUG_ONLY_TEST_F(HashJoinWithCacheTest, probeOOMWithCachedTable) {
           return;
         }
 
-        auto* probe = dynamic_cast<HashProbe*>(op);
+        auto* probe = op->as<HashProbe>();
         ASSERT_NE(probe, nullptr);
 
         // Verify that HashProbe cannot reclaim when using cached hash table.

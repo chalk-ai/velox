@@ -39,7 +39,7 @@ class ParquetParams : public dwio::common::FormatParams {
       const tz::TimeZone* sessionTimezone,
       TimestampPrecision timestampPrecision,
       bool nullStructIfAllFieldsMissing,
-      dwio::common::BufferedInput* bufferedInput)
+      dwio::common::BufferedInput* bufferedInput = nullptr)
       : FormatParams(pool, stats),
         metaData_(metaData),
         sessionTimezone_(sessionTimezone),
@@ -81,7 +81,7 @@ class ParquetData : public dwio::common::FormatData {
       memory::MemoryPool& pool,
       dwio::common::ColumnRuntimeStats& stats,
       const tz::TimeZone* sessionTimezone,
-      dwio::common::BufferedInput* bufferedInput)
+      dwio::common::BufferedInput* bufferedInput = nullptr)
       : pool_(pool),
         type_(std::static_pointer_cast<const ParquetTypeWithId>(type)),
         fileMetaDataPtr_(fileMetadataPtr),

@@ -16,7 +16,7 @@
 
 #include <folly/container/F14Set.h>
 
-#include <velox/vector/TypeAliases.h>
+#include "velox/vector/TypeAliases.h"
 #include "velox/expression/EvalCtx.h"
 #include "velox/expression/Expr.h"
 #include "velox/expression/VectorFunction.h"
@@ -296,13 +296,18 @@ std::vector<std::shared_ptr<exec::FunctionSignature>> signatures() {
 } // namespace
 
 // Register function.
-void registerVectorFunction_udf_array_sum(std::string_view name) {
+void registerVectorFunction_udf_array_sum(
+    std::string_view name,
+    std::string_view defaultOwner) {
+  const auto metadata =
+      exec::VectorFunctionMetadataBuilder().owner(defaultOwner).build();
   facebook::velox::exec::registerStatefulVectorFunction(
-      name, signatures(), create<false>);
+      name, signatures(), create<false>, metadata);
   facebook::velox::exec::registerStatefulVectorFunction(
       std::string(name) + "_propagate_element_null",
       signatures(),
-      create<true>);
+      create<true>,
+      metadata);
 }
 
 } // namespace facebook::velox::functions
