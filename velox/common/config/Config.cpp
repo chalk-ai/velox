@@ -121,6 +121,9 @@ ConfigBase& ConfigBase::reset() {
 }
 
 bool ConfigBase::valueExists(const std::string& key) const {
+  if (!mutable_) {
+    return configs_.find(key) != configs_.end();
+  }
   std::shared_lock<std::shared_mutex> l(mutex_);
   return configs_.find(key) != configs_.end();
 };
@@ -169,6 +172,15 @@ std::string ConfigBase::toSessionKey(std::string_view configKey) {
 }
 
 std::optional<std::string> ConfigBase::access(const std::string& key) const {
+  // An immutable config never changes after construction, so its reads need no
+  // lock. Per-query configs are read by every operator's initialize(); with
+  // many drivers starting at once the shared lock alone was measurable.
+  if (!mutable_) {
+    if (auto it = configs_.find(key); it != configs_.end()) {
+      return it->second;
+    }
+    return std::nullopt;
+  }
   std::shared_lock l{mutex_};
   if (auto it = configs_.find(key); it != configs_.end()) {
     return it->second;
