@@ -146,14 +146,9 @@ TEST_F(QueryCtxTest, concurrentReleaseCallbackRegistration) {
   std::atomic<int32_t> callbackCount{0};
 
   {
-    auto queryCtx = QueryCtx::create(
-        nullptr,
-        QueryConfig{{}},
-        std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
-        nullptr,
-        nullptr,
-        nullptr,
-        "test_query_id");
+    auto queryCtx = QueryCtx::Builder()
+        .queryId("test_query_id")
+        .build();
 
     // Tasks of one query register release callbacks from their own threads.
     std::vector<std::thread> threads;
