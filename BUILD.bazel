@@ -5047,3 +5047,37 @@ cc_binary(
         "@gflags",
     ],
 )
+
+cc_test(
+    name = "velox_s3remove_test",
+    srcs = [
+        "velox/connectors/hive/storage_adapters/s3fs/S3Config.cpp",
+        "velox/connectors/hive/storage_adapters/s3fs/S3FileSystem.cpp",
+        "velox/connectors/hive/storage_adapters/s3fs/S3ReadFile.cpp",
+        "velox/connectors/hive/storage_adapters/s3fs/S3Util.cpp",
+        "velox/connectors/hive/storage_adapters/s3fs/S3WriteFile.cpp",
+        "velox/connectors/hive/storage_adapters/s3fs/tests/MinioServer.h",
+        "velox/connectors/hive/storage_adapters/s3fs/tests/S3FileSystemRemoveTest.cpp",
+        "velox/dwio/common/DataBuffer.h",
+        "velox/dwio/common/exception/Exception.h",
+        "velox/exec/tests/utils/PortUtil.cpp",
+        "velox/exec/tests/utils/PortUtil.h",
+    ] + glob(["velox/connectors/hive/storage_adapters/s3fs/*.h"]),
+    tags = ["manual"],  # Requires minio-2022-05-26 on PATH, like the CMake S3 suite.
+    deps = [
+        ":base",
+        ":test_utils_base",
+        "@aws_sdk//:core",
+        "@aws_sdk//:identity-management",
+        "@aws_sdk//:s3",
+        "@boost.filesystem",
+        "@boost.process",
+        "@fmt",
+        "@folly//folly:network_address",
+        "@folly//folly:uri",
+        "@glog",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+        "@re2",
+    ],
+)

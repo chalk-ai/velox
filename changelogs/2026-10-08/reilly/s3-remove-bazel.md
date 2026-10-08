@@ -1,0 +1,1 @@
+- Implement native S3 object deletion for retry cleanup and register focused Bazel coverage for deletion, rewrite, idempotence, and backend errors.
