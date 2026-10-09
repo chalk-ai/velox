@@ -15,7 +15,7 @@
  */
 
 #include "velox/functions/prestosql/Comparisons.h"
-#include <velox/common/base/Exceptions.h>
+#include "velox/common/base/Exceptions.h"
 #include "velox/functions/Udf.h"
 #include "velox/functions/lib/SIMDComparisonUtil.h"
 #include "velox/vector/BaseVector.h"
@@ -166,7 +166,7 @@ class ComparisonSimdFunction : public exec::VectorFunction {
       return;
     }
 
-    VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+    VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH_WITH_UNKNOWN(
         comparator.template applyComparison,
         args[0]->typeKind(),
         rows,

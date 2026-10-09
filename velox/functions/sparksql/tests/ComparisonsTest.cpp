@@ -17,7 +17,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/functions/sparksql/tests/SparkFunctionBaseTest.h"
 
-#include <velox/vector/SimpleVector.h>
+#include "velox/vector/SimpleVector.h"
 
 namespace facebook::velox::functions::sparksql::test {
 namespace {
@@ -194,6 +194,40 @@ class ComparisonsTest : public SparkFunctionBaseTest {
     runAndCompare(functionName, {vector1, vector2}, expectedResult);
   }
 };
+
+TEST_F(ComparisonsTest, nullPredicatesTimestampUtc) {
+  const Timestamp beforeEpoch{-1, 999'999'000};
+  const Timestamp epoch{0, 0};
+  const Timestamp afterEpoch{1'704'067'200, 123'456'000};
+  const auto assertNullPredicates =
+      [&](const VectorPtr& input, const std::vector<bool>& expectedNulls) {
+        auto data = makeRowVector({input});
+        auto actual = evaluate<SimpleVector<bool>>("isnull(c0)", data);
+        facebook::velox::test::assertEqualVectors(
+            makeFlatVector<bool>(expectedNulls), actual);
+
+        actual = evaluate<SimpleVector<bool>>("isnotnull(c0)", data);
+        facebook::velox::test::assertEqualVectors(
+            makeFlatVector<bool>(
+                input->size(), [&](auto row) { return !expectedNulls[row]; }),
+            actual);
+      };
+
+  assertNullPredicates(
+      makeFlatVector<Timestamp>(
+          {beforeEpoch, epoch, afterEpoch, epoch}, TIMESTAMP_UTC()),
+      {false, false, false, false});
+  assertNullPredicates(
+      makeNullableFlatVector<Timestamp>(
+          {beforeEpoch, std::nullopt, epoch, afterEpoch}, TIMESTAMP_UTC()),
+      {false, true, false, false});
+  assertNullPredicates(
+      makeNullableFlatVector<Timestamp>(
+          {std::nullopt, std::nullopt, std::nullopt, std::nullopt},
+          TIMESTAMP_UTC()),
+      {true, true, true, true});
+  assertNullPredicates(makeFlatVector<Timestamp>({}, TIMESTAMP_UTC()), {});
+}
 
 TEST_F(ComparisonsTest, equaltonullsafe) {
   const auto funcName = "equalnullsafe";
