@@ -1,0 +1,2 @@
+- Split the Bazel `base`, `vector`, `engine`, `functions` and `velox` libraries into one target per header and source file, with deps derived from `#include`s, so a header change recompiles only the files that reach it
+- Add `scripts/bazel/generate_velox_targets.py` to regenerate the per-file targets from `bazel/velox_layers.bzl` and to report files that Velox's CMake lists but no Bazel target owns
