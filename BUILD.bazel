@@ -4511,6 +4511,7 @@ cc_library(
         "@folly//folly:small_vector",
         "@folly//folly:synchronized",
         "@folly//folly:uri",
+        "@folly//folly:utility",
         "@folly//folly:varint",
         "@folly//folly/concurrency:unbounded_queue",
         "@folly//folly/container:array",
