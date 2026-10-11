@@ -379,7 +379,8 @@ class MultiThreadedTaskCursor : public TaskCursorBase {
             return;
           }
           queue->close();
-        });
+        },
+        params.fixedPointOptions);
 
     if (beforeTaskStart_) {
       beforeTaskStart_(*task_);
@@ -553,7 +554,9 @@ class SingleThreadedTaskCursor : public TaskCursorBase {
         Task::ExecutionMode::kSerial,
         std::function<BlockingReason(RowVectorPtr, bool, ContinueFuture*)>{},
         0,
-        std::move(spillDiskOpts));
+        std::move(spillDiskOpts),
+        /*onError=*/nullptr,
+        params.fixedPointOptions);
 
     VELOX_CHECK(
         task_->supportSerialExecutionMode(),
@@ -896,7 +899,12 @@ class TaskDebuggerSerialCursor : public TaskDebuggerCursorBase {
         std::move(planFragment_),
         params.destination,
         std::move(queryCtx_),
-        Task::ExecutionMode::kSerial);
+        Task::ExecutionMode::kSerial,
+        Consumer{},
+        /*memoryArbitrationPriority=*/0,
+        /*spillDiskOpts=*/std::nullopt,
+        /*onError=*/nullptr,
+        params.fixedPointOptions);
   }
 
   // no-op
@@ -1010,7 +1018,11 @@ class TaskDebuggerParallelCursor : public TaskDebuggerCursorBase {
             traceState_.consumerPromise.setValue();
           }
           return exec::BlockingReason::kWaitForConsumer;
-        });
+        },
+        /*memoryArbitrationPriority=*/0,
+        /*spillDiskOpts=*/std::nullopt,
+        /*onError=*/nullptr,
+        params.fixedPointOptions);
   }
 
   void start() override {
