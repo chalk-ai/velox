@@ -631,6 +631,109 @@ TEST_F(FixedPointTest, whenDeltaEmptyRecursiveCte) {
   expectBothModes(node, expected);
 }
 
+// A recursive CTE with UNION semantics over a cyclic graph, 1->2->3->1 and
+// 3->4.  The body keeps rediscovering visited nodes, so only the distinct
+// output entry -- which appends just the rows it does not already hold -- lets
+// the delta empty out and the loop stop.
+TEST_F(FixedPointTest, distinctEntryTerminatesOnACycle) {
+  auto schema = ROW({"id", "tag"}, BIGINT());
+  auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto seed = makeRowVector(
+      {"id", "tag"},
+      {makeFlatVector<int64_t>({1}), makeFlatVector<int64_t>({0})});
+  auto initialPlan = PlanBuilder(idGenerator).values({seed}).planNode();
+  auto edges = makeRowVector(
+      {"src", "dst"},
+      {makeFlatVector<int64_t>({1, 2, 3, 3}),
+       makeFlatVector<int64_t>({2, 3, 1, 4})});
+  auto buildSide = PlanBuilder(idGenerator).values({edges}).planNode();
+
+  PlanBuilder bodyBuilder(idGenerator);
+  bodyBuilder.stateSource("result", schema)
+      .hashJoin({"id"}, {"src"}, buildSide, "", {"dst", "tag"})
+      .project({"dst AS id", "tag"});
+
+  auto makeNode = [&](bool distinct) {
+    return std::make_shared<FixedPointNode>(
+        "fixed-point",
+        std::vector<StateDeclarationPtr>{
+            std::make_shared<VectorStateDeclaration>(
+                "result", schema, initialPlan, /*append=*/true, distinct)},
+        std::vector<core::PlanNodePtr>{bodyBuilder.planNode()},
+        ConvergenceConfig::whenDeltaEmpty(20),
+        /*outputStateEntry=*/"result");
+  };
+
+  expectBothModes(makeNode(true), {{1, 0}, {2, 0}, {3, 0}, {4, 0}});
+  VELOX_ASSERT_THROW(
+      runViaTask(makeNode(false), exec::Task::ExecutionMode::kSerial),
+      "did not converge within");
+}
+
+// A distinct entry deduplicates rows within one write (here the seed, which
+// repeats (NULL, 7)) and against what it already holds, comparing NULLs as
+// equal: a body that re-emits its frontier adds nothing, so the loop stops
+// after one iteration with one copy of each row.
+TEST_F(FixedPointTest, distinctEntryDeduplicatesSeedWriteAndNulls) {
+  auto schema = ROW({"id", "val"}, BIGINT());
+  auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto seed = makeRowVector(
+      {"id", "val"},
+      {makeNullableFlatVector<int64_t>({std::nullopt, std::nullopt, 5}),
+       makeFlatVector<int64_t>({7, 7, 8})});
+  auto initialPlan = PlanBuilder(idGenerator).values({seed}).planNode();
+
+  std::vector<StateDeclarationPtr> stateDeclarations{
+      std::make_shared<VectorStateDeclaration>(
+          "result",
+          schema,
+          initialPlan,
+          /*append=*/true,
+          /*distinct=*/true)};
+  auto node = std::make_shared<FixedPointNode>(
+      "fixed-point",
+      std::move(stateDeclarations),
+      std::vector<core::PlanNodePtr>{PlanBuilder(idGenerator)
+                                         .stateSource("result", schema)
+                                         .project({"id", "val"})
+                                         .planNode()},
+      ConvergenceConfig::whenDeltaEmpty(5),
+      /*outputStateEntry=*/"result");
+
+  for (auto mode :
+       {exec::Task::ExecutionMode::kSerial,
+        exec::Task::ExecutionMode::kParallel}) {
+    auto rows = runViaTask(node, mode);
+    ASSERT_EQ(rows.size(), 2);
+    EXPECT_EQ(rows[0].second, 7);
+    EXPECT_EQ(rows[1], (std::pair<int64_t, int64_t>{5, 8}));
+  }
+}
+
+TEST_F(FixedPointTest, distinctRequiresAppend) {
+  VELOX_ASSERT_THROW(
+      std::make_shared<VectorStateDeclaration>(
+          "result",
+          ROW({"id"}, BIGINT()),
+          nullptr,
+          /*append=*/false,
+          /*distinct=*/true),
+      "A distinct vector state entry must be append-mode");
+}
+
+TEST_F(FixedPointTest, distinctSurvivesSerde) {
+  Type::registerSerDe();
+  core::PlanNode::registerSerDe();
+  auto declaration = std::make_shared<VectorStateDeclaration>(
+      "result", ROW({"id"}, BIGINT()), nullptr, /*append=*/true, true);
+  auto copy = std::dynamic_pointer_cast<const VectorStateDeclaration>(
+      core::StateDeclaration::deserialize(declaration->serialize(), pool()));
+  ASSERT_NE(copy, nullptr);
+  EXPECT_TRUE(copy->distinct());
+  EXPECT_TRUE(copy->append());
+  EXPECT_EQ(copy->toString(), "result (vector, append, distinct)");
+}
+
 // A body that never runs dry hits maxIterations, and whenDeltaEmpty sets
 // errorWhenMaxIterationReached, so the loop fails rather than returning a
 // non-terminal result.
