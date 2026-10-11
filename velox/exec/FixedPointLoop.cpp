@@ -458,7 +458,10 @@ void FixedPointLoop::initializeState() {
             declaration)) {
       // Register the entry's append mode (from the declaration) so writing it
       // accumulates or replaces accordingly.
-      state_->declareVector(vector->name(), vector->append());
+      state_->declareVector(
+          vector->name(),
+          vector->append(),
+          vector->distinct() ? vector->schema() : nullptr);
       if (vector->initialPlan() == nullptr) {
         state_->setVector(vector->name(), {});
         continue;
@@ -1055,13 +1058,11 @@ void FixedPointLoop::runIteration(int32_t iteration) {
   }
   // An empty delta is the terminal state of a semi-naive recursion, and it is
   // free to observe here -- stopWhenDeltaEmpty reads it instead of running a
-  // sub-task per iteration to recompute what this plan just produced.
-  vector_size_t numDeltaRows{0};
-  for (const auto& rows : output) {
-    numDeltaRows += rows->size();
-  }
-  lastDeltaEmpty_ = numDeltaRows == 0;
-  state_->writeVector(node_->outputStateEntry(), output);
+  // sub-task per iteration to recompute what this plan just produced.  The
+  // delta is what the write kept, which for a distinct entry excludes rows the
+  // entry already held.
+  lastDeltaEmpty_ =
+      state_->writeVector(node_->outputStateEntry(), output) == 0;
   ++iterations_;
 }
 

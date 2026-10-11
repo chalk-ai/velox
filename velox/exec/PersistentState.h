@@ -53,21 +53,28 @@ class PersistentState {
   /// Registers Vector entry 'name' with its append mode (from its
   /// VectorStateDeclaration), creating it empty.  Append entries accumulate
   /// across iterations; replace entries (the default) are overwritten by each
-  /// write.  Call once, before any write.
-  void declareVector(std::string_view name, bool append);
+  /// write.  A non-null 'distinctType' makes an append entry distinct: it keeps
+  /// each row of that type at most once.  Call once, before any write.
+  void declareVector(
+      std::string_view name,
+      bool append,
+      const RowTypePtr& distinctType = nullptr);
 
   /// Replaces the Vector entry 'name' with a deep copy of 'batches' allocated
-  /// in this store's pool, regardless of the entry's mode.  Empty batches are
-  /// dropped.  Used to seed the initial value.
-  void setVector(
+  /// in this store's pool, regardless of the entry's mode (a distinct entry
+  /// keeps one copy of each row).  Empty batches are dropped.  Used to seed the
+  /// initial value.  Returns the number of rows stored.
+  vector_size_t setVector(
       std::string_view name,
       const std::vector<RowVectorPtr>& batches);
 
   /// Writes a deep copy of 'batches' (allocated in this store's pool) to entry
   /// 'name' honoring its declared mode: appends to an append entry (accumulate
-  /// across iterations), replaces otherwise.  Empty batches are dropped.  Used
-  /// by the framework to write each iteration's output entry.
-  void writeVector(
+  /// across iterations), replaces otherwise.  A distinct entry appends only the
+  /// rows it does not already hold.  Empty batches are dropped.  Used by the
+  /// framework to write each iteration's output entry.  Returns the number of
+  /// rows written: for an append entry, the size of the new frontier.
+  vector_size_t writeVector(
       std::string_view name,
       const std::vector<RowVectorPtr>& batches);
 
@@ -110,11 +117,25 @@ class PersistentState {
   // output.  'frontier' is meaningful only for an append entry -- the rows of
   // the most recent write, the delta an in-loop StateSource reads (e.g. a
   // recursive CTE's working frontier).
+  // The rows a distinct entry already holds, as a group-by hash table over all
+  // of the entry's columns.  Defined in the .cpp.
+  class DistinctRows;
+
   struct VectorEntry {
     bool append{false};
     std::vector<RowVectorPtr> batches;
     std::vector<RowVectorPtr> frontier;
+    // The row type a distinct entry is distinct over; null otherwise.
+    RowTypePtr distinctType;
+    // Set for a distinct entry.  Its table lives in pool_, like the batches.
+    std::shared_ptr<DistinctRows> distinctRows;
   };
+
+  // Deep-copies 'batches' into pool_ for 'entry': all of their rows, or for a
+  // distinct entry only rows it does not yet hold (which it then holds).
+  std::vector<RowVectorPtr> copyForEntry(
+      VectorEntry& entry,
+      const std::vector<RowVectorPtr>& batches) const;
 
   // Transparent hash/equal so a std::string_view name looks an entry up without
   // materializing a std::string.

@@ -657,7 +657,8 @@ std::shared_ptr<const StateDeclaration> StateDeclaration::deserialize(
         std::move(name),
         schema,
         std::move(initialPlan),
-        obj["append"].asBool());
+        obj["append"].asBool(),
+        obj.count("distinct") != 0u && obj["distinct"].asBool());
   }
   if (type == "hashTable") {
     auto keyColumns =
@@ -668,23 +669,48 @@ std::shared_ptr<const StateDeclaration> StateDeclaration::deserialize(
   VELOX_FAIL("Unknown StateDeclaration type: {}", type);
 }
 
+VectorStateDeclaration::VectorStateDeclaration(
+    std::string name,
+    RowTypePtr schema,
+    PlanNodePtr initialPlan,
+    bool append,
+    bool distinct)
+    : StateDeclaration{std::move(name), std::move(initialPlan)},
+      schema_{std::move(schema)},
+      append_{append},
+      distinct_{distinct} {
+  // A replace entry holds one write, so there is nothing for it to be distinct
+  // across.
+  VELOX_USER_CHECK(
+      !distinct_ || append_,
+      "A distinct vector state entry must be append-mode: {}",
+      this->name());
+}
+
 folly::dynamic VectorStateDeclaration::serialize() const {
   auto obj = serializeBase("vector");
   obj["schema"] = schema_->serialize();
   obj["append"] = append_;
+  obj["distinct"] = distinct_;
   return obj;
 }
 
 std::string VectorStateDeclaration::toString() const {
   return fmt::format(
-      "{} (vector, {}{})",
+      "{} (vector, {}{}{})",
       name(),
       append_ ? "append" : "replace",
+      distinct_ ? ", distinct" : "",
       initialPlan() != nullptr ? ", initialized" : "");
 }
 
 VectorState& VectorState::initial(PlanNodePtr initialPlan) {
   initialPlan_ = std::move(initialPlan);
+  return *this;
+}
+
+VectorState& VectorState::distinct() {
+  distinct_ = true;
   return *this;
 }
 

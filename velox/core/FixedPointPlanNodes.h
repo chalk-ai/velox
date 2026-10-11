@@ -76,17 +76,17 @@ using StateDeclarationPtr = std::shared_ptr<const StateDeclaration>;
 /// FlatVector<T>::mutableRawValues().  An entry is either replace-mode (default
 /// -- each write overwrites it) or append-mode (writes accumulate across
 /// iterations); whether to accumulate is a property of the entry, declared
-/// here, not of the write.
+/// here, not of the write.  An append entry may also be distinct: it then holds
+/// each row at most once, so a write appends only the rows the entry does not
+/// already hold (e.g. a recursive CTE's UNION).
 class VectorStateDeclaration : public StateDeclaration {
  public:
   VectorStateDeclaration(
       std::string name,
       RowTypePtr schema,
       PlanNodePtr initialPlan = nullptr,
-      bool append = false)
-      : StateDeclaration{std::move(name), std::move(initialPlan)},
-        schema_{std::move(schema)},
-        append_{append} {}
+      bool append = false,
+      bool distinct = false);
 
   const RowTypePtr& schema() const {
     return schema_;
@@ -99,6 +99,16 @@ class VectorStateDeclaration : public StateDeclaration {
     return append_;
   }
 
+  /// When true (append entries only), the entry holds each distinct row once:
+  /// the initial value is deduplicated, and each write appends only rows not
+  /// already in the entry, which also become the frontier an in-loop
+  /// StateSource reads.  Rows compare as in a GROUP BY over every column, so
+  /// NULLs equal NULLs.  An iteration that adds no new rows leaves an empty
+  /// delta, which is what ConvergenceConfig::stopWhenDeltaEmpty observes.
+  bool distinct() const {
+    return distinct_;
+  }
+
   folly::dynamic serialize() const override;
 
   std::string toString() const override;
@@ -108,6 +118,9 @@ class VectorStateDeclaration : public StateDeclaration {
 
   // Whether writes to this entry append (accumulate) or replace (default).
   bool append_;
+
+  // Whether an append entry keeps only rows it does not already hold.
+  bool distinct_;
 };
 
 /// Fluent builder for a VectorStateDeclaration -- declares a vector state entry
@@ -122,17 +135,21 @@ class VectorState {
   /// Sets the plan producing the entry's initial value (run once in Phase 1).
   VectorState& initial(PlanNodePtr initialPlan);
 
+  /// Makes an append entry distinct (see VectorStateDeclaration::distinct).
+  VectorState& distinct();
+
   /// Builds the declaration.  Implicit so the builder can be passed wherever a
   /// StateDeclarationPtr is expected (e.g. fixedPoint's state list).
   operator StateDeclarationPtr() const {
     return std::make_shared<VectorStateDeclaration>(
-        name_, schema_, initialPlan_, append_);
+        name_, schema_, initialPlan_, append_, distinct_);
   }
 
  private:
   std::string name_;
   RowTypePtr schema_;
   bool append_;
+  bool distinct_{false};
   PlanNodePtr initialPlan_;
 };
 
