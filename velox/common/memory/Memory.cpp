@@ -17,6 +17,9 @@
 #include "velox/common/memory/Memory.h"
 
 #include <atomic>
+#include <thread>
+
+#include <folly/hash/Hash.h>
 
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
@@ -380,7 +383,10 @@ void MemoryManager::dropPool(MemoryPool* pool) {
 }
 
 MemoryPool& MemoryManager::deprecatedSharedLeafPool() {
-  const auto idx = std::hash<std::thread::id>{}(std::this_thread::get_id());
+  // libc++ hashes std::thread::id to the aligned pthread ID, so mix it before
+  // taking the modulus or every thread maps to the same pool.
+  const auto idx = folly::hash::twang_mix64(
+      std::hash<std::thread::id>{}(std::this_thread::get_id()));
   return *sharedLeafPools_.at(idx % sharedLeafPools_.size());
 }
 

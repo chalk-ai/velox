@@ -1,0 +1,1 @@
+- Mix thread-ID hashes before picking a shared leaf memory pool and a per-thread spill stats slot, so libc++ builds do not send every thread to the same one.
