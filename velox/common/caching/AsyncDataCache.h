@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <cstddef>
 #include <deque>
 
 #include <fmt/format.h>
@@ -842,21 +841,14 @@ class AsyncDataCache : public memory::Cache {
     uint64_t ssdFlushThresholdBytes;
   };
 
-#if __cplusplus > 202002L
-  /// Constructs default SSD ownership where SsdCache is complete.
-  AsyncDataCache(const Options& options, memory::MemoryAllocator* allocator)
-      : AsyncDataCache(WithoutSsdCache{}, options, allocator, nullptr) {}
+  /// Constructs empty SSD ownership out of line so SsdCache can remain
+  /// incomplete here.
+  AsyncDataCache(const Options& options, memory::MemoryAllocator* allocator);
 
   AsyncDataCache(
       const Options& options,
       memory::MemoryAllocator* allocator,
       std::unique_ptr<SsdCache> ssdCache);
-#else
-  AsyncDataCache(
-      const Options& options,
-      memory::MemoryAllocator* allocator,
-      std::unique_ptr<SsdCache> ssdCache = nullptr);
-#endif
 
   AsyncDataCache(
       memory::MemoryAllocator* allocator);
@@ -868,17 +860,10 @@ class AsyncDataCache : public memory::Cache {
   static std::shared_ptr<AsyncDataCache> create(
       memory::MemoryAllocator* allocator);
 
-#if __cplusplus > 202002L
   static std::shared_ptr<AsyncDataCache> create(
       memory::MemoryAllocator* allocator,
       std::unique_ptr<SsdCache> ssdCache,
       const AsyncDataCache::Options& = {});
-#else
-  static std::shared_ptr<AsyncDataCache> create(
-      memory::MemoryAllocator* allocator,
-      std::unique_ptr<SsdCache> ssdCache = nullptr,
-      const AsyncDataCache::Options& = {});
-#endif
 
   static AsyncDataCache* getInstance();
 
@@ -1041,17 +1026,6 @@ class AsyncDataCache : public memory::Cache {
   memory::MachinePageCount incrementCachedPages(int64_t pages) {
     return cachedPages_.fetch_add(pages) + pages;
   }
-
-  // Selects construction with empty SSD ownership in the implementation file.
-  struct WithoutSsdCache {};
-
-  // Keep this helper in C++20 builds for callers using C++23. Its distinct
-  // arity preserves constructor overload resolution for C++20 callers.
-  AsyncDataCache(
-      WithoutSsdCache,
-      const Options& options,
-      memory::MemoryAllocator* allocator,
-      std::nullptr_t ssdCache);
 
   static AsyncDataCache** getInstancePtr();
 
