@@ -800,11 +800,9 @@ CacheStats CacheStats::operator-(const CacheStats& other) const {
 }
 
 AsyncDataCache::AsyncDataCache(
-    WithoutSsdCache,
     const Options& options,
-    memory::MemoryAllocator* allocator,
-    std::nullptr_t ssdCache)
-    : AsyncDataCache(options, allocator, ssdCache) {}
+    memory::MemoryAllocator* allocator)
+    : AsyncDataCache(options, allocator, nullptr) {}
 
 AsyncDataCache::AsyncDataCache(
     memory::MemoryAllocator* allocator)
@@ -838,7 +836,7 @@ AsyncDataCache::AsyncDataCache(
 
 AsyncDataCache::~AsyncDataCache() = default;
 
-std::shared_ptr<AsyncDataCache> AsyncDataCache::createWithoutSsdCache(
+std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
     memory::MemoryAllocator* allocator) {
   return create(allocator, nullptr);
 }
