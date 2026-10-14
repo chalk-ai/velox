@@ -1,0 +1,4 @@
+- Fix cache header compilation with one C++20/C++23 API and out-of-line overloads for empty SSD ownership.
+- Preserve cache object layout and existing constructor/factory signatures across language modes.
+- Define the defaulted Parquet reader destructor after its implementation is complete so callers in either standard can link to the library.
+- Add direct includes so generated type parser headers compile independently.
