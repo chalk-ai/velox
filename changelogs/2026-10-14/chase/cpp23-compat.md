@@ -1,0 +1,4 @@
+- Fix C++23 cache header compilation while preserving C++20 default arguments and public overloads.
+- Keep default SSD ownership helpers available in C++20 libraries for C++23 callers.
+- Define the defaulted Parquet reader destructor after its implementation is complete in both standards so C++23 callers can link against C++20 libraries.
+- Add direct includes so generated type parser headers compile independently.

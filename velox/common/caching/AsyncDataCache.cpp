@@ -800,6 +800,13 @@ CacheStats CacheStats::operator-(const CacheStats& other) const {
 }
 
 AsyncDataCache::AsyncDataCache(
+    WithoutSsdCache,
+    const Options& options,
+    memory::MemoryAllocator* allocator,
+    std::nullptr_t ssdCache)
+    : AsyncDataCache(options, allocator, ssdCache) {}
+
+AsyncDataCache::AsyncDataCache(
     memory::MemoryAllocator* allocator)
     : AsyncDataCache(allocator, nullptr) {}
 
