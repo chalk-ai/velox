@@ -1142,6 +1142,58 @@ VELOX_INSTANTIATE_TEST_SUITE_P(
 
 class MinMaxByComplexTypes : public AggregationTestBase {};
 
+// Exercise real row-container placement, including a comparison wider than its
+// value.
+TEST_F(MinMaxByComplexTypes, accumulatorAlignment) {
+  core::QueryConfig queryConfig({});
+  for (const auto& name : {"min_by", "max_by"}) {
+    for (const auto& types : std::vector<std::pair<TypePtr, TypePtr>>{
+             {BIGINT(), BIGINT()},
+             {TINYINT(), BIGINT()},
+             {BIGINT(), TINYINT()}}) {
+      SCOPED_TRACE(
+          fmt::format(
+              "{}({}, {})",
+              name,
+              types.first->toString(),
+              types.second->toString()));
+      auto aggregate = exec::Aggregate::create(
+          name,
+          core::AggregationNode::Step::kSingle,
+          {types.first, types.second},
+          types.first,
+          queryConfig);
+      EXPECT_GE(aggregate->accumulatorAlignmentSize(), alignof(int64_t));
+    }
+  }
+
+  // Boolean grouping keys leave compact row offsets. The tinyint/bigint pair
+  // additionally requires padding inside the accumulator, not just at its
+  // start.
+  auto data = makeRowVector({
+      makeFlatVector<bool>({false, false, true, true}),
+      makeFlatVector<int8_t>({1, 2, 3, 4}),
+      makeFlatVector<int64_t>({40, 30, 20, 10}),
+  });
+  auto expected = makeRowVector({
+      makeFlatVector<bool>({false, true}),
+      makeFlatVector<int8_t>({2, 4}),
+      makeFlatVector<int8_t>({1, 3}),
+      makeFlatVector<int64_t>({40, 20}),
+      makeFlatVector<int64_t>({30, 10}),
+      makeFlatVector<int64_t>({30, 10}),
+  });
+  testAggregations(
+      {data},
+      {"c0"},
+      {"min_by(c1, c2)",
+       "max_by(c1, c2)",
+       "min_by(c2, c1)",
+       "max_by(c2, c1)",
+       "min_by(c2, c2)"},
+      {expected});
+}
+
 TEST_F(MinMaxByComplexTypes, trackRowSize) {
   // A non-numeric value is held in the HashStringAllocator by
   // SingleValueAccumulator, with only a Position in the row, so the row's
