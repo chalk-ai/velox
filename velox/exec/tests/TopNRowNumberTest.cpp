@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <cstdint>
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
@@ -109,6 +110,27 @@ TEST_P(MultiTopNRowNumberTest, basic) {
   testLimit(2);
   testLimit(3);
   testLimit(5);
+}
+
+// Exercise placement construction and access of TopRows in packed partition
+// rows. Byte-sized keys leave the state unaligned without its alignment
+// metadata.
+TEST_P(MultiTopNRowNumberTest, accumulatorAlignment) {
+  auto data = makeRowVector({
+      makeFlatVector<int8_t>({1, 1, 2, 2, 3, 3}),
+      makeFlatVector<int64_t>({60, 10, 50, 20, 40, 30}),
+  });
+  createDuckDbTable({data});
+  auto plan = PlanBuilder()
+                  .values({data})
+                  .topNRank(functionName_, {"c0"}, {"c1"}, 1, true)
+                  .planNode();
+  assertQuery(
+      plan,
+      fmt::format(
+          "SELECT * FROM (SELECT *, {}() over (partition by c0 order by c1) as rn FROM tmp) "
+          "WHERE rn <= 1",
+          functionName_));
 }
 
 TEST_P(MultiTopNRowNumberTest, basicWithPeers) {

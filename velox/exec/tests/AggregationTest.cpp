@@ -18,6 +18,7 @@
 #include <folly/Math.h>
 #include <gtest/gtest.h>
 #include <re2/re2.h>
+#include <cstdint>
 #include <memory>
 #include <utility>
 
@@ -3991,6 +3992,28 @@ TEST_F(AggregationTest, distinctHang) {
   AssertQueryBuilder(plan, duckDbQueryRunner_)
       .config(QueryConfig::kMaxPartialAggregationMemory, 400000)
       .assertResults("SELECT distinct c0, c1 FROM tmp");
+}
+
+// Exercise the distinct set's actual placement construction, updates,
+// extraction and destruction in both the global layout and packed keyed
+// RowContainer rows.
+TEST_F(AggregationTest, distinctAccumulatorAlignment) {
+  auto data = makeRowVector({
+      makeFlatVector<int8_t>({1, 1, 2, 2, 3, 3}),
+      makeFlatVector<int64_t>({10, 10, 20, 30, 40, 40}),
+  });
+  createDuckDbTable({data});
+  auto global = PlanBuilder()
+                    .values({data})
+                    .singleAggregation({}, {"count(DISTINCT c1)"})
+                    .planNode();
+  assertQuery(global, "SELECT count(DISTINCT c1) FROM tmp");
+
+  auto grouped = PlanBuilder()
+                     .values({data})
+                     .singleAggregation({"c0"}, {"count(DISTINCT c1)"})
+                     .planNode();
+  assertQuery(grouped, "SELECT c0, count(DISTINCT c1) FROM tmp GROUP BY c0");
 }
 
 TEST_F(AggregationTest, distinctWithConstantInput) {
