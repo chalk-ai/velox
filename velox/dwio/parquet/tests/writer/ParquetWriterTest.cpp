@@ -293,6 +293,73 @@ TEST_F(ParquetWriterTest, createFormatOptions) {
   EXPECT_EQ(parquetOptions->dataPageSize.value(), 4 * 1024);
 }
 
+TEST_F(ParquetWriterTest, dictionaryDisabledColumns) {
+  constexpr vector_size_t kBackingRows = 25'000;
+  constexpr vector_size_t kRows = 273;
+  const auto values = makeFlatVector<std::string>(kBackingRows, [](auto row) {
+    return fmt::format("observation-id-{:020}", row);
+  });
+  const auto selected =
+      makeDictionaryColumn(kRows, values, [](auto row) { return row * 83; });
+  const auto repeated = makeDictionaryColumn(
+      kRows, makeFlatVector<std::string>({"first", "second"}), [](auto row) {
+        return row % 2;
+      });
+  const auto data = makeRowVector({"id", "category"}, {selected, repeated});
+  const auto expected =
+      makeRowVector({"id", "category"}, {flatten(selected), flatten(repeated)});
+
+  const auto* baseline = write(data, ParquetWriterOptions{});
+  for (const bool globallyEnabled : {true, false}) {
+    SCOPED_TRACE(globallyEnabled);
+    dwio::common::WriterOptions options;
+    options.serdeParameters.emplace(
+        std::string(ParquetConfig::kWriterSerdeDictionaryDisabledColumns),
+        " , id, ,missing, ");
+    ParquetWriterOptions parquetOptions;
+    parquetOptions.enableDictionary = globallyEnabled;
+    auto* sink = write(data, options, parquetOptions);
+    auto reader = createReaderInMemory(*sink);
+    const auto rowGroup = reader->fileMetaData().rowGroup(0);
+    EXPECT_FALSE(rowGroup.columnChunk(0).hasDictionaryPageOffset());
+    EXPECT_EQ(
+        rowGroup.columnChunk(1).hasDictionaryPageOffset(), globallyEnabled);
+    EXPECT_LT(sink->size() * 10, baseline->size());
+    auto rowReader = createRowReaderFromReader(*reader, data->rowType());
+    assertReadWithReaderAndExpected(
+        data->rowType(), *rowReader, expected, *leafPool_);
+  }
+}
+
+TEST_F(ParquetWriterTest, dictionaryDisabledColumnsNullsAndBatches) {
+  const auto values = makeFlatVector<std::string>(
+      1'000, [](auto row) { return fmt::format("id-{}", row); });
+  const auto selected = makeDictionaryColumn(
+      100,
+      values,
+      [](auto row) { return row * 7; },
+      makeNulls(100, nullEvery(7)));
+  const auto data = makeRowVector({"id"}, {selected});
+  dwio::common::WriterOptions options;
+  options.memoryPool = rootPool_.get();
+  options.serdeParameters.emplace(
+      std::string(ParquetConfig::kWriterSerdeDictionaryDisabledColumns), "id");
+  auto* sink = write(std::vector<RowVectorPtr>{data, data}, options, {});
+  auto reader = createReaderInMemory(*sink);
+  EXPECT_EQ(reader->numberOfRows(), 200);
+  EXPECT_FALSE(reader->fileMetaData()
+                   .rowGroup(0)
+                   .columnChunk(0)
+                   .hasDictionaryPageOffset());
+  auto rowReader = createRowReaderFromReader(*reader, data->rowType());
+  const auto expectedValues = makeFlatVector<std::string>(
+      200,
+      [](auto row) { return fmt::format("id-{}", (row % 100) * 7); },
+      [](auto row) { return (row % 100) % 7 == 0; });
+  const auto expected = makeRowVector({"id"}, {expectedValues});
+  assertReadWithReaderAndExpected(data->rowType(), *rowReader, expected, *leafPool_);
+}
+
 TEST_F(ParquetWriterTest, dictionaryEncodingWithDictionaryPageSize) {
   constexpr int64_t kRows = 10'000;
   const auto data = makeSmallintTestData(kRows);
