@@ -15,22 +15,65 @@
  */
 
 #include <fmt/format.h>
-#include <folly/Math.h>
+#include <folly/Random.h>
+#include <folly/Range.h>
+#include <folly/String.h>
+#include <folly/container/F14Set.h>
 #include <gtest/gtest.h>
 #include <re2/re2.h>
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <optional>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
+#include "velox/buffer/Buffer.h"
+#include "velox/common/base/Exceptions.h"
+#include "velox/common/base/SuccinctPrinter.h"
+#include "velox/common/base/VeloxException.h"
+#include "velox/common/memory/Memory.h"
+#include "velox/common/memory/MemoryArbitrator.h"
+#include "velox/common/memory/MemoryPool.h"
+#include "velox/core/Expressions.h"
+#include "velox/core/ITypedExpr.h"
+#include "velox/core/PlanNode.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/core/QueryCtx.h"
+#include "velox/exec/Cursor.h"
+#include "velox/exec/Driver.h"
+#include "velox/exec/HashTable.h"
+#include "velox/exec/MemoryReclaimer.h"
+#include "velox/exec/Operator.h"
+#include "velox/exec/RowContainer.h"
+#include "velox/exec/Spill.h"
+#include "velox/exec/Task.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
+#include "velox/parse/PlanNodeIdGenerator.h"
+#include "velox/type/CppToType.h"
+#include "velox/type/StringView.h"
+#include "velox/type/Type.h"
+#include "velox/type/TypeKind.h"
+#include "velox/vector/BaseVector.h"
+#include "velox/vector/ComplexVector.h"
+#include "velox/vector/FlatVector.h"
+#include "velox/vector/SelectivityVector.h"
+#include "velox/vector/TypeAliases.h"
+#include "velox/vector/fuzzer/VectorFuzzer.h"
 
 #include "folly/synchronization/EventCount.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/SharedArbitrator.h"
-#include "velox/common/memory/tests/SharedArbitratorTestUtil.h"
-#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/exec/Aggregate.h"
-#include "velox/exec/AggregateCompanionSignatures.h"
 #include "velox/exec/GroupingSet.h"
 #include "velox/exec/HashAggregation.h"
 #include "velox/exec/PlanNodeStats.h"
@@ -3991,6 +4034,28 @@ TEST_F(AggregationTest, distinctHang) {
   AssertQueryBuilder(plan, duckDbQueryRunner_)
       .config(QueryConfig::kMaxPartialAggregationMemory, 400000)
       .assertResults("SELECT distinct c0, c1 FROM tmp");
+}
+
+// Exercise the distinct set's actual placement construction, updates,
+// extraction and destruction in both the global layout and packed keyed
+// RowContainer rows.
+TEST_F(AggregationTest, distinctAccumulatorAlignment) {
+  auto data = makeRowVector({
+      makeFlatVector<int8_t>({1, 1, 2, 2, 3, 3}),
+      makeFlatVector<int64_t>({10, 10, 20, 30, 40, 40}),
+  });
+  createDuckDbTable({data});
+  auto global = PlanBuilder()
+                    .values({data})
+                    .singleAggregation({}, {"count(DISTINCT c1)"})
+                    .planNode();
+  assertQuery(global, "SELECT count(DISTINCT c1) FROM tmp");
+
+  auto grouped = PlanBuilder()
+                     .values({data})
+                     .singleAggregation({"c0"}, {"count(DISTINCT c1)"})
+                     .planNode();
+  assertQuery(grouped, "SELECT c0, count(DISTINCT c1) FROM tmp GROUP BY c0");
 }
 
 TEST_F(AggregationTest, distinctWithConstantInput) {

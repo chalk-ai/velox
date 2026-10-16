@@ -17,6 +17,7 @@
 
 #include <string_view>
 
+#include "velox/common/memory/HashStringAllocator.h"
 #include "velox/exec/HashTable.h"
 #include "velox/exec/Operator.h"
 #include "velox/exec/Spiller.h"
@@ -127,6 +128,11 @@ class TopNRowNumber : public Operator {
   // based on the ranking function. This structure has methods for abstractions
   // used for the top rank maintenance algorithms.
   struct TopRows {
+    // HashStringAllocator's raw payload may only be byte-aligned. Both pointer
+    // vectors must preserve pointer alignment, including priority-queue copies.
+    using RowPointerAllocator = AlignedStlAllocator<char*, alignof(char*)>;
+    using RowPointers = std::vector<char*, RowPointerAllocator>;
+
     struct Compare {
       RowComparator& comparator;
 
@@ -135,11 +141,10 @@ class TopNRowNumber : public Operator {
       }
     };
 
-    std::priority_queue<char*, std::vector<char*, StlAllocator<char*>>, Compare>
-        rows;
+    std::priority_queue<char*, RowPointers, Compare> rows;
 
     // Temporary storage for rows with the highest rank in the partition.
-    std::vector<char*, StlAllocator<char*>> tempTopRankRows;
+    RowPointers tempTopRankRows;
 
     RowComparator& rowComparator;
 
@@ -163,8 +168,8 @@ class TopNRowNumber : public Operator {
         vector_size_t index);
 
     TopRows(HashStringAllocator* allocator, RowComparator& comparator)
-        : rows{{comparator}, StlAllocator<char*>(allocator)},
-          tempTopRankRows(StlAllocator<char*>(allocator)),
+        : rows{{comparator}, RowPointerAllocator(allocator)},
+          tempTopRankRows(RowPointerAllocator(allocator)),
           rowComparator(comparator) {}
   };
 

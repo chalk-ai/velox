@@ -177,7 +177,7 @@ TopNRowNumber::TopNRowNumber(
         true,
         sizeof(TopRows),
         false,
-        1,
+        alignof(TopRows),
         nullptr,
         [](auto, auto) { VELOX_UNREACHABLE(); },
         [](auto) {}};
@@ -1154,8 +1154,7 @@ vector_size_t TopNRowNumber::TopRows::numTopRankRows() {
 bool TopNRowNumber::TopRows::isDuplicate(
     const std::vector<DecodedVector>& decodedVectors,
     vector_size_t index) {
-  const std::vector<char*, StlAllocator<char*>> partitionRowsVector =
-      PriorityQueueVector(rows);
+  const RowPointers partitionRowsVector = PriorityQueueVector(rows);
   for (const char* row : partitionRowsVector) {
     if (rowComparator.compare(decodedVectors, index, row) == 0) {
       return true;

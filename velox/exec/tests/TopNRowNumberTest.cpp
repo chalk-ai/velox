@@ -13,14 +13,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <fmt/format.h>
+#include <gtest/gtest.h>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+#include "velox/common/base/Exceptions.h"
+#include "velox/common/base/VeloxException.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
+#include "velox/common/testutil/TestValue.h"
+#include "velox/core/PlanNode.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/core/QueryCtx.h"
+#include "velox/exec/Operator.h"
 #include "velox/exec/PlanNodeStats.h"
+#include "velox/exec/Spill.h"
+#include "velox/exec/Task.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
+#include "velox/parse/PlanNodeIdGenerator.h"
+#include "velox/type/Type.h"
+#include "velox/vector/TypeAliases.h"
 
 using namespace facebook::velox::exec::test;
 
@@ -109,6 +132,27 @@ TEST_P(MultiTopNRowNumberTest, basic) {
   testLimit(2);
   testLimit(3);
   testLimit(5);
+}
+
+// Exercise placement construction and access of TopRows in packed partition
+// rows. Byte-sized keys leave the state unaligned without its alignment
+// metadata.
+TEST_P(MultiTopNRowNumberTest, accumulatorAlignment) {
+  auto data = makeRowVector({
+      makeFlatVector<int8_t>({1, 1, 2, 2, 3, 3}),
+      makeFlatVector<int64_t>({60, 10, 50, 20, 40, 30}),
+  });
+  createDuckDbTable({data});
+  auto plan = PlanBuilder()
+                  .values({data})
+                  .topNRank(functionName_, {"c0"}, {"c1"}, 1, true)
+                  .planNode();
+  assertQuery(
+      plan,
+      fmt::format(
+          "SELECT * FROM (SELECT *, {}() over (partition by c0 order by c1) as rn FROM tmp) "
+          "WHERE rn <= 1",
+          functionName_));
 }
 
 TEST_P(MultiTopNRowNumberTest, basicWithPeers) {
