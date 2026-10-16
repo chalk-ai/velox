@@ -13,15 +13,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <fmt/format.h>
+#include <gtest/gtest.h>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+#include "velox/common/base/Exceptions.h"
+#include "velox/common/base/VeloxException.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
+#include "velox/common/testutil/TestValue.h"
+#include "velox/core/PlanNode.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/core/QueryCtx.h"
+#include "velox/exec/Operator.h"
 #include "velox/exec/PlanNodeStats.h"
+#include "velox/exec/Spill.h"
+#include "velox/exec/Task.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
+#include "velox/parse/PlanNodeIdGenerator.h"
+#include "velox/type/Type.h"
+#include "velox/vector/TypeAliases.h"
 
 using namespace facebook::velox::exec::test;
 
