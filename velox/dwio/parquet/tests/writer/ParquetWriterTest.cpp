@@ -357,7 +357,8 @@ TEST_F(ParquetWriterTest, dictionaryDisabledColumnsNullsAndBatches) {
       [](auto row) { return fmt::format("id-{}", (row % 100) * 7); },
       [](auto row) { return (row % 100) % 7 == 0; });
   const auto expected = makeRowVector({"id"}, {expectedValues});
-  assertReadWithReaderAndExpected(data->rowType(), *rowReader, expected, *leafPool_);
+  assertReadWithReaderAndExpected(
+      data->rowType(), *rowReader, expected, *leafPool_);
 }
 
 TEST_F(ParquetWriterTest, dictionaryEncodingWithDictionaryPageSize) {
