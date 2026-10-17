@@ -534,6 +534,39 @@ TEST_F(IcebergReadTest, testNoFieldIdMappingWithSentinelHandles) {
            makeFlatVector<std::string>({"a", "b", "c"})})});
 }
 
+// A logical Iceberg field ID can be present even when an older Parquet file
+// has no physical field IDs. The reader must choose the mapping mode from the
+// file footer, otherwise the missing physical IDs all look like one field.
+TEST_F(IcebergReadTest, readFieldlessParquetWithIcebergFieldIds) {
+  const auto rowType = ROW({"c0", "c1"}, {BIGINT(), VARCHAR()});
+  const std::vector<RowVectorPtr> data = {makeRowVector(
+      rowType->names(),
+      {makeFlatVector<int64_t>({1, 2, 3}),
+       makeFlatVector<std::string>({"a", "b", "c"})})};
+
+  fileFormat_ = dwio::common::FileFormat::PARQUET;
+  const auto dataFile = writeParquetFile(data);
+
+  ColumnHandleMap assignments;
+  assignments["c0"] = makeIcebergHandle("c0", BIGINT(), /*fieldId=*/10);
+  assignments["c1"] = makeIcebergHandle("c1", VARCHAR(), /*fieldId=*/20);
+
+  auto plan = exec::test::PlanBuilder()
+                  .startTableScan(test::kIcebergConnectorId)
+                  .outputType(rowType)
+                  .dataColumns(rowType)
+                  .assignments(assignments)
+                  .endTableScan()
+                  .planNode();
+
+  exec::test::AssertQueryBuilder(plan)
+      .splits(makeIcebergSplits(dataFile->getPath()))
+      .assertResults({makeRowVector(
+          rowType->names(),
+          {makeFlatVector<int64_t>({1, 2, 3}),
+           makeFlatVector<std::string>({"a", "b", "c"})})});
+}
+
 TEST_F(IcebergReadTest, readParquetNestedStructByFieldId) {
   const auto addressWriteType = ROW({"city", "zip"}, {VARCHAR(), VARCHAR()});
   const auto profileWriteType =
