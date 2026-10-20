@@ -29,7 +29,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Chalk: both jobs below target `4-core-ubuntu`, a GitHub larger-runner label
+  # configured in upstream's org but not served for this fork. They never got a
+  # runner, queued to GitHub's hard 24h job ceiling, and reported `cancelled` on
+  # every pull request. Guard them with upstream's own fork check so they skip
+  # cleanly here and still run upstream. To re-enable in this fork, drop the
+  # `if` AND retarget `runs-on` to a label the fork actually serves.
   pre-commit:
+    if: ${{ github.repository == 'facebookincubator/velox' }}
     runs-on: 4-core-ubuntu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,6 +46,8 @@ jobs:
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   title-check:
+    # See the note on `pre-commit` above.
+    if: ${{ github.repository == 'facebookincubator/velox' }}
     name: PR Title Format
     runs-on: 4-core-ubuntu
     steps:
