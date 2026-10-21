@@ -165,7 +165,7 @@ class ITypedExpr : public ISerializable {
   /// STABILITY GUARANTEE: This hash is stable across different processes,
   /// builds, and machines.
   size_t hash() const {
-    if (*hash_ == 0) {  
+    if (*hash_ == 0) {
       size_t hash = bits::hashMix(type_->hashKind(), localHash());
       for (int32_t i = 0; i < inputs_.size(); ++i) {
         hash = bits::hashMix(hash, inputs_[i]->hash());
