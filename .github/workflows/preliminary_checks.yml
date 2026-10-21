@@ -29,15 +29,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Chalk: both jobs below target `4-core-ubuntu`, a GitHub larger-runner label
-  # configured in upstream's org but not served for this fork. They never got a
-  # runner, queued to GitHub's hard 24h job ceiling, and reported `cancelled` on
-  # every pull request. Guard them with upstream's own fork check so they skip
-  # cleanly here and still run upstream. To re-enable in this fork, drop the
-  # `if` AND retarget `runs-on` to a label the fork actually serves.
+  # Chalk: `4-core-ubuntu` is a GitHub larger-runner label configured in
+  # upstream's org but not served for this fork, so jobs targeting it never get
+  # a runner and queue to GitHub's hard 24h ceiling. Run pre-commit on a
+  # standard hosted runner instead; the hooks are cheap and finish in minutes.
   pre-commit:
-    if: ${{ github.repository == 'facebookincubator/velox' }}
-    runs-on: 4-core-ubuntu
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,7 +43,9 @@ jobs:
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   title-check:
-    # See the note on `pre-commit` above.
+    # Still guarded: this fork's PR titles follow a different convention
+    # (`[velox] feat: ...`), which upstream's regex rejects. Enabling it would
+    # fail nearly every PR here. See the runner note on `pre-commit` above.
     if: ${{ github.repository == 'facebookincubator/velox' }}
     name: PR Title Format
     runs-on: 4-core-ubuntu
