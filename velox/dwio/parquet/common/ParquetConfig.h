@@ -31,6 +31,13 @@ namespace facebook::velox::parquet {
 /// Defines Parquet reader config and session properties.
 class ParquetConfig {
  public:
+  /// Comma-separated column dot-paths whose Parquet dictionary encoding is
+  /// disabled, regardless of the global dictionary setting. Other columns
+  /// retain their configured encoding. Whitespace and empty entries are
+  /// ignored.
+  static constexpr std::string_view kWriterSerdeDictionaryDisabledColumns =
+      "parquet.writer.dictionary.disabled.columns";
+
   VELOX_FORMAT_CONFIG(
       kBloomFilterPruningEnabledSession,
       kBloomFilterPruningEnabled,
