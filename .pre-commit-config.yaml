@@ -85,7 +85,7 @@ repos:
         require_serial: true
         exclude: |
           (?x)^(
-          CMake/Find(Snappy|Sodium|double-conversion)\.cmake|
+          CMake/Find(Snappy|Sodium|double-conversion|Arrow|Thrift)\.cmake|
           velox/docs/affiliations_map.txt|
           velox/.*/bitpacking\.(cpp|h)|
           velox/.*/Lemire/.*|
@@ -100,6 +100,8 @@ repos:
     hooks:
       - id: gersemi
         name: CMake formatter
+        # Chalk: off by default, same reasoning as clang-format below.
+        stages: [manual]
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v21.1.2
@@ -107,6 +109,10 @@ repos:
       - id: clang-format
         # types_or: [c++, c, cuda, metal, objective-c]
         files: \.(cpp|cc|c|h|hpp|inc|cu|cuh|clcpp|mm|metal)$
+        # Chalk: off by default. Reformatting collides with the files we
+        # hand-resolve on every upstream merge, and invalidates
+        # chalk-private's bazel patch. Run with --hook-stage manual.
+        stages: [manual]
 
   # Python
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -128,6 +134,8 @@ repos:
       - id: shfmt
         # w: write changes, s: simplify, i set indent to 2 spaces
         args: [-w, -s, -i, '2']
+        # Chalk: off by default, same reasoning as clang-format.
+        stages: [manual]
 
   # The following checks mostly target GitHub Actions workflows.
   - repo: https://github.com/adrienverge/yamllint.git

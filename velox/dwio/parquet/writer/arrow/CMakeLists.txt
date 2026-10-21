@@ -46,6 +46,8 @@ velox_add_library(
   HEADERS
   ArrowSchema.h
   ArrowSchemaInternal.h
+  BloomFilter.h
+  BloomFilterWriter.h
   ColumnPage.h
   ColumnWriter.h
   Encoding.h
@@ -55,6 +57,7 @@ velox_add_library(
   FileDecryptorInternal.h
   FileEncryptorInternal.h
   FileWriter.h
+  Hasher.h
   Metadata.h
   PageIndex.h
   PathInternal.h
@@ -67,6 +70,7 @@ velox_add_library(
   ThriftInternal.h
   Types.h
   Writer.h
+  XxHasher.h
 )
 
 velox_link_libraries(

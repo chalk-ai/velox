@@ -814,7 +814,7 @@ class AbstractProjectNode : public PlanNode {
         sources_{source},
         names_(std::move(names)),
         projections_(std::move(projections)),
-        outputType_(makeOutputType(names_, projections_)), 
+        outputType_(makeOutputType(names_, projections_)),
         pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   AbstractProjectNode(
@@ -826,7 +826,7 @@ class AbstractProjectNode : public PlanNode {
         sources_{source},
         names_(names),
         projections_(projections),
-        outputType_(makeOutputType(names_, projections_)), 
+        outputType_(makeOutputType(names_, projections_)),
         pool_(std::make_shared<exec::ExprSetPool>()) {}
 
   template <typename DerivedPlanNode, typename DerivedBuilder>

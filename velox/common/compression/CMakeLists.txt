@@ -23,6 +23,7 @@ velox_add_library(
   Compression.h
   HadoopCompressionFormat.h
   Lz4Compression.h
+  LzoDecompressor.h
 )
 velox_link_libraries(
   velox_common_compression

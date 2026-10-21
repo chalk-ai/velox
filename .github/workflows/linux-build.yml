@@ -42,7 +42,7 @@ on:
       - scripts/setup-helper-functions.sh
       - .github/workflows/linux-build.yml
       - .github/workflows/linux-build-base.yml
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -55,4 +55,7 @@ jobs:
   linux-gcc:
     name: Build with GCC
     uses: ./.github/workflows/linux-build-base.yml
-    secrets: inherit
+    # Pass only the secret the called workflow declares, rather than inheriting
+    # every repository secret (zizmor: secrets-inherit).
+    secrets:
+      CHALK_PRIVATE_GITHUB_ACTIONS_HMAC_KEY: ${{ secrets.CHALK_PRIVATE_GITHUB_ACTIONS_HMAC_KEY }}
