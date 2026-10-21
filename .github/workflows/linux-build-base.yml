@@ -154,7 +154,7 @@ jobs:
         uses: tespkg/actions-cache/restore@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
@@ -167,7 +167,7 @@ jobs:
         uses: tespkg/actions-cache/restore@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
@@ -224,7 +224,7 @@ jobs:
         uses: tespkg/actions-cache/save@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
@@ -277,7 +277,7 @@ jobs:
         uses: tespkg/actions-cache/restore@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
@@ -290,7 +290,7 @@ jobs:
         uses: tespkg/actions-cache/restore@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
@@ -339,7 +339,7 @@ jobs:
         uses: tespkg/actions-cache/save@v1.9.0
         with:
           endpoint: storage.googleapis.com
-          bucket: "chalk-ci-binary-cache"
+          bucket: chalk-ci-binary-cache
           accessKey: GOOG1ETWJ2DR5ODUAGEWQCI63XMPOCMVUOR5VWS6QYVA4QSCV3QZB3XRP3DLQ
           secretKey: ${{ env.CACHE_HMAC_KEY }}
           use-fallback: false
