@@ -213,12 +213,12 @@ std::shared_ptr<WriterProperties> getArrowParquetWriterOptions(
   if (const auto it = options.serdeParameters.find(
           std::string(ParquetConfig::kWriterSerdeDictionaryDisabledColumns));
       it != options.serdeParameters.end()) {
-    std::vector<std::string> columns;
-    folly::split(',', it->second, columns);
+    std::vector<std::string_view> columns;
+    folly::split(',', it->second, columns, /*ignoreEmpty=*/true);
     for (const auto& column : columns) {
-      const auto path = folly::trimWhitespace(column).str();
+      const auto path = folly::trimWhitespace(column);
       if (!path.empty()) {
-        properties->disableDictionary(path);
+        properties->disableDictionary(path.str());
       }
     }
   }
