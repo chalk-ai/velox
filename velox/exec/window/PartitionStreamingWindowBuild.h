@@ -49,19 +49,28 @@ class PartitionStreamingWindowBuild : public WindowBuild {
   std::shared_ptr<WindowPartition> nextPartition() override;
 
   bool needsInput() override {
-    // No partitions are available or the currentPartition is the last available
-    // one, so can consume input rows.
+    // No partitions are available or the current partition is the last
+    // available one, so can consume input rows.
     return partitionStartRows_.empty() ||
-        currentPartition_ == partitionStartRows_.size() - 2;
+        currentPartitionStartRowsIndex_ == partitionStartRows_.size() - 2;
   }
 
  private:
   void buildNextPartition();
 
+  // Erases the rows of the partitions before currentPartitionStartRowsIndex_
+  // from data_, and compacts sortedRows_ and partitionStartRows_ once the
+  // erased prefix is at least as long as the rest, so erasing costs amortized
+  // O(1) per row.
+  void eraseConsumedRows();
+
   // Vector of pointers to each input row in the data_ RowContainer.
   // Rows are erased from data_ when they are output from the
-  // Window operator.
+  // Window operator. Entries before firstLiveRow_ are already erased.
   std::vector<char*> sortedRows_;
+
+  // Index in sortedRows_ of the first row not yet erased from data_.
+  vector_size_t firstLiveRow_ = 0;
 
   // Holds input rows within the current partition.
   std::vector<char*> inputRows_;
@@ -74,9 +83,10 @@ class PartitionStreamingWindowBuild : public WindowBuild {
   // Used to compare rows based on partitionKeys.
   char* previousRow_ = nullptr;
 
-  // Current partition being output. Used to construct WindowPartitions
-  // during resetPartition.
-  vector_size_t currentPartition_ = -1;
+  // Index in partitionStartRows_ of the start of the partition being output,
+  // or -1 before the first. Used to construct WindowPartitions during
+  // resetPartition.
+  vector_size_t currentPartitionStartRowsIndex_ = -1;
 };
 
 } // namespace facebook::velox::exec::window

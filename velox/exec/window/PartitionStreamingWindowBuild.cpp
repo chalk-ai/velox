@@ -72,40 +72,59 @@ PartitionStreamingWindowBuild::nextPartition() {
   VELOX_CHECK_GT(
       partitionStartRows_.size(), 0, "No window partitions available");
 
-  ++currentPartition_;
+  ++currentPartitionStartRowsIndex_;
   VELOX_CHECK_LE(
-      currentPartition_,
+      currentPartitionStartRowsIndex_,
       partitionStartRows_.size() - 2,
       "All window partitions consumed");
 
-  // Erase previous partition.
-  if (currentPartition_ > 0) {
-    const auto numPreviousPartitionRows =
-        partitionStartRows_[currentPartition_];
-    data_->eraseRows(
-        folly::Range<char**>(sortedRows_.data(), numPreviousPartitionRows));
-    sortedRows_.erase(
-        sortedRows_.cbegin(), sortedRows_.cbegin() + numPreviousPartitionRows);
-    sortedRows_.shrink_to_fit();
-    for (int i = currentPartition_; i < partitionStartRows_.size(); ++i) {
-      partitionStartRows_[i] =
-          partitionStartRows_[i] - numPreviousPartitionRows;
-    }
-  }
+  eraseConsumedRows();
 
-  const auto partitionSize = partitionStartRows_[currentPartition_ + 1] -
-      partitionStartRows_[currentPartition_];
+  const auto partitionSize =
+      partitionStartRows_[currentPartitionStartRowsIndex_ + 1] -
+      partitionStartRows_[currentPartitionStartRowsIndex_];
   const auto partition = folly::Range(
-      sortedRows_.data() + partitionStartRows_[currentPartition_],
+      sortedRows_.data() + partitionStartRows_[currentPartitionStartRowsIndex_],
       partitionSize);
 
   return std::make_shared<WindowPartition>(
       data_.get(), partition, inversedInputChannels_, sortKeyInfo_);
 }
 
+void PartitionStreamingWindowBuild::eraseConsumedRows() {
+  const auto currentStart =
+      partitionStartRows_[currentPartitionStartRowsIndex_];
+  if (currentStart > firstLiveRow_) {
+    data_->eraseRows(
+        folly::Range<char**>(
+            sortedRows_.data() + firstLiveRow_, currentStart - firstLiveRow_));
+    firstLiveRow_ = currentStart;
+  }
+  // Compacting moves only the live rows and partition starts, and runs only
+  // once at least as many erased rows have accumulated, so its cost is
+  // amortized over the erased rows. Dropping the starts of the earlier
+  // partitions moves the current partition's start to index 0. needsInput()
+  // and hasNextPartition() compare the index with partitionStartRows_.size(),
+  // which shrinks by the same amount, so their results are unchanged.
+  if (firstLiveRow_ == 0 ||
+      2 * static_cast<size_t>(firstLiveRow_) < sortedRows_.size()) {
+    return;
+  }
+  sortedRows_.erase(sortedRows_.cbegin(), sortedRows_.cbegin() + firstLiveRow_);
+  sortedRows_.shrink_to_fit();
+  partitionStartRows_.erase(
+      partitionStartRows_.cbegin(),
+      partitionStartRows_.cbegin() + currentPartitionStartRowsIndex_);
+  for (auto& start : partitionStartRows_) {
+    start -= firstLiveRow_;
+  }
+  currentPartitionStartRowsIndex_ = 0;
+  firstLiveRow_ = 0;
+}
+
 bool PartitionStreamingWindowBuild::hasNextPartition() {
   return partitionStartRows_.size() > 0 &&
-      currentPartition_ <
+      currentPartitionStartRowsIndex_ <
       static_cast<vector_size_t>(partitionStartRows_.size() - 2);
 }
 
