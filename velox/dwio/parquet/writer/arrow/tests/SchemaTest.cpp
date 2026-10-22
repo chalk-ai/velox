@@ -26,8 +26,16 @@
 #include <string>
 #include <vector>
 
+#include "arrow/ipc/writer.h"
+#include "arrow/type.h"
+#include "arrow/type_fwd.h"
+#include "arrow/util/base64.h"
 #include "arrow/util/checked_cast.h"
+#include "arrow/util/config.h"
+#include "arrow/util/key_value_metadata.h"
+#include "velox/dwio/parquet/writer/arrow/ArrowSchema.h"
 #include "velox/dwio/parquet/writer/arrow/Exception.h"
+#include "velox/dwio/parquet/writer/arrow/Properties.h"
 #include "velox/dwio/parquet/writer/arrow/Schema.h"
 #include "velox/dwio/parquet/writer/arrow/SchemaInternal.h"
 #include "velox/dwio/parquet/writer/arrow/ThriftInternal.h"
@@ -39,6 +47,55 @@ namespace facebook::velox::parquet::arrow {
 
 using facebook::velox::parquet::thrift::FieldRepetitionType;
 using facebook::velox::parquet::thrift::SchemaElement;
+
+TEST(ArrowSchemaManifestTest, originSchemaRoundTrip) {
+  const auto original = ::arrow::schema(
+      {::arrow::field("value", ::arrow::int32(), false)},
+      ::arrow::key_value_metadata({"schema-key"}, {"schema-value"}));
+  std::shared_ptr<SchemaDescriptor> parquetSchema;
+  ASSERT_TRUE(
+      arrow::toParquetSchema(
+          original.get(), *defaultWriterProperties(), &parquetSchema)
+          .ok());
+  const auto serialized =
+      ::arrow::ipc::SerializeSchema(*original, ::arrow::default_memory_pool());
+  ASSERT_TRUE(serialized.ok());
+  const auto metadata = ::arrow::key_value_metadata(
+      {"ARROW:schema", "file-key"},
+      {::arrow::util::base64_encode((*serialized)->ToString()), "file-value"});
+
+  arrow::SchemaManifest manifest;
+  const auto status = arrow::SchemaManifest::make(
+      parquetSchema.get(), metadata, ArrowReaderProperties{}, &manifest);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+  ASSERT_NE(manifest.originSchema, nullptr);
+  EXPECT_TRUE(manifest.originSchema->Equals(*original, true));
+  ASSERT_NE(manifest.schemaMetadata, nullptr);
+  EXPECT_TRUE(manifest.schemaMetadata->Equals(
+      *::arrow::key_value_metadata({"file-key"}, {"file-value"})));
+}
+
+#if ARROW_VERSION_MAJOR >= 25
+TEST(ArrowSchemaManifestTest, invalidBase64Metadata) {
+  const auto original =
+      ::arrow::schema({::arrow::field("value", ::arrow::int32(), false)});
+  std::shared_ptr<SchemaDescriptor> parquetSchema;
+  ASSERT_TRUE(
+      arrow::toParquetSchema(
+          original.get(), *defaultWriterProperties(), &parquetSchema)
+          .ok());
+  const auto metadata =
+      ::arrow::key_value_metadata({"ARROW:schema"}, {"@@not-base64@@"});
+
+  arrow::SchemaManifest manifest;
+  const auto status = arrow::SchemaManifest::make(
+      parquetSchema.get(), metadata, ArrowReaderProperties{}, &manifest);
+  EXPECT_TRUE(status.IsInvalid()) << status.ToString();
+  EXPECT_EQ(
+      status.ToString(),
+      ::arrow::util::base64_decode("@@not-base64@@").status().ToString());
+}
+#endif
 
 namespace schema {
 
