@@ -328,6 +328,7 @@ cc_library(
         "-per_object_debug_info",
     ],
     implementation_deps = [
+        ":abfs",
         ":tpcds_connectors",
         ":tpch_connector",
         ":velox_hdfs",
