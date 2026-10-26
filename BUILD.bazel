@@ -5089,3 +5089,16 @@ cc_test(
         "@re2",
     ],
 )
+
+cc_test(
+    name = "abfs_remove_test",
+    srcs = ["velox/connectors/hive/storage_adapters/abfs/tests/AbfsFileSystemRemoveTest.cpp"],
+    tags = ["no-dwyu"],
+    deps = [
+        ":velox",
+        ":test_utils_engine",
+        ":test_utils_base",
+        "@azure-storage-files-datalake-cpp//:azure_storage_files_datalake_cpp",
+        "@googletest//:gtest_main",
+    ],
+)
