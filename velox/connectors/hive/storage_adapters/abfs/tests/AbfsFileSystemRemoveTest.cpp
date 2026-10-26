@@ -24,6 +24,8 @@
 #include <azure/storage/files/datalake/datalake_file_client.hpp>
 #include <azure/storage/files/datalake/datalake_options.hpp>
 #include <gtest/gtest.h>
+#include <array>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -129,8 +131,10 @@ class DeleteTransport final : public Azure::Core::Http::HttpTransport {
     ++requests;
     auto response = std::make_unique<Azure::Core::Http::RawResponse>(
         1, 1, status_, "test response");
+    // The SDK calls memcpy for empty bodies, which requires a non-null buffer.
     response->SetBodyStream(
-        std::make_unique<Azure::Core::IO::MemoryBodyStream>(nullptr, 0));
+        std::make_unique<Azure::Core::IO::MemoryBodyStream>(
+            emptyBody_.data(), 0));
     response->SetHeader("content-length", "0");
     if (!errorCode_.empty()) {
       response->SetHeader("x-ms-error-code", errorCode_);
@@ -143,6 +147,7 @@ class DeleteTransport final : public Azure::Core::Http::HttpTransport {
  private:
   const Azure::Core::Http::HttpStatusCode status_;
   const std::string errorCode_;
+  const std::array<std::uint8_t, 1> emptyBody_{};
 };
 
 class SdkAzureClientProvider final : public AzureClientProvider {
