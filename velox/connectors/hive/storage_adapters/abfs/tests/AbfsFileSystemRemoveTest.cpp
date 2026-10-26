@@ -14,15 +14,32 @@
  * limitations under the License.
  */
 
+#include <azure/core/context.hpp>
+#include <azure/core/http/http.hpp>
+#include <azure/core/http/raw_response.hpp>
 #include <azure/core/http/transport.hpp>
+#include <azure/core/url.hpp>
+#include <azure/storage/files/datalake/datalake_file_client.hpp>
+#include <azure/storage/files/datalake/datalake_options.hpp>
 #include <gtest/gtest.h>
+#include <memory>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
 
+#include "velox/common/base/Exceptions.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/config/Config.h"
+#include "velox/common/file/File.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AbfsFileSystem.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AzureBlobClient.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AzureClientProvider.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h"
 #include "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h"
+#include "velox/connectors/hive/storage_adapters/abfs/AzureDataLakeFileClient.h"
 #include "velox/connectors/hive/storage_adapters/abfs/DynamicSasTokenClientProvider.h"
 #include "velox/connectors/hive/storage_adapters/abfs/tests/MockDataLakeFileClient.h"
 
