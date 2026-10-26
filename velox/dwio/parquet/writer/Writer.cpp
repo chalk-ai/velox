@@ -16,6 +16,8 @@
 
 #include "velox/dwio/parquet/writer/Writer.h"
 
+#include <folly/String.h>
+
 #include <algorithm>
 #include <exception>
 
@@ -207,6 +209,18 @@ std::shared_ptr<WriterProperties> getArrowParquetWriterOptions(
                 DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT));
   } else {
     properties = properties->disableDictionary();
+  }
+  if (const auto it = options.serdeParameters.find(
+          std::string(ParquetConfig::kWriterSerdeDictionaryDisabledColumns));
+      it != options.serdeParameters.end()) {
+    std::vector<std::string_view> columns;
+    folly::split(',', it->second, columns, /*ignoreEmpty=*/true);
+    for (const auto& column : columns) {
+      const auto path = folly::trimWhitespace(column);
+      if (!path.empty()) {
+        properties->disableDictionary(path.str());
+      }
+    }
   }
   properties = properties->compression(getArrowParquetCompression(
       options.compressionKind.value_or(common::CompressionKind_NONE)));
