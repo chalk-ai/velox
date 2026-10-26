@@ -210,6 +210,18 @@ std::shared_ptr<WriterProperties> getArrowParquetWriterOptions(
   } else {
     properties = properties->disableDictionary();
   }
+  if (const auto it = options.serdeParameters.find(
+          std::string(ParquetConfig::kWriterSerdeDictionaryDisabledColumns));
+      it != options.serdeParameters.end()) {
+    std::vector<std::string_view> columns;
+    folly::split(',', it->second, columns, /*ignoreEmpty=*/true);
+    for (const auto& column : columns) {
+      const auto path = folly::trimWhitespace(column);
+      if (!path.empty()) {
+        properties->disableDictionary(path.str());
+      }
+    }
+  }
   properties = properties->compression(getArrowParquetCompression(
       options.compressionKind.value_or(common::CompressionKind_NONE)));
   for (const auto& columnCompressionValues :
