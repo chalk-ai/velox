@@ -37,6 +37,9 @@ class MockDataLakeFileClient : public AzureDataLakeFileClient {
     return filePath_;
   }
 
+  /// Removes the local file if present.
+  void remove() override;
+
   void create() override;
 
   PathProperties getProperties() override;

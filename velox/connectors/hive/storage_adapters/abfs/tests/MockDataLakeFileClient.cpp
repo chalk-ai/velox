@@ -22,6 +22,10 @@
 
 namespace facebook::velox::filesystems {
 
+void MockDataLakeFileClient::remove() {
+  std::filesystem::remove(filePath_);
+}
+
 void MockDataLakeFileClient::create() {
   fileStream_ = std::ofstream(
       filePath_,

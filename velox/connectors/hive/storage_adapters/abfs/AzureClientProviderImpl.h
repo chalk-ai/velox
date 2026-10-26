@@ -29,9 +29,11 @@ namespace facebook::velox::filesystems {
 
 class DataLakeFileClientWrapper final : public AzureDataLakeFileClient {
  public:
-  explicit DataLakeFileClientWrapper(
-      std::unique_ptr<DataLakeFileClient> client)
+  explicit DataLakeFileClientWrapper(std::unique_ptr<DataLakeFileClient> client)
       : client_(std::move(client)) {}
+
+  /// Deletes the file through the configured Data Lake client.
+  void remove() override;
 
   void create() override;
   Azure::Storage::Files::DataLake::Models::PathProperties getProperties()
