@@ -5082,6 +5082,8 @@ cc_test(
 cc_test(
     name = "abfs_remove_test",
     srcs = ["velox/connectors/hive/storage_adapters/abfs/tests/AbfsFileSystemRemoveTest.cpp"],
+    # Keep Azure SDK implementation details outside the test's lint diagnostics.
+    copts = ["--system-header-prefix=azure/"],
     tags = ["no-dwyu"],
     deps = [
         ":abfs",

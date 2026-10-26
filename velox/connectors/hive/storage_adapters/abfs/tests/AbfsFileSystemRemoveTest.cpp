@@ -16,8 +16,10 @@
 
 #include <azure/core/context.hpp>
 #include <azure/core/http/http.hpp>
+#include <azure/core/http/http_status_code.hpp>
 #include <azure/core/http/raw_response.hpp>
 #include <azure/core/http/transport.hpp>
+#include <azure/core/io/body_stream.hpp>
 #include <azure/core/url.hpp>
 #include <azure/storage/files/datalake/datalake_file_client.hpp>
 #include <azure/storage/files/datalake/datalake_options.hpp>
@@ -127,6 +129,8 @@ class DeleteTransport final : public Azure::Core::Http::HttpTransport {
     ++requests;
     auto response = std::make_unique<Azure::Core::Http::RawResponse>(
         1, 1, status_, "test response");
+    response->SetBodyStream(
+        std::make_unique<Azure::Core::IO::MemoryBodyStream>(nullptr, 0));
     response->SetHeader("content-length", "0");
     if (!errorCode_.empty()) {
       response->SetHeader("x-ms-error-code", errorCode_);
