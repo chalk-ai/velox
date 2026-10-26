@@ -101,7 +101,6 @@ cc_library(
         "velox/connectors/fuzzer/FuzzerConnector.cpp",
         "velox/connectors/hive/iceberg/tests/IcebergSplitReaderBenchmark.cpp",
         "velox/connectors/hive/storage_adapters/abfs/tests/AzuriteServer.cpp",
-        "velox/connectors/hive/storage_adapters/abfs/tests/MockDataLakeFileClient.cpp",
         "velox/connectors/hive/storage_adapters/hdfs/tests/HdfsMiniCluster.cpp",
         "velox/dwio/common/tests/FaultyFileSink.cpp",
         "velox/dwio/common/tests/utils/BatchMaker.cpp",
@@ -199,7 +198,6 @@ cc_library(
         "velox/connectors/fuzzer/FuzzerConnectorSplit.h",
         "velox/connectors/hive/iceberg/tests/IcebergSplitReaderBenchmark.h",
         "velox/connectors/hive/storage_adapters/abfs/tests/AzuriteServer.h",
-        "velox/connectors/hive/storage_adapters/abfs/tests/MockDataLakeFileClient.h",
         "velox/connectors/hive/storage_adapters/gcs/tests/GcsEmulator.h",
         "velox/connectors/hive/storage_adapters/hdfs/tests/HdfsMiniCluster.h",
         "velox/connectors/hive/storage_adapters/s3fs/tests/MinioServer.h",
@@ -340,6 +338,7 @@ cc_library(
     deps = [
         ":base",
         ":engine",
+        ":test_utils_abfs",
         ":test_utils_base",
         ":test_utils_vector",
         ":vector",
@@ -943,6 +942,7 @@ cc_library(
         linkopts = ["-s"],
         tags = ["no-dwyu"],  # Deps are shared across the tier, so every test looks over-broad to dwyu
         deps = [
+            ":abfs",
             ":base",
             ":date",
             ":engine",
@@ -4009,7 +4009,7 @@ cc_library(
         "velox/parse/QueryPlanner.cpp",
         "velox/parse/SqlExpressionsParser.cpp",
         "velox/parse/TypeResolver.cpp",
-    ] + PARQUET_SRCS + ABFS_SRCS + S3_SRCS + GCS_SRCS,
+    ] + PARQUET_SRCS + S3_SRCS + GCS_SRCS,
     hdrs = [
         "velox/connectors/hive/BufferedInputBuilder.h",
         "velox/connectors/hive/ExtractionUtils.h",
@@ -4071,17 +4071,6 @@ cc_library(
         "velox/connectors/hive/paimon/PaimonDataFileMeta.h",
         "velox/connectors/hive/paimon/PaimonDeletionFile.h",
         "velox/connectors/hive/paimon/PaimonRowKind.h",
-        "velox/connectors/hive/storage_adapters/abfs/AbfsFileSystem.h",
-        "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h",
-        "velox/connectors/hive/storage_adapters/abfs/AbfsReadFile.h",
-        "velox/connectors/hive/storage_adapters/abfs/AbfsUtil.h",
-        "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h",
-        "velox/connectors/hive/storage_adapters/abfs/AzureBlobClient.h",
-        "velox/connectors/hive/storage_adapters/abfs/AzureClientProvider.h",
-        "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h",
-        "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h",
-        "velox/connectors/hive/storage_adapters/abfs/AzureDataLakeFileClient.h",
-        "velox/connectors/hive/storage_adapters/abfs/DynamicSasTokenClientProvider.h",
         "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h",
         "velox/connectors/hive/storage_adapters/gcs/GcsFileSystem.h",
         "velox/connectors/hive/storage_adapters/gcs/GcsOAuthCredentialsProvider.h",
@@ -4476,6 +4465,7 @@ cc_library(
         "velox/connectors/hive/HiveConfigMacrosUndef.h",
     ],
     deps = [
+        ":abfs",
         ":base",
         ":parquet_thrift",
         ":parquet_thrift_headers",
@@ -5089,16 +5079,64 @@ cc_test(
         "@re2",
     ],
 )
-
 cc_test(
     name = "abfs_remove_test",
     srcs = ["velox/connectors/hive/storage_adapters/abfs/tests/AbfsFileSystemRemoveTest.cpp"],
     tags = ["no-dwyu"],
     deps = [
-        ":velox",
-        ":test_utils_engine",
+        ":abfs",
+        ":base",
+        ":test_utils_abfs",
         ":test_utils_base",
+        "@azure-core-cpp//:azure_core_cpp",
         "@azure-storage-files-datalake-cpp//:azure_storage_files_datalake_cpp",
+        "@googletest//:gtest",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "test_utils_abfs",
+    srcs = ["velox/connectors/hive/storage_adapters/abfs/tests/MockDataLakeFileClient.cpp"],
+    hdrs = ["velox/connectors/hive/storage_adapters/abfs/tests/MockDataLakeFileClient.h"],
+    implementation_deps = ["@azure-storage-files-datalake-cpp//:azure_storage_files_datalake_cpp"],
+    deps = [
+        ":abfs",
+        ":base",
+    ],
+)
+
+cc_library(
+    name = "abfs",
+    srcs = ABFS_SRCS,
+    hdrs = [
+        "velox/connectors/hive/storage_adapters/abfs/AbfsFileSystem.h",
+        "velox/connectors/hive/storage_adapters/abfs/AbfsPath.h",
+        "velox/connectors/hive/storage_adapters/abfs/AbfsReadFile.h",
+        "velox/connectors/hive/storage_adapters/abfs/AbfsUtil.h",
+        "velox/connectors/hive/storage_adapters/abfs/AbfsWriteFile.h",
+        "velox/connectors/hive/storage_adapters/abfs/AzureBlobClient.h",
+        "velox/connectors/hive/storage_adapters/abfs/AzureClientProvider.h",
+        "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderFactories.h",
+        "velox/connectors/hive/storage_adapters/abfs/AzureClientProviderImpl.h",
+        "velox/connectors/hive/storage_adapters/abfs/AzureDataLakeFileClient.h",
+        "velox/connectors/hive/storage_adapters/abfs/DynamicSasTokenClientProvider.h",
+    ],
+    implementation_deps = [
+        "@azure-identity-cpp//:azure_identity_cpp",
+        "@folly//folly:synchronized",
+        "@folly//folly/executors:io_thread_pool_executor",
+        "@glog",
+    ],
+    strip_include_prefix = ".",
+    tags = ["no-dwyu"],
+    deps = [
+        ":base",
+        "@azure-core-cpp//:azure_core_cpp",
+        "@azure-storage-blobs-cpp//:azure_storage_blobs_cpp",
+        "@azure-storage-common-cpp//:azure_storage_common_cpp",
+        "@azure-storage-files-datalake-cpp//:azure_storage_files_datalake_cpp",
+        "@fmt",
+        "@folly//folly/hash",
     ],
 )
