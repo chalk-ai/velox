@@ -50,11 +50,13 @@ jobs:
           PR_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           JOB_TRIGGER: ${{ github.event_name }}
+          BASE_REPO: ${{ github.repository }}
+          BASE_OWNER: ${{ github.repository_owner }}
         run: |
           echo "JOB_TRIGGER: $JOB_TRIGGER"
           if [[ "$JOB_TRIGGER" == "pull_request" ]]; then
             merge_base_commit=$(gh api -q '.merge_base_commit.sha' \
-              /repos/facebookincubator/velox/compare/facebookincubator:$BASE_REF...$PR_OWNER:$HEAD_REF \
+              /repos/$BASE_REPO/compare/$BASE_OWNER:$BASE_REF...$PR_OWNER:$HEAD_REF \
             )
 
             range="$merge_base_commit..$HEAD_SHA"
