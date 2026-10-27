@@ -322,5 +322,11 @@ const char* VeloxException::State::what() const noexcept {
   }
 }
 
+VeloxException::~VeloxException() = default;
+
+VeloxUserError::~VeloxUserError() = default;
+
+VeloxRuntimeError::~VeloxRuntimeError() = default;
+
 } // namespace velox
 } // namespace facebook
