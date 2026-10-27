@@ -5092,7 +5092,7 @@ cc_test(
         ":test_utils_abfs",
         ":test_utils_base",
         "@azure-core-cpp//:azure_core_cpp",
-        "@azure-storage-files-datalake-cpp//:azure_storage_files_datalake_cpp",
+        "@azure-storage-blobs-cpp//:azure_storage_blobs_cpp",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
