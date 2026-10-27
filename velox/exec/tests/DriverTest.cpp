@@ -1639,6 +1639,173 @@ DEBUG_ONLY_TEST_F(DriverTest, driverCpuTimeSlicingCheck) {
 
 namespace {
 
+// Shared between a SpinUntilYieldOperator and its test.
+struct SpinUntilYieldState {
+  // Set once the operator has entered its spin loop.
+  std::atomic_bool spinning{false};
+  // Set if the spin loop ended because shouldYield() returned true rather
+  // than by running out its time limit.
+  std::atomic_bool yieldObserved{false};
+};
+
+class SpinUntilYieldNode : public core::PlanNode {
+ public:
+  SpinUntilYieldNode(
+      const core::PlanNodeId& id,
+      core::PlanNodePtr input,
+      std::shared_ptr<SpinUntilYieldState> state)
+      : PlanNode(id), sources_{std::move(input)}, state_{std::move(state)} {}
+
+  const RowTypePtr& outputType() const override {
+    return sources_[0]->outputType();
+  }
+
+  const std::vector<core::PlanNodePtr>& sources() const override {
+    return sources_;
+  }
+
+  std::string_view name() const override {
+    return "SpinUntilYield";
+  }
+
+  const std::shared_ptr<SpinUntilYieldState>& state() const {
+    return state_;
+  }
+
+ private:
+  void addDetails(std::stringstream& /*stream*/) const override {}
+
+  std::vector<core::PlanNodePtr> sources_;
+  std::shared_ptr<SpinUntilYieldState> state_;
+};
+
+// Stands in for an operator in a long loop that checks shouldYield() between
+// steps, such as a hash build reading back a spilled partition: on its first
+// input it spins in getOutput() until shouldYield() returns true or 30 seconds
+// pass, then passes the input through.
+class SpinUntilYieldOperator : public Operator {
+ public:
+  SpinUntilYieldOperator(
+      DriverCtx* ctx,
+      int32_t id,
+      const std::shared_ptr<const SpinUntilYieldNode>& node)
+      : Operator(ctx, node->outputType(), id, node->id(), "SpinUntilYield"),
+        state_{node->state()} {}
+
+  bool needsInput() const override {
+    return !noMoreInput_ && !input_;
+  }
+
+  void addInput(RowVectorPtr input) override {
+    input_ = std::move(input);
+  }
+
+  RowVectorPtr getOutput() override {
+    if (!input_) {
+      return nullptr;
+    }
+    if (!spun_) {
+      spun_ = true;
+      state_->spinning = true;
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      while (std::chrono::steady_clock::now() < deadline) {
+        if (shouldYield()) {
+          state_->yieldObserved = true;
+          return nullptr;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // NOLINT
+      }
+    }
+    return std::move(input_);
+  }
+
+  BlockingReason isBlocked(ContinueFuture* /*future*/) override {
+    return BlockingReason::kNotBlocked;
+  }
+
+  bool isFinished() override {
+    return noMoreInput_ && input_ == nullptr;
+  }
+
+ private:
+  const std::shared_ptr<SpinUntilYieldState> state_;
+  bool spun_{false};
+};
+
+class SpinUntilYieldFactory : public Operator::PlanNodeTranslator {
+ public:
+  std::unique_ptr<Operator> toOperator(
+      DriverCtx* ctx,
+      int32_t id,
+      const core::PlanNodePtr& node) override {
+    if (auto spinNode =
+            std::dynamic_pointer_cast<const SpinUntilYieldNode>(node)) {
+      return std::make_unique<SpinUntilYieldOperator>(ctx, id, spinNode);
+    }
+    return nullptr;
+  }
+};
+} // namespace
+
+// A task pause or cancel only completes once every driver is off thread, so
+// an operator in a long loop that checks shouldYield() must see it return
+// true while a pause or cancel is pending, even with no cpu time slice set.
+TEST_F(DriverTest, shouldYieldOnPauseOrCancelWithoutCpuTimeSlice) {
+  Operator::registerOperator(std::make_unique<SpinUntilYieldFactory>());
+  for (const bool cancel : {false, true}) {
+    SCOPED_TRACE(fmt::format("cancel: {}", cancel));
+    auto state = std::make_shared<SpinUntilYieldState>();
+    auto fragment =
+        PlanBuilder()
+            .values({makeRowVector({makeFlatVector<int32_t>({1, 2, 3})})})
+            .addNode([&](std::string id, core::PlanNodePtr input) {
+              return std::make_shared<SpinUntilYieldNode>(
+                  id, std::move(input), state);
+            })
+            .planFragment();
+    auto task = Task::create(
+        "t0",
+        fragment,
+        0,
+        core::QueryCtx::create(driverExecutor_.get()),
+        Task::ExecutionMode::kParallel,
+        [](RowVectorPtr /*unused*/,
+           bool /*unused*/,
+           ContinueFuture* /*unused*/) {
+          return exec::BlockingReason::kNotBlocked;
+        });
+    task->start(1, 1);
+
+    const auto spinDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!state->spinning &&
+           std::chrono::steady_clock::now() < spinDeadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1)); // NOLINT
+    }
+    ASSERT_TRUE(state->spinning);
+
+    auto stopped = (cancel ? task->requestCancel() : task->requestPause())
+                       .via(&folly::QueuedImmediateExecutor::instance());
+    stopped.wait(std::chrono::seconds(10));
+    const bool stoppedPromptly = stopped.isReady();
+    // The spin loop gives up after 30 seconds, so the request completes even
+    // when the operator never sees shouldYield() return true.
+    stopped.wait();
+    EXPECT_TRUE(stoppedPromptly);
+    EXPECT_TRUE(state->yieldObserved);
+
+    if (cancel) {
+      ASSERT_TRUE(waitForTaskCancelled(task.get(), 60'000'000));
+    } else {
+      Task::resume(task);
+      ASSERT_TRUE(waitForTaskCompletion(task.get(), 60'000'000));
+    }
+  }
+}
+
+namespace {
+
 template <typename T>
 struct ThrowRuntimeExceptionFunction {
   template <typename TResult, typename TInput>
