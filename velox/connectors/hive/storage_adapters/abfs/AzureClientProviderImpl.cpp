@@ -21,10 +21,6 @@
 
 namespace facebook::velox::filesystems {
 
-void DataLakeFileClientWrapper::remove() {
-  client_->DeleteIfExists();
-}
-
 void DataLakeFileClientWrapper::create() {
   client_->Create();
 }
@@ -52,6 +48,10 @@ void DataLakeFileClientWrapper::close() {
 
 std::string DataLakeFileClientWrapper::getUrl() {
   return client_->GetUrl();
+}
+
+void BlobClientWrapper::remove() {
+  blobClient_->DeleteIfExists();
 }
 
 Azure::Response<Azure::Storage::Blobs::Models::BlobProperties>

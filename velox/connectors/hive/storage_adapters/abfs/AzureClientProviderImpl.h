@@ -32,9 +32,6 @@ class DataLakeFileClientWrapper final : public AzureDataLakeFileClient {
   explicit DataLakeFileClientWrapper(std::unique_ptr<DataLakeFileClient> client)
       : client_(std::move(client)) {}
 
-  /// Deletes the file through the configured Data Lake client.
-  void remove() override;
-
   void create() override;
   Azure::Storage::Files::DataLake::Models::PathProperties getProperties()
       override;
@@ -51,6 +48,8 @@ class BlobClientWrapper final : public AzureBlobClient {
  public:
   explicit BlobClientWrapper(std::unique_ptr<BlobClient> client)
       : blobClient_(std::move(client)) {}
+
+  void remove() override;
 
   Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
       override;
