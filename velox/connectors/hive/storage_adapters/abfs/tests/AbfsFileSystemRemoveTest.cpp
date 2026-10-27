@@ -20,12 +20,15 @@
 #include <azure/core/http/raw_response.hpp>
 #include <azure/core/http/transport.hpp>
 #include <azure/core/io/body_stream.hpp>
+#include <azure/core/response.hpp>
 #include <azure/core/url.hpp>
-#include <azure/storage/files/datalake/datalake_file_client.hpp>
-#include <azure/storage/files/datalake/datalake_options.hpp>
+#include <azure/storage/blobs/blob_client.hpp>
+#include <azure/storage/blobs/blob_options.hpp>
+#include <azure/storage/blobs/rest_client.hpp>
 #include <gtest/gtest.h>
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -50,6 +53,32 @@
 namespace facebook::velox::filesystems {
 namespace {
 
+class LocalAzureBlobClient final : public AzureBlobClient {
+ public:
+  explicit LocalAzureBlobClient(std::string path) : path_(std::move(path)) {}
+
+  void remove() override {
+    std::filesystem::remove(path_);
+  }
+
+  Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
+      override {
+    VELOX_FAIL("Unexpected getProperties call.");
+  }
+
+  Azure::Response<Azure::Storage::Blobs::Models::DownloadBlobResult> download(
+      const Azure::Storage::Blobs::DownloadBlobOptions&) override {
+    VELOX_FAIL("Unexpected download call.");
+  }
+
+  std::string getUrl() override {
+    return path_;
+  }
+
+ private:
+  const std::string path_;
+};
+
 // Keeps write and cleanup operations on the same local file backend.
 class LocalAzureClientProvider final : public AzureClientProvider {
  public:
@@ -57,9 +86,12 @@ class LocalAzureClientProvider final : public AzureClientProvider {
       : directory_(std::move(directory)) {}
 
   std::unique_ptr<AzureBlobClient> getReadFileClient(
-      const std::shared_ptr<AbfsPath>&,
-      const config::ConfigBase&) override {
-    VELOX_FAIL("Unexpected read client request.");
+      const std::shared_ptr<AbfsPath>& path,
+      const config::ConfigBase& config) override {
+    EXPECT_EQ(
+        config.get<std::string>("remove-test-marker").value(), "configured");
+    return std::make_unique<LocalAzureBlobClient>(
+        directory_ + "/" + path->filePath());
   }
 
   std::unique_ptr<AzureDataLakeFileClient> getWriteFileClient(
@@ -127,7 +159,7 @@ class DeleteTransport final : public Azure::Core::Http::HttpTransport {
     EXPECT_EQ(request.GetMethod(), Azure::Core::Http::HttpMethod::Delete);
     EXPECT_EQ(
         request.GetUrl().GetAbsoluteUrl(),
-        "https://remove-sdk.dfs.core.windows.net/container/preview_0.parquet");
+        "https://remove-sdk.blob.core.windows.net/container/preview_0.parquet");
     ++requests;
     auto response = std::make_unique<Azure::Core::Http::RawResponse>(
         1, 1, status_, "test response");
@@ -156,20 +188,20 @@ class SdkAzureClientProvider final : public AzureClientProvider {
       : transport_(std::move(transport)) {}
 
   std::unique_ptr<AzureBlobClient> getReadFileClient(
-      const std::shared_ptr<AbfsPath>&,
+      const std::shared_ptr<AbfsPath>& path,
       const config::ConfigBase&) override {
-    VELOX_FAIL("Unexpected read client request.");
+    Azure::Storage::Blobs::BlobClientOptions options;
+    options.Transport.Transport = transport_;
+    options.Retry.MaxRetries = 0;
+    return std::make_unique<BlobClientWrapper>(
+        std::make_unique<Azure::Storage::Blobs::BlobClient>(
+            path->getUrl(true), options));
   }
 
   std::unique_ptr<AzureDataLakeFileClient> getWriteFileClient(
-      const std::shared_ptr<AbfsPath>& path,
+      const std::shared_ptr<AbfsPath>&,
       const config::ConfigBase&) override {
-    Azure::Storage::Files::DataLake::DataLakeClientOptions options;
-    options.Transport.Transport = transport_;
-    options.Retry.MaxRetries = 0;
-    return std::make_unique<DataLakeFileClientWrapper>(
-        std::make_unique<Azure::Storage::Files::DataLake::DataLakeFileClient>(
-            path->getUrl(false), options));
+    VELOX_FAIL("Unexpected write client request.");
   }
 
  private:
@@ -184,9 +216,11 @@ TEST(AbfsFileSystemRemoveTest, sdkDeleteAndMissingFile) {
   const std::string path =
       "abfss://container@remove-sdk.dfs.core.windows.net/preview_0.parquet";
   for (const auto& [status, errorCode] :
-       {std::pair{HttpStatusCode::Ok, ""},
-        std::pair{HttpStatusCode::NotFound, "PathNotFound"},
-        std::pair{HttpStatusCode::NotFound, "FilesystemNotFound"},
+       {std::pair{HttpStatusCode::Accepted, ""},
+        std::pair{HttpStatusCode::NotFound, "BlobNotFound"},
+        std::pair{HttpStatusCode::NotFound, "ContainerNotFound"},
+        std::pair{HttpStatusCode::NotFound, "UnknownError"},
+        std::pair{HttpStatusCode::Conflict, "SnapshotsPresent"},
         std::pair{HttpStatusCode::Forbidden, "AuthorizationPermissionMismatch"},
         std::pair{HttpStatusCode::InternalServerError, "InternalError"}}) {
     auto transport = std::make_shared<DeleteTransport>(status, errorCode);
@@ -195,6 +229,8 @@ TEST(AbfsFileSystemRemoveTest, sdkDeleteAndMissingFile) {
           return std::make_unique<SdkAzureClientProvider>(transport);
         });
     if (status == HttpStatusCode::Forbidden ||
+        status == HttpStatusCode::Conflict ||
+        std::string(errorCode) == "UnknownError" ||
         status == HttpStatusCode::InternalServerError) {
       VELOX_ASSERT_THROW(filesystem.remove(path), "Operation 'Delete'");
     } else {
@@ -225,7 +261,7 @@ TEST(AbfsFileSystemRemoveTest, dynamicSasRequestsDeletePermission) {
   DynamicSasTokenClientProvider provider(tokens);
   auto path = std::make_shared<AbfsPath>(
       "abfss://container@remove-token.dfs.core.windows.net/preview_0.parquet");
-  auto client = provider.getWriteFileClient(path, config::ConfigBase({}));
+  auto client = provider.getReadFileClient(path, config::ConfigBase({}));
   EXPECT_THROW(client->remove(), std::runtime_error);
   EXPECT_THROW(client->remove(), std::runtime_error);
   EXPECT_EQ(tokens->requests, 2);

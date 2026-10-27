@@ -88,15 +88,6 @@ class DynamicSasTokenDataLakeFileClient final : public AzureDataLakeFileClient {
         sasKeyGenerator_(sasKeyGenerator),
         sasTokenRenewPeriod_(sasTokenRenewPeriod) {}
 
-  void remove() override {
-    // Delete permission is independent of the cached read and write tokens.
-    const auto sas = sasKeyGenerator_->getSasToken(
-        abfsPath_->fileSystem(), abfsPath_->filePath(), kAbfsDeleteOperation);
-    DataLakeFileClient client(
-        fmt::format("{}?{}", abfsPath_->getUrl(false), sas));
-    client.DeleteIfExists();
-  }
-
   void create() override {
     getWriteClient()->Create();
   }
@@ -167,6 +158,14 @@ class DynamicSasTokenBlobClient : public AzureBlobClient {
       : abfsPath_(abfsPath),
         sasTokenProvider_(sasTokenProvider),
         sasTokenRenewPeriod_(sasTokenRenewPeriod) {}
+
+  void remove() override {
+    // Delete permission is independent of the cached read and write tokens.
+    const auto sas = sasTokenProvider_->getSasToken(
+        abfsPath_->fileSystem(), abfsPath_->filePath(), kAbfsDeleteOperation);
+    BlobClient client(fmt::format("{}?{}", abfsPath_->getUrl(true), sas));
+    client.DeleteIfExists();
+  }
 
   Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
       override {

@@ -38,9 +38,6 @@ class AzureDataLakeFileClient {
  public:
   virtual ~AzureDataLakeFileClient() {}
 
-  /// Deletes the file, succeeding if it is already absent.
-  virtual void remove() = 0;
-
   virtual void create() = 0;
   virtual Azure::Storage::Files::DataLake::Models::PathProperties
   getProperties() = 0;
