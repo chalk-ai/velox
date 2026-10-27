@@ -519,6 +519,63 @@ DEBUG_ONLY_TEST_P(MultiThreadedHashJoinTest, filterSpillOnFirstProbeInput) {
       .run();
 }
 
+// A hash build reading back a spilled partition loops over its batches inside
+// one operator call. A task pause, such as one requested by memory arbitration,
+// must not wait for the whole partition: the build yields after the batch it is
+// adding, even with no driver cpu time slice set.
+DEBUG_ONLY_TEST_P(HashJoinTest, buildYieldsToPauseWhileRestoringSpill) {
+  // Restored batches seen, and restored batches added after the pause was
+  // requested but before it completed.
+  std::atomic_int numRestoredBatches{0};
+  std::atomic_int numBatchesAddedWhilePausing{0};
+  std::atomic_bool pauseRequested{false};
+  std::atomic_bool pauseCompleted{false};
+  std::thread resumer;
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::HashBuild::addInput",
+      std::function<void(exec::HashBuild*)>([&](exec::HashBuild* hashBuild) {
+        // With max spill level 0, only a restoring build exceeds the limit.
+        if (!hashBuild->testingExceededMaxSpillLevelLimit()) {
+          return;
+        }
+        ++numRestoredBatches;
+        if (pauseRequested.exchange(true)) {
+          if (!pauseCompleted) {
+            ++numBatchesAddedWhilePausing;
+          }
+          return;
+        }
+        auto task = hashBuild->operatorCtx()->task();
+        auto pauseWait = task->requestPause();
+        resumer = std::thread([task,
+                               pauseWait = std::move(pauseWait),
+                               &pauseCompleted]() mutable {
+          std::move(pauseWait).wait();
+          pauseCompleted = true;
+          Task::resume(task);
+        });
+      }));
+
+  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+      .numDrivers(1)
+      .keyTypes({BIGINT()})
+      .probeVectors(100, 5)
+      .buildVectors(100, 20)
+      .maxSpillLevel(0)
+      .referenceQuery(
+          "SELECT t_k0, t_data, u_k0, u_data FROM t, u WHERE t_k0 = u_k0")
+      .run();
+  if (resumer.joinable()) {
+    resumer.join();
+  }
+
+  ASSERT_TRUE(pauseRequested);
+  // The restore had batches left to read when the pause was requested, so a
+  // build that kept reading would have added some of them before pausing.
+  ASSERT_GE(numRestoredBatches, 3);
+  ASSERT_EQ(numBatchesAddedWhilePausing, 0);
+}
+
 TEST_P(MultiThreadedHashJoinTest, nullAwareAntiJoinWithNull) {
   struct {
     double probeNullRatio;
