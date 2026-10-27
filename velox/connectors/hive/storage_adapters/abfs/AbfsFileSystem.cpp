@@ -53,8 +53,10 @@ std::unique_ptr<WriteFile> AbfsFileSystem::openFileForWrite(
 
 void AbfsFileSystem::remove(std::string_view path) {
   const auto abfsPath = std::make_shared<AbfsPath>(path);
+  // Blob deletion also supports accounts whose DFS endpoint rejects soft
+  // delete.
   auto client =
-      AzureClientProviderFactories::getWriteFileClient(abfsPath, *config_);
+      AzureClientProviderFactories::getReadFileClient(abfsPath, *config_);
   try {
     client->remove();
   } catch (Azure::Storage::StorageException& error) {
