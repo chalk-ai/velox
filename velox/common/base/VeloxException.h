@@ -223,6 +223,15 @@ class VeloxException : public std::exception {
             exceptionType,
             exceptionName) {}
 
+  VeloxException(const VeloxException&) = default;
+  VeloxException(VeloxException&&) = default;
+
+  /// Defined out of line so VeloxException.cpp is the single home of this
+  /// class's vtable and type_info (its key function). With only inline
+  /// virtuals, every translation unit that throws or catches the class emits
+  /// its own copy.
+  ~VeloxException() override;
+
   /// Inherited
   const char* what() const noexcept override {
     return state_->what();
@@ -355,6 +364,12 @@ class VeloxUserError : public VeloxException {
  public:
   static constexpr std::string_view kDefaultName = "VeloxUserError";
 
+  VeloxUserError(const VeloxUserError&) = default;
+  VeloxUserError(VeloxUserError&&) = default;
+
+  /// Key function; see ~VeloxException.
+  ~VeloxUserError() override;
+
   VeloxUserError(
       const char* file,
       size_t line,
@@ -420,6 +435,12 @@ class VeloxUserError : public VeloxException {
 class VeloxRuntimeError final : public VeloxException {
  public:
   static constexpr std::string_view kDefaultName = "VeloxRuntimeError";
+
+  VeloxRuntimeError(const VeloxRuntimeError&) = default;
+  VeloxRuntimeError(VeloxRuntimeError&&) = default;
+
+  /// Key function; see ~VeloxException.
+  ~VeloxRuntimeError() override;
 
   VeloxRuntimeError(
       const char* file,
