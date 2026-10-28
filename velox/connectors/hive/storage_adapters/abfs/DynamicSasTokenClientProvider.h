@@ -28,9 +28,11 @@ namespace facebook::velox::filesystems {
 ///
 /// ReadClient uses "read" permission for Download and GetProperties.
 /// WriteClient uses "read" permission for GetProperties, and "write" permission
-/// for other operations.
+/// for create, append and flush. Deletion requests "delete" permission.
 static const std::string kAbfsReadOperation{"read"};
 static const std::string kAbfsWriteOperation{"write"};
+/// Requests delete permission independently of read and write permissions.
+static const std::string kAbfsDeleteOperation{"delete"};
 
 /// Interface for providing SAS tokens for ABFS file system operations.
 /// Adapted from the Hadoop Azure implementation:

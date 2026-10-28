@@ -159,6 +159,14 @@ class DynamicSasTokenBlobClient : public AzureBlobClient {
         sasTokenProvider_(sasTokenProvider),
         sasTokenRenewPeriod_(sasTokenRenewPeriod) {}
 
+  void remove() override {
+    // Delete permission is independent of the cached read and write tokens.
+    const auto sas = sasTokenProvider_->getSasToken(
+        abfsPath_->fileSystem(), abfsPath_->filePath(), kAbfsDeleteOperation);
+    BlobClient client(fmt::format("{}?{}", abfsPath_->getUrl(true), sas));
+    client.DeleteIfExists();
+  }
+
   Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
       override {
     return getBlobClient()->GetProperties();

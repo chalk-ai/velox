@@ -44,3 +44,10 @@ target_link_libraries(
 )
 
 target_compile_options(velox_abfs_registration_test PRIVATE -Wno-deprecated-declarations)
+
+add_executable(velox_abfs_remove_test AbfsFileSystemRemoveTest.cpp MockDataLakeFileClient.cpp)
+add_test(velox_abfs_remove_test velox_abfs_remove_test)
+target_link_libraries(
+  velox_abfs_remove_test
+  PRIVATE velox_abfs velox_exec_test_lib GTest::gtest GTest::gtest_main
+)
