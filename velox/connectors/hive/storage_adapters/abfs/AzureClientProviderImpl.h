@@ -29,8 +29,7 @@ namespace facebook::velox::filesystems {
 
 class DataLakeFileClientWrapper final : public AzureDataLakeFileClient {
  public:
-  explicit DataLakeFileClientWrapper(
-      std::unique_ptr<DataLakeFileClient> client)
+  explicit DataLakeFileClientWrapper(std::unique_ptr<DataLakeFileClient> client)
       : client_(std::move(client)) {}
 
   void create() override;
@@ -49,6 +48,8 @@ class BlobClientWrapper final : public AzureBlobClient {
  public:
   explicit BlobClientWrapper(std::unique_ptr<BlobClient> client)
       : blobClient_(std::move(client)) {}
+
+  void remove() override;
 
   Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
       override;

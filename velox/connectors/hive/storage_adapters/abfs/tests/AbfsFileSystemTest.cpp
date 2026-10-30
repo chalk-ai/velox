@@ -64,6 +64,10 @@ class InMemoryAzureBlobClient final : public AzureBlobClient {
   explicit InMemoryAzureBlobClient(std::shared_ptr<InMemoryReadState> state)
       : state_(std::move(state)) {}
 
+  void remove() override {
+    VELOX_FAIL("Unexpected remove call.");
+  }
+
   Azure::Response<Azure::Storage::Blobs::Models::BlobProperties> getProperties()
       override {
     VELOX_FAIL("Unexpected getProperties call.");

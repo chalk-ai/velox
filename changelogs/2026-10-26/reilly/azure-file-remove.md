@@ -1,0 +1,1 @@
+- Implement idempotent Azure file deletion through configured Data Lake clients for retry cleanup.

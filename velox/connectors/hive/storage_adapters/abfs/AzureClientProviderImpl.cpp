@@ -21,7 +21,6 @@
 
 namespace facebook::velox::filesystems {
 
-
 void DataLakeFileClientWrapper::create() {
   client_->Create();
 }
@@ -49,6 +48,10 @@ void DataLakeFileClientWrapper::close() {
 
 std::string DataLakeFileClientWrapper::getUrl() {
   return client_->GetUrl();
+}
+
+void BlobClientWrapper::remove() {
+  blobClient_->DeleteIfExists();
 }
 
 Azure::Response<Azure::Storage::Blobs::Models::BlobProperties>
@@ -188,8 +191,7 @@ std::unique_ptr<AzureBlobClient>
 DefaultAzureCredentialProvider::getReadFileClient(
     const std::shared_ptr<AbfsPath>& abfsPath,
     const config::ConfigBase& config) {
-  auto credential =
-      std::make_shared<Azure::Identity::DefaultAzureCredential>();
+  auto credential = std::make_shared<Azure::Identity::DefaultAzureCredential>();
   const auto url = abfsPath->getUrl(true); // true = use blob endpoint
   auto client = std::make_unique<BlobClient>(url, credential);
   return std::make_unique<BlobClientWrapper>(std::move(client));
@@ -199,8 +201,7 @@ std::unique_ptr<AzureDataLakeFileClient>
 DefaultAzureCredentialProvider::getWriteFileClient(
     const std::shared_ptr<AbfsPath>& abfsPath,
     const config::ConfigBase& config) {
-  auto credential =
-      std::make_shared<Azure::Identity::DefaultAzureCredential>();
+  auto credential = std::make_shared<Azure::Identity::DefaultAzureCredential>();
   const auto url = abfsPath->getUrl(false); // false = use datalake endpoint
   auto client = std::make_unique<DataLakeFileClient>(url, credential);
   return std::make_unique<DataLakeFileClientWrapper>(std::move(client));
