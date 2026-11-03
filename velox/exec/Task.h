@@ -1085,8 +1085,38 @@ class Task : public std::enable_shared_from_this<Task> {
         uint64_t maxWaitMs,
         memory::MemoryReclaimer::Stats& stats);
 
+    // Waits up to 'maxWaitMs' (0 means no limit) for 'task' to pause. Each
+    // QueryConfig::memoryReclaimPauseStragglerReportIntervalMs() that passes
+    // without the pause completing, logs the drivers still running and
+    // replaces 'stragglers' with them. Returns true if the task paused.
+    static bool waitForPause(
+        Task& task,
+        uint64_t maxWaitMs,
+        std::vector<MemoryReclaimPauseStraggler>& stragglers);
+
     std::weak_ptr<Task> task_;
   };
+
+  // Returns the drivers a pause request is waiting on: those on a thread and
+  // not in a suspended section. Longest-running operator call first.
+  std::vector<MemoryReclaimPauseStraggler> memoryReclaimPauseStragglers() const;
+
+  // Adds a finished memory reclamation's wait for this task to pause to
+  // 'taskStats_'.
+  void recordMemoryReclaimPauseWait(
+      uint64_t waitMs,
+      std::vector<MemoryReclaimPauseStraggler> stragglers);
+
+  // Makes 'stragglers', observed 'waitMs' into a still-running wait for this
+  // task to pause, the reported longest wait if it is longer, so periodic stats
+  // snapshots show a stuck wait before it ends.
+  void updateMaxMemoryReclaimPauseWait(
+      uint64_t waitMs,
+      std::vector<MemoryReclaimPauseStraggler> stragglers);
+
+  void updateMaxMemoryReclaimPauseWaitLocked(
+      uint64_t waitMs,
+      std::vector<MemoryReclaimPauseStraggler> stragglers);
 
   /// Returns true if state is 'running'.
   bool isRunningLocked() const;

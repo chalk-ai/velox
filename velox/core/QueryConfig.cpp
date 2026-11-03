@@ -78,6 +78,7 @@ const std::vector<config::ConfigProperty>& QueryConfig::registeredProperties() {
     VELOX_REGISTER_QUERY_CONFIG(kAggregationCompactionBytesThreshold);
     VELOX_REGISTER_QUERY_CONFIG(kAggregationCompactionUnusedMemoryRatio);
     VELOX_REGISTER_QUERY_CONFIG(kAggregationMemoryCompactionReclaimEnabled);
+    VELOX_REGISTER_QUERY_CONFIG(kMemoryReclaimPauseStragglerReportIntervalMs);
 
     // TopN row number.
     VELOX_REGISTER_QUERY_CONFIG(kAbandonPartialTopNRowNumberMinRows);
