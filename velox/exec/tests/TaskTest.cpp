@@ -2737,6 +2737,157 @@ DEBUG_ONLY_TEST_F(TaskTest, taskReclaimStats) {
   waitForAllTasksToBeDeleted();
 }
 
+// Holds the task's only driver inside Values::getOutput, where a pause request
+// cannot stop it, until released.
+class BlockedValuesDriver {
+ public:
+  void onGetOutput() {
+    if (started_.exchange(true)) {
+      return;
+    }
+    startedWait_.notifyAll();
+    releaseWait_.await([&]() { return released_.load(); });
+  }
+
+  void awaitStarted() {
+    startedWait_.await([&]() { return started_.load(); });
+  }
+
+  void release() {
+    released_ = true;
+    releaseWait_.notifyAll();
+  }
+
+ private:
+  std::atomic_bool started_{false};
+  folly::EventCount startedWait_;
+  std::atomic_bool released_{false};
+  folly::EventCount releaseWait_;
+};
+
+std::shared_ptr<Task> startMemoryReclaimPauseStragglerTask(
+    folly::Executor* executor,
+    memory::MemoryPool* pool,
+    const std::string& queryId) {
+  VectorFuzzer::Options opts;
+  opts.vectorSize = 32;
+  VectorFuzzer fuzzer(opts, pool);
+  const auto plan =
+      PlanBuilder()
+          .values({fuzzer.fuzzRow(ROW({"c0"}, {INTEGER()}))})
+          .partitionedOutput({}, 1, std::vector<std::string>{"c0"})
+          .planFragment();
+  auto queryCtx = core::QueryCtx::create(
+      executor,
+      core::QueryConfig{
+          {{core::QueryConfig::kMemoryReclaimPauseStragglerReportIntervalMs,
+            "20"}}},
+      std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>{},
+      nullptr,
+      memory::memoryManager()->addRootPool(
+          queryId, 1UL << 30, exec::MemoryReclaimer::create()),
+      nullptr);
+  auto task = Task::create(
+      "task",
+      plan,
+      0,
+      std::move(queryCtx),
+      Task::ExecutionMode::kParallel,
+      exec::Consumer{});
+  task->start(1, 1);
+  return task;
+}
+
+void expectValuesGetOutputStraggler(
+    const std::vector<MemoryReclaimPauseStraggler>& stragglers,
+    size_t minCallDurationMs) {
+  ASSERT_EQ(stragglers.size(), 1);
+  EXPECT_EQ(stragglers[0].pipelineId, 0);
+  EXPECT_EQ(stragglers[0].driverId, 0);
+  EXPECT_THAT(stragglers[0].opCall, ::testing::StartsWith("Values."));
+  EXPECT_THAT(stragglers[0].opCall, ::testing::EndsWith("::getOutput"));
+  EXPECT_GE(stragglers[0].opCallDurationMs, minCallDurationMs);
+}
+
+DEBUG_ONLY_TEST_F(TaskTest, memoryReclaimPauseStragglers) {
+  BlockedValuesDriver blockedDriver;
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Values::getOutput",
+      std::function<void(const exec::Values*)>(
+          [&](const exec::Values* /*unused*/) {
+            blockedDriver.onGetOutput();
+          }));
+  auto task = startMemoryReclaimPauseStragglerTask(
+      driverExecutor_.get(), pool_.get(), "memoryReclaimPauseStragglers");
+  blockedDriver.awaitStarted();
+
+  const uint64_t queryCapacity = task->pool()->parent()->capacity();
+  constexpr uint64_t kBlockedMs = 200;
+  std::thread reclaimThread([&]() {
+    MemoryReclaimer::Stats stats;
+    task->pool()->reclaim(1000, /*maxWaitMs=*/0, stats);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(kBlockedMs)); // NOLINT
+  blockedDriver.release();
+  reclaimThread.join();
+
+  const int64_t reclaimedQueryCapacity =
+      queryCapacity - task->pool()->parent()->capacity();
+  ASSERT_GE(reclaimedQueryCapacity, 0);
+  if (auto* arbitrator = dynamic_cast<memory::SharedArbitrator*>(
+          memory::memoryManager()->arbitrator())) {
+    memory::test::SharedArbitratorTestHelper(arbitrator)
+        .freeCapacity(reclaimedQueryCapacity);
+  }
+
+  const auto taskStats = task->taskStats();
+  EXPECT_EQ(taskStats.memoryReclaimCount, 1);
+  EXPECT_GE(taskStats.maxMemoryReclaimPauseWaitMs, kBlockedMs);
+  EXPECT_EQ(
+      taskStats.memoryReclaimPauseWaitMs,
+      taskStats.maxMemoryReclaimPauseWaitMs);
+  EXPECT_GE(taskStats.memoryReclaimMs, taskStats.memoryReclaimPauseWaitMs);
+  // The last report happens at most one 20ms interval before the release.
+  expectValuesGetOutputStraggler(
+      taskStats.maxMemoryReclaimPauseStragglers, kBlockedMs / 2);
+
+  task->requestAbort();
+  ASSERT_TRUE(waitForTaskAborted(task.get()));
+  task.reset();
+  waitForAllTasksToBeDeleted();
+}
+
+DEBUG_ONLY_TEST_F(TaskTest, memoryReclaimPauseTimeoutNamesStragglers) {
+  BlockedValuesDriver blockedDriver;
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Values::getOutput",
+      std::function<void(const exec::Values*)>(
+          [&](const exec::Values* /*unused*/) {
+            blockedDriver.onGetOutput();
+          }));
+  auto task = startMemoryReclaimPauseStragglerTask(
+      driverExecutor_.get(),
+      pool_.get(),
+      "memoryReclaimPauseTimeoutNamesStragglers");
+  blockedDriver.awaitStarted();
+
+  constexpr uint64_t kMaxWaitMs = 100;
+  MemoryReclaimer::Stats stats;
+  VELOX_ASSERT_THROW(
+      task->pool()->reclaim(1000, kMaxWaitMs, stats), "to pause after");
+  blockedDriver.release();
+
+  const auto taskStats = task->taskStats();
+  EXPECT_GE(taskStats.maxMemoryReclaimPauseWaitMs, kMaxWaitMs);
+  expectValuesGetOutputStraggler(
+      taskStats.maxMemoryReclaimPauseStragglers, kMaxWaitMs);
+
+  task->requestAbort();
+  ASSERT_TRUE(waitForTaskAborted(task.get()));
+  task.reset();
+  waitForAllTasksToBeDeleted();
+}
+
 DEBUG_ONLY_TEST_F(TaskTest, taskPauseTime) {
   auto rowType = ROW({"c0", "c1"}, {INTEGER(), DOUBLE()});
   VectorFuzzer::Options opts;

@@ -1,0 +1,2 @@
+- Add `TaskStats::memoryReclaimPauseWaitMs` and `maxMemoryReclaimPauseWaitMs`, splitting the time memory reclamation waits for a task to pause from the reclamation itself.
+- Record the drivers a memory reclamation's pause request is still waiting on, with their running operator call and its duration, in `TaskStats::maxMemoryReclaimPauseStragglers`, in a warning log, and in the error when the pause wait times out. Reported every `memory_reclaim_pause_straggler_report_interval_ms` (default 10s; 0 disables).
