@@ -274,8 +274,10 @@ class BaseHashTable {
       return true;
     }
 
-    /// The row size estimation of the projected output columns, if applicable.
+    /// The row size estimation of the projected build columns, if applicable.
     const std::optional<uint64_t> estimatedRowSize;
+    /// Average estimated bytes of projected probe columns in the current input.
+    uint64_t probeRowSize{0};
     /// The indexes of the build side projected columns that are variable sized.
     const std::vector<vector_size_t> varSizeListColumns;
     /// The per row total bytes of the build side projected columns that are
