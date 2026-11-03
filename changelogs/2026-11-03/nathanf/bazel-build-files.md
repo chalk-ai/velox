@@ -1,0 +1,1 @@
+- Add Bazel build definitions (`MODULE.bazel`, `REPO.bazel`, and `BUILD.bazel` files) for this branch's source layout. CMake builds are unaffected.
