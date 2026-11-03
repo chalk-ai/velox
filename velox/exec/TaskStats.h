@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -58,6 +59,21 @@ struct PipelineStats {
 
   PipelineStats(bool _inputPipeline, bool _outputPipeline)
       : inputPipeline{_inputPipeline}, outputPipeline{_outputPipeline} {}
+};
+
+/// A driver that a memory reclamation's pause request was still waiting on:
+/// running on a thread and not in a suspended section.
+struct MemoryReclaimPauseStraggler {
+  int32_t pipelineId{0};
+  int32_t driverId{0};
+  /// OS thread id running the driver.
+  int32_t tid{0};
+  /// The operator call running when observed, in
+  /// "<operatorType>.<planNodeId>::<method>" format. Empty if the driver was
+  /// between operator calls.
+  std::string opCall;
+  /// How long 'opCall' had been running when observed.
+  size_t opCallDurationMs{0};
 };
 
 /// Stores execution stats per task.
@@ -137,6 +153,19 @@ struct TaskStats {
   uint32_t memoryReclaimCount{0};
   /// The total memory reclamation time.
   uint64_t memoryReclaimMs{0};
+  /// The part of 'memoryReclaimMs' spent waiting for the task to pause, i.e.
+  /// for every driver to leave its thread or enter a suspended section. The
+  /// rest is the reclamation (spilling) itself.
+  uint64_t memoryReclaimPauseWaitMs{0};
+  /// The longest single wait for the task to pause during memory reclamation,
+  /// including how long a still-running wait has lasted as of its latest
+  /// straggler report.
+  uint64_t maxMemoryReclaimPauseWaitMs{0};
+  /// The drivers still running at the last check during the wait recorded in
+  /// 'maxMemoryReclaimPauseWaitMs', longest-running operator call first. Empty
+  /// unless that wait outlasted
+  /// QueryConfig::memoryReclaimPauseStragglerReportIntervalMs().
+  std::vector<MemoryReclaimPauseStraggler> maxMemoryReclaimPauseStragglers;
 };
 
 } // namespace facebook::velox::exec

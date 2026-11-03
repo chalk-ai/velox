@@ -435,6 +435,18 @@ class QueryConfig {
       false,
       "Enable memory compaction before spilling during aggregation reclaim.")
 
+  /// While memory reclamation waits for a task to pause, it logs and records
+  /// the drivers still running each time this interval passes. 0 waits without
+  /// reporting.
+  VELOX_QUERY_CONFIG(
+      kMemoryReclaimPauseStragglerReportIntervalMs,
+      memoryReclaimPauseStragglerReportIntervalMs,
+      "memory_reclaim_pause_straggler_report_interval_ms",
+      uint64_t,
+      10'000,
+      "Interval at which a memory reclaim waiting for a task to pause reports "
+      "the drivers it is still waiting on. 0 disables reporting.")
+
   VELOX_QUERY_CONFIG(
       kAbandonPartialTopNRowNumberMinRows,
       abandonPartialTopNRowNumberMinRows,

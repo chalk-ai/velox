@@ -18,6 +18,9 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <folly/String.h>
+#include <folly/executors/InlineExecutor.h>
+#include <algorithm>
 #include <string>
 
 #include "velox/common/base/Counters.h"
@@ -3941,6 +3944,95 @@ void Task::testingVisitDrivers(const std::function<void(Driver*)>& callback) {
   }
 }
 
+namespace {
+std::string formatPauseStragglers(
+    const std::vector<MemoryReclaimPauseStraggler>& stragglers) {
+  if (stragglers.empty()) {
+    return "none";
+  }
+  std::vector<std::string> entries;
+  entries.reserve(stragglers.size());
+  for (const auto& straggler : stragglers) {
+    entries.push_back(
+        fmt::format(
+            "[pipeline {} driver {} tid {}: {}]",
+            straggler.pipelineId,
+            straggler.driverId,
+            straggler.tid,
+            straggler.opCall.empty()
+                ? std::string("between operator calls")
+                : fmt::format(
+                      "{} running for {}",
+                      straggler.opCall,
+                      succinctMillis(straggler.opCallDurationMs))));
+  }
+  return folly::join(", ", entries);
+}
+} // namespace
+
+std::vector<MemoryReclaimPauseStraggler> Task::memoryReclaimPauseStragglers()
+    const {
+  std::vector<MemoryReclaimPauseStraggler> stragglers;
+  {
+    std::lock_guard<std::timed_mutex> l(mutex_);
+    for (const auto& driver : drivers_) {
+      // A suspended driver does not hold up a pause: it cannot leave its
+      // suspended section while the pause is requested (see leaveSuspended()).
+      if (driver == nullptr || !driver->state().isOnThread() ||
+          driver->state().numSuspensions > 0) {
+        continue;
+      }
+      MemoryReclaimPauseStraggler straggler{
+          .pipelineId = driver->driverCtx()->pipelineId,
+          .driverId = driver->driverCtx()->driverId,
+          .tid = driver->state().tid,
+      };
+      const auto opCallStatus = driver->opCallStatus();
+      if (!opCallStatus.empty()) {
+        straggler.opCall = OpCallStatusRaw::formatCall(
+            driver->findOperatorNoThrow(opCallStatus.opId),
+            opCallStatus.method);
+        straggler.opCallDurationMs = opCallStatus.callDuration();
+      }
+      stragglers.push_back(std::move(straggler));
+    }
+  }
+  std::sort(
+      stragglers.begin(),
+      stragglers.end(),
+      [](const auto& lhs, const auto& rhs) {
+        return lhs.opCallDurationMs > rhs.opCallDurationMs;
+      });
+  return stragglers;
+}
+
+void Task::recordMemoryReclaimPauseWait(
+    uint64_t waitMs,
+    std::vector<MemoryReclaimPauseStraggler> stragglers) {
+  std::lock_guard<std::timed_mutex> l(mutex_);
+  taskStats_.memoryReclaimPauseWaitMs += waitMs;
+  updateMaxMemoryReclaimPauseWaitLocked(waitMs, std::move(stragglers));
+}
+
+void Task::updateMaxMemoryReclaimPauseWait(
+    uint64_t waitMs,
+    std::vector<MemoryReclaimPauseStraggler> stragglers) {
+  std::lock_guard<std::timed_mutex> l(mutex_);
+  updateMaxMemoryReclaimPauseWaitLocked(waitMs, std::move(stragglers));
+}
+
+void Task::updateMaxMemoryReclaimPauseWaitLocked(
+    uint64_t waitMs,
+    std::vector<MemoryReclaimPauseStraggler> stragglers) {
+  // A wait updates this at each report and once more when it ends, at least
+  // as long as its last report, so the recorded stragglers are the ones last
+  // observed during the longest wait.
+  if (waitMs > taskStats_.maxMemoryReclaimPauseWaitMs) {
+    taskStats_.maxMemoryReclaimPauseWaitMs = waitMs;
+    taskStats_.maxMemoryReclaimPauseStragglers = std::move(stragglers);
+  }
+}
+
 std::unique_ptr<memory::MemoryReclaimer> Task::MemoryReclaimer::create(
     const std::shared_ptr<Task>& task,
     int64_t priority) {
@@ -3986,23 +4078,26 @@ uint64_t Task::MemoryReclaimer::reclaimTask(
 
   uint64_t reclaimWaitTimeUs{0};
   bool paused{true};
+  std::vector<MemoryReclaimPauseStraggler> stragglers;
   {
     MicrosecondWallTimer timer{&reclaimWaitTimeUs};
-    if (maxWaitMs == 0) {
-      task->requestPause().wait();
-    } else {
-      paused = task->requestPause().wait(std::chrono::milliseconds(maxWaitMs));
-    }
+    paused = waitForPause(*task, maxWaitMs, stragglers);
   }
   VELOX_CHECK(paused || maxWaitMs != 0);
   if (!paused) {
+    const auto stragglersText = formatPauseStragglers(stragglers);
+    task->recordMemoryReclaimPauseWait(
+        reclaimWaitTimeUs / 1'000, std::move(stragglers));
     RECORD_METRIC_VALUE(kMetricTaskMemoryReclaimWaitTimeoutCount, 1);
     VELOX_FAIL(
-        "Memory reclaim failed to wait for task {} to pause after {} with max timeout {}",
+        "Memory reclaim failed to wait for task {} to pause after {} with max timeout {}. Still running: {}",
         task->taskId(),
         succinctMicros(reclaimWaitTimeUs),
-        succinctMillis(maxWaitMs));
+        succinctMillis(maxWaitMs),
+        stragglersText);
   }
+  task->recordMemoryReclaimPauseWait(
+      reclaimWaitTimeUs / 1'000, std::move(stragglers));
 
   stats.reclaimWaitTimeUs += reclaimWaitTimeUs;
   RECORD_METRIC_VALUE(kMetricTaskMemoryReclaimCount);
@@ -4032,6 +4127,55 @@ uint64_t Task::MemoryReclaimer::reclaimTask(
     std::rethrow_exception(std::current_exception());
   }
   return reclaimedBytes;
+}
+
+bool Task::MemoryReclaimer::waitForPause(
+    Task& task,
+    uint64_t maxWaitMs,
+    std::vector<MemoryReclaimPauseStraggler>& stragglers) {
+  ContinueFuture pauseSemiFuture = task.requestPause();
+  const uint64_t reportIntervalMs =
+      task.queryCtx()
+          ->queryConfig()
+          .memoryReclaimPauseStragglerReportIntervalMs();
+  if (reportIntervalMs == 0) {
+    if (maxWaitMs == 0) {
+      std::move(pauseSemiFuture).wait();
+      return true;
+    }
+    return std::move(pauseSemiFuture)
+        .wait(std::chrono::milliseconds(maxWaitMs));
+  }
+
+  // Unlike SemiFuture, Future can be waited on repeatedly with a timeout.
+  folly::Future<folly::Unit> pauseFuture =
+      std::move(pauseSemiFuture).via(&folly::InlineExecutor::instance());
+  const auto startTime = std::chrono::steady_clock::now();
+  for (;;) {
+    uint64_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - startTime)
+                             .count();
+    uint64_t sliceMs = reportIntervalMs;
+    if (maxWaitMs != 0) {
+      sliceMs = std::min(sliceMs, maxWaitMs - std::min(elapsedMs, maxWaitMs));
+    }
+    pauseFuture.wait(std::chrono::milliseconds(sliceMs));
+    if (pauseFuture.isReady()) {
+      return true;
+    }
+    elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startTime)
+                    .count();
+    stragglers = task.memoryReclaimPauseStragglers();
+    task.updateMaxMemoryReclaimPauseWait(elapsedMs, stragglers);
+    LOG(WARNING) << "Memory reclaim has waited " << succinctMillis(elapsedMs)
+                 << " for task " << task.taskId()
+                 << " to pause. Still running: "
+                 << formatPauseStragglers(stragglers);
+    if (maxWaitMs != 0 && elapsedMs >= maxWaitMs) {
+      return false;
+    }
+  }
 }
 
 void Task::MemoryReclaimer::abort(
