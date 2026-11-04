@@ -1,0 +1,1 @@
+- Document that the selective struct column reader loads lazy children eagerly, unlike upstream Velox.
