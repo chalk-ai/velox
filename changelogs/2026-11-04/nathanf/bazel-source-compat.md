@@ -1,0 +1,6 @@
+- Fix header self-containment (missing includes and include paths) so sources compile as standalone headers under Bazel. CMake builds are unchanged.
+- Fix decimal-to-string conversion to build with libc++ by writing digits directly instead of calling `std::to_chars(uint128_t)`; output is unchanged and covered by new `DecimalTest` cases.
+- Fix the Parquet bit-unpacking shim for newer Arrow releases to unpack whole groups of 32 values, matching older Arrow's `unpack32` contract so bit offsets stay byte-aligned.
+- Allow `int128_t` in fuzzer random-value helpers when the standard library does not classify `__int128` as arithmetic.
+- Build the DuckDB-based SQL planner as its own Bazel target, mirroring the CMake `VELOX_ENABLE_DUCKDB` gate, and keep HDFS test fixtures out of the HDFS library target.
+- Use the external utf8proc module for Bazel builds through a Bazel-only wrapper; CMake builds keep the vendored copy.

@@ -16,7 +16,9 @@
 
 #pragma once
 
+#include "velox/expression/ComplexViewTypes.h"
 #include "velox/type/CppToType.h"
+#include "velox/type/SimpleFunctionApi.h"
 #include "velox/type/Type.h"
 
 namespace facebook::velox::exec {

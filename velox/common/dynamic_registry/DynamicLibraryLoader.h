@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <string>
+
 namespace facebook::velox {
 
 /// Dynamically opens and registers functions defined in a shared library.

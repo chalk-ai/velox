@@ -20,6 +20,7 @@
 #include <functional>
 #include <limits>
 #include <type_traits>
+
 #include "folly/CPortability.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/Macros.h"

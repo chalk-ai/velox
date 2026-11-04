@@ -26,6 +26,9 @@
 
 #ifndef MISC_H
 #define MISC_H
+
+#include "velox/tpcds/gen/dsdgen/include/dist.h"
+
 int prep_direct(int dialect);
 int close_direct(int dialect);
 int pick_tbl(char* dname);

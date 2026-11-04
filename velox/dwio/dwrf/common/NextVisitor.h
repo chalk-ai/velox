@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "velox/common/base/BitUtil.h"
+
 namespace facebook::velox::dwrf {
 
 template <typename T = int64_t>

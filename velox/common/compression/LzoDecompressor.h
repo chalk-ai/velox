@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace facebook {
 namespace velox {
 namespace common {

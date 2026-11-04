@@ -207,11 +207,15 @@ int16_t generateRandomTimezoneOffset(
 /// @throws VeloxException if offsetMinutes is out of range [-840, 840]
 std::string timezoneOffsetToString(int16_t offsetMinutes);
 
+// int128_t is listed explicitly because libc++ does not classify __int128 as
+// arithmetic or integral in strict standard modes.
 template <
     typename T,
-    typename std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+    typename std::enable_if_t<
+        std::is_arithmetic_v<T> || std::is_same_v<T, int128_t>,
+        int> = 0>
 inline T rand(FuzzerGenerator& rng, T min, T max) {
-  if constexpr (std::is_integral_v<T>) {
+  if constexpr (std::is_integral_v<T> || std::is_same_v<T, int128_t>) {
     return boost::random::uniform_int_distribution<T>(min, max)(rng);
   } else {
     return boost::random::uniform_real_distribution<T>(min, max)(rng);

@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace facebook::velox::tpch::dbgen {
 
 const int TPCH_QUERIES_COUNT = 22;

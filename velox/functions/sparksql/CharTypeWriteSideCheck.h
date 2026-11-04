@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "velox/functions/Macros.h"
 #include "velox/functions/lib/string/StringImpl.h"
 #include "velox/functions/sparksql/CharVarcharUtils.h"
 

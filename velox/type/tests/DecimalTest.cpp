@@ -120,6 +120,19 @@ void testcastToString(
   EXPECT_EQ(std::memcmp(expected.data(), out.data(), expected.size()), 0);
 }
 
+template <typename T>
+void testScientificCastToString(
+    T unscaledValue,
+    int scale,
+    int maxStringSize,
+    const std::string& expected) {
+  std::vector<char> out(maxStringSize);
+  auto actualSize = DecimalUtil::castToString<T>(
+      unscaledValue, scale, maxStringSize, out.data(), true);
+  EXPECT_EQ(expected.size(), actualSize);
+  EXPECT_EQ(std::memcmp(expected.data(), out.data(), expected.size()), 0);
+}
+
 void testMaxStringViewSize(
     int precision,
     int scale,
@@ -629,6 +642,13 @@ TEST(DecimalTest, castToString) {
       0,
       DecimalUtil::maxStringViewSize(38, 0),
       "170141183460469231731687303715884105727");
+  testcastToString<int128_t>(
+      DecimalUtil::kLongDecimalMax, 38, 38, 41, "0." + std::string(38, '9'));
+  testcastToString<int128_t>(
+      DecimalUtil::kLongDecimalMin, 38, 38, 42, "-0." + std::string(38, '9'));
+  testScientificCastToString<int128_t>(0, 38, 8, "0E-38");
+  testScientificCastToString<int128_t>(1, 38, 8, "1E-38");
+  testScientificCastToString<int128_t>(-1, 38, 9, "-1E-38");
 }
 
 TEST(DecimalTest, castFromString) {

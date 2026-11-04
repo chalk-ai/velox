@@ -27,6 +27,8 @@
 #ifndef PARALLEL_H
 #define PARALLEL_H
 
+#include "velox/tpcds/gen/dsdgen/include/dist.h"
+
 int split_work(
     int nTable,
     ds_key_t* pkFirstRow,

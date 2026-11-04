@@ -288,7 +288,11 @@ class RandomInputGenerator<T, std::enable_if_t<std::is_same_v<T, RowType>>>
   std::vector<std::unique_ptr<AbstractInputGenerator>> fieldGenerators_;
 };
 
-template <typename T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+template <
+    typename T,
+    std::enable_if_t<
+        std::is_arithmetic_v<T> || std::is_same_v<T, int128_t>,
+        int> = 0>
 class RangeConstrainedGenerator : public AbstractInputGenerator {
  public:
   RangeConstrainedGenerator(
@@ -381,7 +385,12 @@ class JsonInputGenerator : public AbstractInputGenerator {
     using T = typename TypeTraits<KIND>::DeepCopiedType;
     VELOX_CHECK(v.isSet());
     const T value = v.value<T>();
-    return folly::dynamic(value);
+    if constexpr (std::is_constructible_v<folly::dynamic, T>) {
+      return folly::dynamic(value);
+    } else {
+      // folly::dynamic has no __int128 constructor under libc++.
+      return std::to_string(value);
+    }
   }
 
   // Presto and Velox JSON parser have different behavior for floating point

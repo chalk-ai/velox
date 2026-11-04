@@ -43,6 +43,7 @@
 #endif
 
 #include "arrow/result.h"
+#include "arrow/util/logging.h"
 #include "arrow/status.h"
 #include "arrow/util/io_util.h"
 #include "arrow/util/logging.h"
@@ -457,7 +458,7 @@ tSize LibHdfsShim::Pread(
     void* buffer,
     tSize length) {
   GET_SYMBOL(this, hdfsPread);
-  DCHECK(this->hdfsPread);
+  ARROW_DCHECK(this->hdfsPread);
   return this->hdfsPread(fs, file, position, buffer, length);
 }
 
