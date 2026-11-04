@@ -75,7 +75,8 @@ size_t columnMetadataSize(const thrift::ColumnChunk& column) {
   if (column.crypto_metadata() &&
       column.crypto_metadata()->getType() ==
           thrift::ColumnCryptoMetaData::Type::ENCRYPTION_WITH_COLUMN_KEY) {
-    const auto& key = column.crypto_metadata()->get_ENCRYPTION_WITH_COLUMN_KEY();
+    const auto& key =
+        column.crypto_metadata()->get_ENCRYPTION_WITH_COLUMN_KEY();
     size += key.path_in_schema()->size() * sizeof(std::string);
     for (const auto& path : *key.path_in_schema()) {
       size += heapStringSize(path);
@@ -422,13 +423,6 @@ bool ColumnChunkMetaDataPtr::hasDictionaryPageOffset() const {
           .has_value();
 }
 
-bool ColumnChunkMetaDataPtr::hasIndexPage() const {
-  return hasMetadata() &&
-      apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
-          ->index_page_offset()
-          .has_value();
-}
-
 bool ColumnChunkMetaDataPtr::hasBloomFilterOffset() const {
   return hasMetadata() &&
       apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
@@ -440,6 +434,13 @@ bool ColumnChunkMetaDataPtr::hasBloomFilterLength() const {
   return hasMetadata() &&
       apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
           ->bloom_filter_length()
+          .has_value();
+}
+
+bool ColumnChunkMetaDataPtr::hasIndexPage() const {
+  return hasMetadata() &&
+      apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+          ->index_page_offset()
           .has_value();
 }
 
@@ -501,14 +502,6 @@ int64_t ColumnChunkMetaDataPtr::dictionaryPageOffset() const {
            ->dictionary_page_offset());
 }
 
-bool ColumnChunkMetaDataPtr::hasColumnIndex() const {
-  return thriftColumnChunkPtr(ptr_)->column_index_offset().has_value();
-}
-
-bool ColumnChunkMetaDataPtr::hasOffsetIndex() const {
-  return thriftColumnChunkPtr(ptr_)->offset_index_offset().has_value();
-}
-
 int64_t ColumnChunkMetaDataPtr::bloomFilterOffset() const {
   VELOX_CHECK(hasBloomFilterOffset());
   return apache::thrift::can_throw(
@@ -521,6 +514,14 @@ int32_t ColumnChunkMetaDataPtr::bloomFilterLength() const {
   return apache::thrift::can_throw(
       *apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
            ->bloom_filter_length());
+}
+
+bool ColumnChunkMetaDataPtr::hasColumnIndex() const {
+  return thriftColumnChunkPtr(ptr_)->column_index_offset().has_value();
+}
+
+bool ColumnChunkMetaDataPtr::hasOffsetIndex() const {
+  return thriftColumnChunkPtr(ptr_)->offset_index_offset().has_value();
 }
 
 common::CompressionKind ColumnChunkMetaDataPtr::compression() const {
