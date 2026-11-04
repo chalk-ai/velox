@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include "velox/external/utf8proc/utf8procImpl.h"
+#include "velox/functions/Macros.h"
 #include "velox/functions/lib/Utf8Utils.h"
 
 namespace facebook::velox::functions::sparksql {

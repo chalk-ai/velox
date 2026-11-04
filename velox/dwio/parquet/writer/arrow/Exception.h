@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>
 
+#include "arrow/config.h"
 #include "arrow/type_fwd.h"
 #if __has_include("arrow/util/string_builder.h")
 #include "arrow/util/string_builder.h"

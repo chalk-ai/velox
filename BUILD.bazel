@@ -345,6 +345,7 @@ cc_library(
     deps = [
         ":base",
         ":engine",
+        ":parse_parser",
         ":test_utils_base",
         ":test_utils_vector",
         ":vector",
@@ -583,6 +584,7 @@ cc_library(
         ":base",
         ":engine",
         ":functions",
+        ":parse_parser",
         ":test_utils_base",
         ":test_utils_engine",
         ":test_utils_vector",
@@ -1324,7 +1326,6 @@ cc_library(
             ":date",
             ":engine",
             ":functions",
-            "@folly//folly:operation_cancelled",
             ":hdfs",
             ":test_utils_base",
             ":test_utils_engine",
@@ -1365,6 +1366,7 @@ cc_library(
             "@folly//folly:file_util",
             "@folly//folly:hash",
             "@folly//folly:math",
+            "@folly//folly:operation_cancelled",
             "@folly//folly:optional",
             "@folly//folly:portability",
             "@folly//folly:random",
@@ -2235,6 +2237,26 @@ cc_library(
     ]
 ]
 
+# VELOX_ENABLE_DUCKDB: DuckDB-based SQL planner used by tests and tooling.
+cc_library(
+    name = "parse_parser",
+    srcs = [
+        "velox/parse/ExpressionsParser.cpp",
+        "velox/parse/QueryPlanner.cpp",
+    ],
+    hdrs = [
+        "velox/parse/DuckLogicalOperator.h",
+        "velox/parse/ExpressionsParser.h",
+        "velox/parse/QueryPlanner.h",
+    ],
+    strip_include_prefix = ".",
+    deps = [
+        ":engine",
+        ":velox",
+        "@duckdb",
+    ],
+)
+
 # VELOX_ENABLE_HDFS
 cc_library(
     name = "velox_hdfs",
@@ -2244,7 +2266,11 @@ cc_library(
         "velox/connectors/hive/storage_adapters/hdfs/HdfsWriteFile.cpp",
         "velox/connectors/hive/storage_adapters/hdfs/RegisterHdfsFileSystem.cpp",
     ],
-    hdrs = glob(["velox/connectors/hive/storage_adapters/hdfs/**/*.h"]),
+    hdrs = glob(
+        ["velox/connectors/hive/storage_adapters/hdfs/**/*.h"],
+        # Test fixtures belong to the test utility library.
+        exclude = ["velox/connectors/hive/storage_adapters/hdfs/tests/**"],
+    ),
     cxxopts = [
         "-std=c++20",
         "-Wno-deprecated-declarations",
@@ -2425,6 +2451,7 @@ cc_library(
         ":base",
         ":engine",
         ":functions",
+        ":parse_parser",
         ":test_utils_engine",
         ":vector",
         ":velox",
@@ -2981,14 +3008,16 @@ cc_library(
     ],
 )
 
+# Bazel builds use the external utf8proc module through a thin wrapper exposed
+# as velox/external/utf8proc/utf8procImpl.h. CMake builds compile the vendored
+# copy in velox/external/utf8proc instead.
 cc_library(
     name = "utf8proc",
-    hdrs = [
-        "velox/external/utf8proc/utf8proc.h",
-        "velox/external/utf8proc/utf8procImpl.h",
-        "velox/external/utf8proc/utf8proc_data.h",
-    ],
-    strip_include_prefix = ".",
+    srcs = ["velox/external/utf8proc/bazel/utf8procImpl.cpp"],
+    hdrs = ["velox/external/utf8proc/bazel/utf8procImpl.h"],
+    include_prefix = "velox/external/utf8proc",
+    strip_include_prefix = "velox/external/utf8proc/bazel",
+    deps = ["@utf8proc"],
 )
 
 fbthrift_library(
@@ -3741,7 +3770,6 @@ cc_library(
         "velox/dwio/common/CachedBufferedInput.cpp",
         "velox/dwio/common/ColumnLoader.cpp",
         "velox/dwio/common/ColumnLoader.h",
-        "velox/dwio/common/Statistics.cpp",
         "velox/dwio/common/ColumnSelector.cpp",
         "velox/dwio/common/DataBufferHolder.cpp",
         "velox/dwio/common/DecoderUtil.cpp",
@@ -3774,6 +3802,7 @@ cc_library(
         "velox/dwio/common/SelectiveRepeatedColumnReader.cpp",
         "velox/dwio/common/SelectiveStructColumnReader.cpp",
         "velox/dwio/common/SortingWriter.cpp",
+        "velox/dwio/common/Statistics.cpp",
         "velox/dwio/common/StatisticsBuilder.cpp",
         "velox/dwio/common/Throttler.cpp",
         "velox/dwio/common/TypeUtils.cpp",
@@ -4002,8 +4031,6 @@ cc_library(
         "velox/parse/ExprRewriter.cpp",
         "velox/parse/ExprRewriter.h",
         "velox/parse/Expressions.cpp",
-        "velox/parse/ExpressionsParser.cpp",
-        "velox/parse/QueryPlanner.cpp",
         "velox/parse/SqlExpressionsParser.cpp",
         "velox/parse/TypeResolver.cpp",
     ] + PARQUET_SRCS + ABFS_SRCS + S3_SRCS + GCS_SRCS,
@@ -4325,12 +4352,12 @@ cc_library(
         "velox/exec/ExchangeQueue.h",
         "velox/exec/ExchangeSink.h",
         "velox/exec/ExchangeSource.h",
-        "velox/exec/FilterProject.h",
-        "velox/exec/FixedPointLoop.h",
-        "velox/exec/FixedPointOperators.h",
         "velox/exec/FileExchangeFormat.h",
         "velox/exec/FileExchangeSink.h",
         "velox/exec/FileExchangeSource.h",
+        "velox/exec/FilterProject.h",
+        "velox/exec/FixedPointLoop.h",
+        "velox/exec/FixedPointOperators.h",
         "velox/exec/GroupId.h",
         "velox/exec/GroupingSet.h",
         "velox/exec/HashAggregation.h",
@@ -4420,10 +4447,8 @@ cc_library(
         "velox/exec/window/WindowBuild.h",
         "velox/functions/lib/HiveHash.h",
         "velox/parse/Expressions.h",
-        "velox/parse/ExpressionsParser.h",
         "velox/parse/IExpr.h",
         "velox/parse/PlanNodeIdGenerator.h",
-        "velox/parse/QueryPlanner.h",
         "velox/parse/SqlExpressionsParser.h",
         "velox/parse/TypeResolver.h",
     ],
@@ -4700,8 +4725,8 @@ cc_library(
         "velox/common/base/StatsReporter.h",
         "velox/common/base/Status.h",
         "velox/common/base/SuccinctPrinter.h",
-        "velox/common/base/TreeOfLosers.h",
         "velox/common/base/TrackedExecutor.h",
+        "velox/common/base/TreeOfLosers.h",
         "velox/common/base/VeloxException.h",
         "velox/common/base/XxHashInline.h",
         "velox/common/caching/AsyncDataCache.h",
@@ -4815,9 +4840,9 @@ cc_library(
         "velox/type/Tokenizer.h",
         "velox/type/Tree.h",
         "velox/type/Type.h",
-        "velox/type/TypeKind.h",
         "velox/type/TypeCoercer.h",
         "velox/type/TypeEncodingUtil.h",
+        "velox/type/TypeKind.h",
         "velox/type/TypeSerde.h",
         "velox/type/TypeUtil.h",
         "velox/type/Variant.h",

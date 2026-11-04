@@ -29,6 +29,7 @@
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/process/ProcessBase.h"
 #include "velox/dwio/parquet/common/LevelComparison.h"
+#include "velox/dwio/parquet/common/LevelConversion.h"
 
 #ifdef __BMI2__
 #include <immintrin.h>

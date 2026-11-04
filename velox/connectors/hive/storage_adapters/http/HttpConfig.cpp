@@ -1,6 +1,6 @@
 #include "velox/connectors/hive/storage_adapters/http/HttpConfig.h"
 
-#include "common/config/Config.h"
+#include "velox/common/config/Config.h"
 
 namespace {
 constexpr std::string_view kCurlRequestTimeoutMsConfigKey =

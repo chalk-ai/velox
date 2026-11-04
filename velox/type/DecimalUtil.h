@@ -363,6 +363,18 @@ class DecimalUtil {
       char* const startPosition,
       bool isScientific = false) {
     char* writePosition = startPosition;
+    // std::to_chars support for uint128_t differs by standard library.
+    // Decimal magnitudes are non-negative here, so write digits directly.
+    const auto writeUnsigned = [](char* position, uint128_t value) {
+      const auto digits = countDigits(value);
+      auto* end = position + digits;
+      for (auto* cursor = end; cursor != position;) {
+        *--cursor = static_cast<char>('0' + value % 10);
+        value /= 10;
+      }
+      return end;
+    };
+
     if (unscaledValue == 0) {
       *writePosition++ = '0';
       if (isScientific && scale > kMinScientificNotationScale) {
@@ -387,8 +399,9 @@ class DecimalUtil {
         *writePosition++ = '-';
       }
       // Absolute value in unsigned 128-bit space. Negating the signed minimum
-      // (e.g. INT128_MIN) is overflow UB, and its magnitude is not representable
-      // in the signed type, so compute it as unsigned to handle that boundary.
+      // (e.g. INT128_MIN) is overflow UB, and its magnitude is not
+      // representable in the signed type, so compute it as unsigned to handle
+      // that boundary.
       const uint128_t magnitude = unscaledValue < 0
           ? uint128_t(0) - static_cast<uint128_t>(unscaledValue)
           : static_cast<uint128_t>(unscaledValue);
@@ -401,17 +414,11 @@ class DecimalUtil {
           // This is consistent with Spark's behavior.
           const auto digits = countDigits(magnitude);
           auto coefficientBuf = std::vector<char>(digits);
-          const auto coefficient = std::to_chars(
-              coefficientBuf.data(),
-              coefficientBuf.data() + digits,
-              magnitude);
-          VELOX_DCHECK_EQ(
-              coefficient.ec,
-              std::errc(),
-              "Failed to cast coefficient to varchar.");
-          VELOX_DCHECK_EQ(coefficient.ptr, coefficientBuf.data() + digits);
+          const auto* coefficientEnd =
+              writeUnsigned(coefficientBuf.data(), magnitude);
+          VELOX_DCHECK_EQ(coefficientEnd, coefficientBuf.data() + digits);
           *writePosition++ = coefficientBuf[0];
-          if (coefficient.ptr - coefficientBuf.data() > 1) {
+          if (coefficientEnd - coefficientBuf.data() > 1) {
             *writePosition++ = '.';
             size_t toCopy = digits - 1;
             std::memcpy(writePosition, coefficientBuf.data() + 1, toCopy);
@@ -430,34 +437,20 @@ class DecimalUtil {
           return writePosition - startPosition;
         }
       }
-      auto [position, errorCode] = std::to_chars(
+      writePosition = writeUnsigned(
           writePosition,
-          writePosition + maxSize,
           magnitude / static_cast<uint128_t>(DecimalUtil::kPowersOfTen[scale]));
-      VELOX_DCHECK_EQ(
-          errorCode,
-          std::errc(),
-          "Failed to cast decimal to varchar: {}",
-          std::make_error_code(errorCode).message());
-      writePosition = position;
 
       if (scale > 0) {
         *writePosition++ = '.';
-        uint128_t fraction =
-            magnitude % static_cast<uint128_t>(DecimalUtil::kPowersOfTen[scale]);
+        uint128_t fraction = magnitude %
+            static_cast<uint128_t>(DecimalUtil::kPowersOfTen[scale]);
         // Append leading zeros.
         int numLeadingZeros = std::max(scale - countDigits(fraction), 0);
         std::memset(writePosition, '0', numLeadingZeros);
         writePosition += numLeadingZeros;
         // Append remaining fraction digits.
-        auto result =
-            std::to_chars(writePosition, writePosition + maxSize, fraction);
-        VELOX_DCHECK_EQ(
-            result.ec,
-            std::errc(),
-            "Failed to cast decimal to varchar: {}",
-            std::make_error_code(result.ec).message());
-        writePosition = result.ptr;
+        writePosition = writeUnsigned(writePosition, fraction);
       }
     }
     return writePosition - startPosition;

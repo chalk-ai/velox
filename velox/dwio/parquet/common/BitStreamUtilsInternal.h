@@ -28,6 +28,8 @@
 #include "velox/common/base/Exceptions.h"
 
 #include "arrow/util/bit_util.h"
+#include "arrow/util/endian.h"
+#include "arrow/util/ubsan.h"
 #if __has_include("arrow/util/bpacking.h")
 #include "arrow/util/bpacking.h"
 #else
@@ -35,11 +37,12 @@
 
 namespace arrow::internal {
 
-inline int unpack32(
-    const uint32_t* in,
-    uint32_t* out,
-    int batchSize,
-    int numBits) {
+inline int
+unpack32(const uint32_t* in, uint32_t* out, int batchSize, int numBits) {
+  // Match the older unpack32 contract: unpack whole groups of 32 values and
+  // return that count. Callers advance byteOffset by count * numBits / 8,
+  // which is exact only when the count keeps the bit position byte-aligned.
+  batchSize = batchSize / 32 * 32;
   UnpackOptions options;
   options.batch_size = batchSize;
   options.bit_width = numBits;
@@ -47,11 +50,10 @@ inline int unpack32(
   return batchSize;
 }
 
-inline int unpack64(
-    const uint8_t* in,
-    uint64_t* out,
-    int batchSize,
-    int numBits) {
+inline int
+unpack64(const uint8_t* in, uint64_t* out, int batchSize, int numBits) {
+  // Same group-of-32 contract as unpack32 above.
+  batchSize = batchSize / 32 * 32;
   UnpackOptions options;
   options.batch_size = batchSize;
   options.bit_width = numBits;
