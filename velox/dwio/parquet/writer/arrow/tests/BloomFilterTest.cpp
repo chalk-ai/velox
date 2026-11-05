@@ -35,9 +35,9 @@
 #include "velox/dwio/parquet/writer/arrow/Exception.h"
 #include "velox/dwio/parquet/writer/arrow/Platform.h"
 #include "velox/dwio/parquet/writer/arrow/Types.h"
-#include "velox/dwio/parquet/writer/arrow/tests/BloomFilter.h"
+#include "velox/dwio/parquet/writer/arrow/BloomFilter.h"
 #include "velox/dwio/parquet/writer/arrow/tests/TestUtil.h"
-#include "velox/dwio/parquet/writer/arrow/tests/XxHasher.h"
+#include "velox/dwio/parquet/writer/arrow/XxHasher.h"
 
 namespace facebook::velox::parquet::arrow {
 namespace test {

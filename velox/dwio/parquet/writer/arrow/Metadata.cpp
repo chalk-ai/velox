@@ -2321,6 +2321,32 @@ class FileMetaDataBuilder::FileMetaDataBuilderImpl {
     }
   }
 
+  void setBloomFilterLocation(const BloomFilterLocation& location) {
+    for (size_t rowGroupOrdinal = 0; rowGroupOrdinal < rowGroups_.size();
+         ++rowGroupOrdinal) {
+      auto iter = location.bloomFilterLocation.find(rowGroupOrdinal);
+      if (iter == location.bloomFilterLocation.cend()) {
+        continue;
+      }
+      auto& rowGroupMetadata = this->rowGroups_.at(rowGroupOrdinal);
+      const auto& rowGroupBloomLocation = iter->second;
+      for (size_t i = 0; i < rowGroupBloomLocation.size(); ++i) {
+        if (i >= rowGroupMetadata.columns()->size()) {
+          throw ParquetException("Cannot find metadata for column ordinal ", i);
+        }
+        const auto& bloomLocation = rowGroupBloomLocation.at(i);
+        if (bloomLocation.has_value()) {
+          auto& columnChunk = rowGroupMetadata.columns()->at(i);
+          columnChunk.meta_data().ensure();
+          columnChunk.meta_data()->bloom_filter_offset() =
+              bloomLocation->offset;
+          columnChunk.meta_data()->bloom_filter_length() =
+              bloomLocation->length;
+        }
+      }
+    }
+  }
+
   std::unique_ptr<FileMetaData> finish(
       const std::shared_ptr<const KeyValueMetadata>& key_value_metadata) {
     accumulateNaNCountsFromCurrentRowGroup();
@@ -2495,6 +2521,11 @@ RowGroupMetaDataBuilder* FileMetaDataBuilder::appendRowGroup() {
 void FileMetaDataBuilder::setPageIndexLocation(
     const PageIndexLocation& location) {
   impl_->setPageIndexLocation(location);
+}
+
+void FileMetaDataBuilder::setBloomFilterLocation(
+    const BloomFilterLocation& location) {
+  impl_->setBloomFilterLocation(location);
 }
 
 std::unique_ptr<FileMetaData> FileMetaDataBuilder::finish(

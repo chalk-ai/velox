@@ -26,8 +26,8 @@
 #include "velox/common/base/Exceptions.h"
 #include "velox/dwio/parquet/writer/arrow/Exception.h"
 #include "velox/dwio/parquet/writer/arrow/ThriftInternal.h"
-#include "velox/dwio/parquet/writer/arrow/tests/BloomFilter.h"
-#include "velox/dwio/parquet/writer/arrow/tests/XxHasher.h"
+#include "velox/dwio/parquet/writer/arrow/BloomFilter.h"
+#include "velox/dwio/parquet/writer/arrow/XxHasher.h"
 
 namespace facebook::velox::parquet::arrow {
 
