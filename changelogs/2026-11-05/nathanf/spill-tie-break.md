@@ -1,0 +1,2 @@
+- Fix SkewedPartitionRebalancer to treat a rebalance before any rows are recorded as a no-op instead of failing a check.
+- Fix SharedArbitrator to break ties between spill candidates with equal reclaimable capacity by spilling the youngest participant first, matching abort candidate selection.
