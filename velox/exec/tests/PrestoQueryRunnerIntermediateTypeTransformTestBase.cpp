@@ -35,7 +35,14 @@ void PrestoQueryRunnerIntermediateTypeTransformTestBase::test(
   core::PlanNodePtr plan =
       PlanBuilder().values({input}).projectExpressions({expr}).planNode();
 
-  AssertQueryBuilder(plan).assertResults(makeRowVector({colName}, {vector}));
+  // Use the fixture's QueryCtx, whose expression pool is the fixture-lived
+  // 'pool_'. Expression compilation folds constants into the query's expression
+  // pool, so routing that to the fixture pool keeps them alive until the
+  // fixture tears down and avoids tripping the leak check when the task's own
+  // expression pool would otherwise be destroyed before those constants.
+  AssertQueryBuilder(plan)
+      .queryCtx(queryCtx_)
+      .assertResults(makeRowVector({colName}, {vector}));
 }
 
 void PrestoQueryRunnerIntermediateTypeTransformTestBase::testDictionary(

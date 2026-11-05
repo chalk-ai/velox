@@ -2217,6 +2217,17 @@ std::string makeUuid() {
 }
 } // namespace
 
+void Expr::clearStats(uint64_t epoch) {
+  if (clearStatsEpoch_ == epoch) {
+    return;
+  }
+  clearStatsEpoch_ = epoch;
+  stats_ = ExprStats{};
+  for (auto& input : inputs_) {
+    input->clearStats(epoch);
+  }
+}
+
 // static
 uint64_t Expr::nextClearEpoch() {
   static std::atomic<uint64_t> epoch{0};
@@ -2412,6 +2423,13 @@ void ExprSet::clearCache() {
   const auto epoch = Expr::nextClearEpoch();
   for (auto& expr : exprs_) {
     expr->clearCache(epoch);
+  }
+}
+
+void ExprSet::clearStats() {
+  const auto epoch = Expr::nextClearEpoch();
+  for (auto& expr : exprs_) {
+    expr->clearStats(epoch);
   }
 }
 
