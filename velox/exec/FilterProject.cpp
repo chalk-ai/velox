@@ -286,15 +286,50 @@ vector_size_t FilterProject::filter(
   return processFilterResults(results[0], allRows, filterEvalCtx_, pool());
 }
 
+bool FilterProject::trackExpressionStats() const {
+  return operatorCtx()
+      ->driverCtx()
+      ->queryConfig()
+      .operatorTrackExpressionStats();
+}
+
 OperatorStats FilterProject::stats(bool clear) {
   auto stats = Operator::stats(clear);
-  if (operatorCtx()
-          ->driverCtx()
-          ->queryConfig()
-          .operatorTrackExpressionStats() &&
-      exprs_ != nullptr) {
+  // Once 'exprs_' has been returned to the pool, the statistics recorded by
+  // recordExpressionStats() at close time are the ones in 'stats'.
+  if (exprs_ != nullptr && trackExpressionStats()) {
     stats.expressionStats = exprs_->stats(true /*excludeSpecialForm*/);
   }
   return stats;
+}
+
+void FilterProject::recordExpressionStats() {
+  if (!trackExpressionStats()) {
+    return;
+  }
+  Operator::stats().withWLock([&](auto& stats) {
+    stats.expressionStats = exprs_->stats(true /*excludeSpecialForm*/);
+  });
+}
+
+void FilterProject::close() {
+  Operator::close();
+  if (exprs_ == nullptr) {
+    VELOX_CHECK(!initialized_);
+    return;
+  }
+
+  exprs_->finishTracers();
+  exprs_->clear();
+  exprs_->clearCache();
+  if (auto pool = exprSetPool_.lock()) {
+    // The driver collects the operator stats after close(). Save the
+    // expression stats while 'exprs_' is still owned by this operator, then
+    // reset them so that they are not reported again by the operator that
+    // picks up this ExprSet next.
+    recordExpressionStats();
+    exprs_->clearStats();
+    pool->put(std::move(exprs_));
+  }
 }
 } // namespace facebook::velox::exec

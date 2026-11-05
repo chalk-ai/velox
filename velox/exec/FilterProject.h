@@ -58,19 +58,7 @@ class FilterProject : public Operator {
 
   bool isFinished() override;
 
-  void close() override {
-    Operator::close();
-    if (exprs_ != nullptr) {
-      exprs_->finishTracers();
-      exprs_->clear();
-      exprs_->clearCache();
-      if (auto pool = exprSetPool_.lock()) {
-        pool->put(std::move(exprs_));
-      }
-    } else {
-      VELOX_CHECK(!initialized_);
-    }
-  }
+  void close() override;
 
   /// Data for accelerator conversion.
   struct Export {
@@ -108,6 +96,14 @@ class FilterProject : public Operator {
   std::vector<VectorPtr> project(
       const SelectivityVector& rows,
       EvalCtx& evalCtx);
+
+  // Copies the statistics of 'exprs_' into the operator stats. Called before
+  // the ExprSet is handed back to the ExprSetPool, after which the statistics
+  // are no longer reachable from this operator.
+  void recordExpressionStats();
+
+  // Returns true if expression statistics tracking is enabled for this query.
+  bool trackExpressionStats() const;
 
   // If true exprs_[0] is a filter and the other expressions are projections
   const bool hasFilter_{false};

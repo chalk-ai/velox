@@ -277,8 +277,17 @@ class Expr {
     return true;
   }
 
-  /// A fresh epoch for one clearCache() traversal. Process-wide and never
-  /// zero, so a freshly built expression (epoch 0) is always visited.
+  /// Resets the evaluation statistics of this expression and, recursively, of
+  /// all its inputs.
+  void clearStats() {
+    clearStats(nextClearEpoch());
+  }
+
+  /// Epoch-stamped form of clearStats(); see clearCache(uint64_t).
+  void clearStats(uint64_t epoch);
+
+  /// A fresh epoch for one clearCache()/clearStats() traversal. Process-wide
+  /// and never zero, so a freshly built expression (epoch 0) is always visited.
   static uint64_t nextClearEpoch();
 
   const TypePtr& type() const {
@@ -801,8 +810,9 @@ class Expr {
   /// Runtime statistics. CPU time, wall time and number of processed rows.
   ExprStats stats_;
 
-  // Last clearCache() traversal that visited this node.
+  // Last clearCache()/clearStats() traversal that visited this node.
   uint64_t clearCacheEpoch_{0};
+  uint64_t clearStatsEpoch_{0};
 
   /// Per-function adaptive CPU sampling state machine.
   enum class AdaptiveCpuSamplingState : uint8_t {
@@ -947,6 +957,11 @@ class ExprSet {
   /// evaluated. If 'excludeSpecialForm' is true, special forms are excluded.
   std::unordered_map<std::string, exec::ExprStats> stats(
       bool excludeSpecialForm = false) const;
+
+  /// Resets the evaluation statistics of all expressions in this set. Used
+  /// before an ExprSet is recycled so that the statistics of its previous use
+  /// are not attributed to the next one.
+  void clearStats();
 
  protected:
   void clearSharedSubexprs();

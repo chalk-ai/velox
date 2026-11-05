@@ -1,0 +1,2 @@
+- Fix FilterProject expression statistics with pooled ExprSets: record them before the ExprSet returns to the pool and reset them so the next user does not report them again.
+- Add an optional expression memory pool to `CursorParameters` and `AssertQueryBuilder` for tests that keep expression results beyond the query that produced them.

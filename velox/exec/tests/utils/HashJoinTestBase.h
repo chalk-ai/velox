@@ -683,6 +683,7 @@ class HashJoinBuilder {
                                 "query_pool",
                                 memory::kMaxMemory,
                                 memory::MemoryReclaimer::create()))
+                        .exprPool(pool_.shared_from_this())
                         .build();
     std::shared_ptr<TempDirectoryPath> spillDirectory;
     int32_t spillPct{0};

@@ -308,7 +308,8 @@ std::pair<std::unique_ptr<TaskCursor>, std::vector<RowVectorPtr>>
 AssertQueryBuilder::readCursor() {
   VELOX_CHECK_NOT_NULL(params_.planNode);
 
-  if (!configs_.empty() || !connectorSessionProperties_.empty()) {
+  if (!configs_.empty() || !connectorSessionProperties_.empty() ||
+      exprPool_ != nullptr) {
     if (params_.queryCtx == nullptr) {
       // NOTE: the destructor of 'executor_' will wait for all the async task
       // activities to finish on AssertQueryBuilder dtor.
@@ -316,11 +317,14 @@ AssertQueryBuilder::readCursor() {
       const std::string queryId =
           fmt::format("TaskCursorQuery_{}", cursorQueryId++);
 
+      // 'exprPool_' is optional; when null the QueryCtx creates its own
+      // per-query expression pool as usual.
       params_.queryCtx = core::QueryCtx::Builder()
                              .executor(executor_.get())
                              .pool(
                                  memory::memoryManager()->addRootPool(
                                      queryId, params_.maxQueryCapacity))
+                             .exprPool(exprPool_)
                              .queryId(queryId)
                              .build();
     }
