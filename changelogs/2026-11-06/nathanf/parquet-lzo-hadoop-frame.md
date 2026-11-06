@@ -1,0 +1,1 @@
+- Fix Parquet LZO page decompression to read the Hadoop frame format that parquet-mr writes, matching upstream Velox.
