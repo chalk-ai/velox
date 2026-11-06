@@ -2376,7 +2376,8 @@ TEST_P(HashJoinTest, probeMemoryLimitOnBuildProjection) {
 
   std::vector<TestParam> testParams{
       {{}, 10, "SELECT t.c0 FROM t JOIN u ON t.c0 = u.u_c0"},
-      {{1}, 4000, "SELECT t.c0, u.u_c1 FROM t JOIN u ON t.c0 = u.u_c0"},
+      // Two 4 KiB build values plus probe keys exceed the 8 KiB target.
+      {{1}, 8000, "SELECT t.c0, u.u_c1 FROM t JOIN u ON t.c0 = u.u_c0"},
       {{1, 2},
        8000,
        "SELECT t.c0, u.u_c1, u.u_c2 FROM t JOIN u ON t.c0 = u.u_c0"},

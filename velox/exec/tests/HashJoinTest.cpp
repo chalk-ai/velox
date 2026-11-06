@@ -239,8 +239,8 @@ TEST_P(MultiThreadedHashJoinTest, timestampSubMillisecondBuildKeys) {
   // doesn't reject the column for value ID encoding, the table will use
   // normalized-key mode and the parallel join build fails a VELOX_CHECK in
   // partitionRows when re-encoding the stored keys.
-  constexpr vector_size_t kSize = 1024; const auto subMs =
-  Timestamp::fromMicros(512 * 1'000 + 123);
+  constexpr vector_size_t kSize = 1024;
+  const auto subMs = Timestamp::fromMicros(512 * 1'000 + 123);
 
   std::vector<RowVectorPtr> buildVectors;
   for (int32_t vec = 0; vec < 2; ++vec) {
@@ -377,6 +377,111 @@ TEST_P(MultiThreadedHashJoinTest, filter) {
       .referenceQuery(
           "SELECT t_k0, t_data, u_k0, u_data FROM t, u WHERE t_k0 = u_k0 AND ((t_k0 % 100) + (u_k0 % 100)) % 40 < 20")
       .run();
+}
+
+TEST_P(HashJoinTest, outputBatchBytes) {
+  constexpr vector_size_t kNumRows = 64;
+  constexpr uint64_t kBatchBytes = 16'384;
+  const std::string payload(256, 'x');
+  auto arrays = [&](bool variableWidth) {
+    return makeArrayVector<StringView>(
+        kNumRows,
+        [variableWidth](auto row) {
+          return variableWidth && row == 0 ? 256 : 16;
+        },
+        [&](auto /*index*/) { return StringView(payload); });
+  };
+
+  enum class BuildShape { kUnique, kDuplicates, kVariableWidth };
+  for (const auto buildShape :
+       {BuildShape::kUnique,
+        BuildShape::kDuplicates,
+        BuildShape::kVariableWidth}) {
+    const bool duplicates = buildShape == BuildShape::kDuplicates;
+    const bool variableWidth = buildShape == BuildShape::kVariableWidth;
+    auto probe = makeRowVector(
+        {"t_key", "t_payload"},
+        {makeFlatVector<int64_t>(kNumRows, [](auto row) { return row; }),
+         arrays(false)});
+    auto build = makeRowVector(
+        {"u_key", "u_payload"},
+        {makeFlatVector<int64_t>(
+             kNumRows, [&](auto row) { return duplicates ? row / 2 : row; }),
+         arrays(variableWidth)});
+    createDuckDbTable("t", {probe});
+    createDuckDbTable("u", {build});
+
+    for (const auto joinType :
+         {core::JoinType::kInner,
+          core::JoinType::kLeft,
+          core::JoinType::kRight,
+          core::JoinType::kFull}) {
+      for (const bool matches : {false, true}) {
+        for (const bool wideProbe : {false, true}) {
+          SCOPED_TRACE(
+              fmt::format(
+                  "duplicates {}, variableWidth {}, type {}, matches {}, wideProbe {}",
+                  duplicates,
+                  variableWidth,
+                  core::JoinTypeName::toName(joinType),
+                  matches,
+                  wideProbe));
+          const std::vector<std::string> outputLayout = wideProbe
+              ? std::vector<std::string>{"t_key", "t_payload", "u_key"}
+              : std::vector<std::string>{"t_key", "u_key", "u_payload"};
+          auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+          auto plan =
+              PlanBuilder(idGenerator)
+                  .values({probe})
+                  .hashJoin(
+                      {"t_key"},
+                      {"u_key"},
+                      PlanBuilder(idGenerator).values({build}).planNode(),
+                      matches ? "" : "t_key < 0",
+                      outputLayout,
+                      joinType)
+                  .planNode();
+          const auto query = fmt::format(
+              "SELECT {} FROM t {} JOIN u ON t_key = u_key {}",
+              wideProbe ? "t_key, t_payload, u_key" : "t_key, u_key, u_payload",
+              core::JoinTypeName::toName(joinType),
+              matches ? "" : "AND t_key < 0");
+          AssertQueryBuilder(plan, duckDbQueryRunner_)
+              .maxDrivers(numDrivers_)
+              .config(
+                  core::QueryConfig::kParallelOutputJoinBuildRowsEnabled,
+                  parallelBuildSideRowsEnabled_ ? "true" : "false")
+              .config(
+                  core::QueryConfig::kPreferredOutputBatchBytes,
+                  std::to_string(kBatchBytes))
+              .assertResults(query);
+          const auto batches =
+              AssertQueryBuilder(plan)
+                  .maxDrivers(numDrivers_)
+                  .config(
+                      core::QueryConfig::kParallelOutputJoinBuildRowsEnabled,
+                      parallelBuildSideRowsEnabled_ ? "true" : "false")
+                  .config(
+                      core::QueryConfig::kPreferredOutputBatchBytes,
+                      std::to_string(kBatchBytes))
+                  .copyResultBatches(pool());
+          for (const auto& batch : batches) {
+            const auto* payloads =
+                batch->childAt(wideProbe ? 1 : 2)->as<ArrayVector>();
+            uint64_t bytes = batch->size() * 2 * sizeof(int64_t);
+            for (vector_size_t row = 0; row < batch->size(); ++row) {
+              if (!payloads->isNullAt(row)) {
+                bytes += payloads->sizeAt(row) *
+                    (sizeof(StringView) + payload.size());
+              }
+            }
+            // Allow estimation overhead and a single oversized row.
+            EXPECT_TRUE(bytes <= 2 * kBatchBytes || batch->size() == 1);
+          }
+        }
+      }
+    }
+  }
 }
 
 // Regression test for a JoinFuzzer-found bug where HashProbe::evalFilter

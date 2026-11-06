@@ -1012,14 +1012,14 @@ RowVectorPtr HashProbe::getBuildSideOutput() {
           lastProbeIterator_,
           buildSideOutputRowContainerId_,
           outputTableRowsCapacity_,
-          RowContainer::kUnlimited,
+          preferredOutputBatchBytes_,
           outputTableRows);
     } else if (isRightSemiProjectJoin(joinType_)) {
       numOut = table_->listAllRows(
           lastProbeIterator_,
           buildSideOutputRowContainerId_,
           outputTableRowsCapacity_,
-          RowContainer::kUnlimited,
+          preferredOutputBatchBytes_,
           outputTableRows);
 
     } else {
@@ -1028,7 +1028,7 @@ RowVectorPtr HashProbe::getBuildSideOutput() {
           lastProbeIterator_,
           buildSideOutputRowContainerId_,
           outputTableRowsCapacity_,
-          RowContainer::kUnlimited,
+          preferredOutputBatchBytes_,
           outputTableRows);
     }
     if (numOut == 0) {
@@ -1292,6 +1292,12 @@ RowVectorPtr HashProbe::getOutputInternal(bool toSpillOutput) {
   auto outputBatchSize = (isLeftSemiOrAntiJoinNoFilter || emptyBuildSide)
       ? inputSize
       : outputBatchSize_;
+  uint64_t probeBytes{0};
+  for (const auto& [in, out] : projectedInputColumns_) {
+    probeBytes += input_->childAt(in)->estimateFlatSize();
+  }
+  resultIter_->probeRowSize =
+      inputSize == 0 ? 0 : bits::divRoundUp(probeBytes, inputSize);
   outputTableRowsCapacity_ = outputBatchSize;
   if (filter_ &&
       (isLeftJoin(joinType_) || isFullJoin(joinType_) ||
