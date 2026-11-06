@@ -1,0 +1,1 @@
+- Update geometry function tests for GEOS 3.14 output and error behavior, and build the degenerate ST_ConvexHull line from a coordinate list.
