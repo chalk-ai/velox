@@ -16,8 +16,8 @@
 #include "velox/exec/tests/utils/PortUtil.h"
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <memory>
 #include <unistd.h>
+#include <memory>
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::velox::exec::test {
