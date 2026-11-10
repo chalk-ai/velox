@@ -1,0 +1,1 @@
+- Fix BitReader::GetBatch linking against Arrow releases before 23 by unpacking whole groups of 32 through unpack32/unpack64 when arrow/util/bpacking.h is available.

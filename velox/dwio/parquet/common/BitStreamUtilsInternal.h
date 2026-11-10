@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <type_traits>
 
 #include "velox/common/base/Exceptions.h"
 #include "velox/dwio/parquet/common/BitPacking.h"
@@ -168,6 +169,33 @@ inline uint64_t ReadLittleEndianWord(
     memcpy(&leValue, buffer, bytesRemaining);
   }
   return ::arrow::bit_util::FromLittleEndian(leValue);
+}
+
+// Unpacks up to `count` values of `numBits` bits and returns how many it
+// unpacked; the caller decodes the rest bit by bit. `count` must be a multiple
+// of 8. Arrow 23's unpack() takes any such count. Arrow's older unpack32 and
+// unpack64 only take whole groups of 32. Either way the consumed bits end on a
+// byte boundary, so the caller can advance its byte offset by
+// returned * numBits / 8.
+template <typename Uint>
+inline int unpackByteAligned(
+    const uint8_t* in,
+    Uint* out,
+    int count,
+    int numBits) {
+  static_assert(
+      std::is_same_v<Uint, uint32_t> || std::is_same_v<Uint, uint64_t>);
+#if __has_include("arrow/util/bpacking.h")
+  if constexpr (std::is_same_v<Uint, uint32_t>) {
+    return ::arrow::internal::unpack32(
+        reinterpret_cast<const uint32_t*>(in), out, count, numBits);
+  } else {
+    return ::arrow::internal::unpack64(in, out, count, numBits);
+  }
+#else
+  ::arrow::internal::unpack<Uint>(in, out, {count, numBits});
+  return count;
+#endif
 }
 
 } // namespace detail
@@ -399,22 +427,24 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
   // loop at the end.
   const int alignedSize = (batchSize - i) / 8 * 8;
   if (sizeof(T) == 4) {
-    ::arrow::internal::unpack<uint32_t>(
+    const int numUnpacked = detail::unpackByteAligned<uint32_t>(
         buffer + byteOffset,
         reinterpret_cast<uint32_t*>(v + i),
-        {alignedSize, numBits});
-    i += alignedSize;
-    byteOffset += alignedSize * numBits / 8;
+        alignedSize,
+        numBits);
+    i += numUnpacked;
+    byteOffset += numUnpacked * numBits / 8;
   } else if (sizeof(T) == 8 && numBits > 32) {
     // Use unpack64 only if numBits is larger than 32
     // TODO (ARROW-13677): improve the performance of internal::unpack64
     // and remove the restriction of numBits
-    ::arrow::internal::unpack<uint64_t>(
+    const int numUnpacked = detail::unpackByteAligned<uint64_t>(
         buffer + byteOffset,
         reinterpret_cast<uint64_t*>(v + i),
-        {alignedSize, numBits});
-    i += alignedSize;
-    byteOffset += alignedSize * numBits / 8;
+        alignedSize,
+        numBits);
+    i += numUnpacked;
+    byteOffset += numUnpacked * numBits / 8;
   } else {
     // TODO: revisit this limit if necessary
     VELOX_DCHECK_LE(numBits, 32);
@@ -423,15 +453,17 @@ inline int BitReader::GetBatch(int numBits, T* v, int batchSize) {
     const int bulkEnd = i + alignedSize;
     while (i < bulkEnd) {
       const int unpackSize = std::min(bufferSize, bulkEnd - i);
-      ::arrow::internal::unpack<uint32_t>(
-          buffer + byteOffset,
-          unpackBuffer,
-          {unpackSize, numBits});
-      for (int k = 0; k < unpackSize; ++k) {
+      const int numUnpacked = detail::unpackByteAligned<uint32_t>(
+          buffer + byteOffset, unpackBuffer, unpackSize, numBits);
+      for (int k = 0; k < numUnpacked; ++k) {
         v[i + k] = static_cast<T>(unpackBuffer[k]);
       }
-      i += unpackSize;
-      byteOffset += unpackSize * numBits / 8;
+      i += numUnpacked;
+      byteOffset += numUnpacked * numBits / 8;
+      if (numUnpacked < unpackSize) {
+        // The short group is left for the GetValue_ tail below.
+        break;
+      }
     }
   }
 
