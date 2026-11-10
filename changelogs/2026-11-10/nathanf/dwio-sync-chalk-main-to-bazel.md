@@ -1,0 +1,1 @@
+- Sync dwio headers, dwrf include order, and Parquet common CMake wiring with chalk-main: make PositionProvider.h and BitIterator.h self-contained with `<cstdint>`, sort the FloatingPointDecoder.h include block, and add BitPacking.h and BitStreamUtilsTest.cpp to the CMake build.
