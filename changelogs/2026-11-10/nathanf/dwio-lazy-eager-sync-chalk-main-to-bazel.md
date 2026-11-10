@@ -1,0 +1,1 @@
+- Restore eager loading of LazyVector outputs in SelectiveStructColumnReaderBase::getValues to match the chalk-main behavior, instead of returning unloaded LazyVectors through setOutputRowsForLazy.

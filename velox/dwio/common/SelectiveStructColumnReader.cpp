@@ -675,7 +675,8 @@ void SelectiveStructColumnReaderBase::getValues(
         setConstantField(childSpec->constantValue(), rows.size(), childResult);
         childSpec->deltaUpdate()->update(rows, childResult);
       } else {
-        setOutputRowsForLazy(rows);
+        // Loaded eagerly below, as in the regular lazy branch at the end of
+        // this loop.
         setLazyField(
             std::make_unique<DeltaUpdateColumnLoader>(
                 this, children_[index], numReads_),
@@ -730,8 +731,11 @@ void SelectiveStructColumnReaderBase::getValues(
       continue;
     }
 
-    // LazyVector result.
-    setOutputRowsForLazy(rows);
+    // LazyVector result. This fork deliberately loads it immediately instead
+    // of returning it unloaded as upstream Velox does (upstream also calls
+    // setOutputRowsForLazy(rows) here). Every output row is decoded in the
+    // scan, so consumers receive an already-loaded LazyVector and never
+    // trigger reads from the column reader.
     // When the child has a transform (e.g., extraction pushdown), the lazy
     // vector type is the transform's output type, not the file column type.
     auto lazyType =
@@ -740,6 +744,8 @@ void SelectiveStructColumnReaderBase::getValues(
         : resultRow->type()->childAt(channel);
     setLazyField(
         makeColumnLoader(index), lazyType, rows.size(), pool_, childResult);
+    LazyVector::ensureLoadedRows(
+        childResult, SelectivityVector(rows.size(), true));
   }
 
   resultRow->invalidateContainsLazyNotLoaded();
