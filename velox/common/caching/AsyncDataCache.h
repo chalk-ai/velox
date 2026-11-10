@@ -857,7 +857,6 @@ class AsyncDataCache : public memory::Cache {
 
   ~AsyncDataCache() override;
 
-  /// Creates a cache without requiring the SsdCache definition.
   static std::shared_ptr<AsyncDataCache> create(
       memory::MemoryAllocator* allocator);
 
