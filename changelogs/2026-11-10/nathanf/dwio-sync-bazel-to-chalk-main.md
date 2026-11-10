@@ -1,0 +1,1 @@
+- Sync dwio test utilities with bazel-build: resolve DataFiles test data paths under Bazel runfiles when TEST_SRCDIR is set, and allow a small stripe-count tolerance in the dictionary flush policy test.
