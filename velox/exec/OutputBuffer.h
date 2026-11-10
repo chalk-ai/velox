@@ -278,7 +278,7 @@ class OutputBuffer {
   // Updates buffered size and returns possibly continuable producer promises
   // in 'promises'.
   void updateAfterAcknowledgeLocked(
-      const std::vector<std::shared_ptr<SerializedPageBase>>& freed,
+      std::vector<std::shared_ptr<SerializedPageBase>>& freed,
       std::vector<ContinuePromise>& promises);
 
   /// Given an updated total number of broadcast buffers, add any missing ones

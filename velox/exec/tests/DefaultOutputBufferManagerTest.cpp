@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 #include "velox/exec/DefaultOutputBufferManager.h"
+#include <folly/ScopeGuard.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <gtest/gtest.h>
 #include "folly/synchronization/EventCount.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/exec/Task.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -1148,6 +1150,73 @@ TEST_P(
   bufferManager_->removeTask(taskId);
   EXPECT_TRUE(task->isFinished());
 }
+
+#ifndef NDEBUG
+TEST_F(DefaultOutputBufferManagerTest, broadcastAcknowledgmentAccounting) {
+  common::testutil::TestValue::enable();
+  SCOPE_EXIT {
+    common::testutil::TestValue::disable();
+  };
+
+  for (const auto* operation :
+       {"acknowledge", "getData", "deleteResults", "retention"}) {
+    SCOPED_TRACE(operation);
+    const std::string taskId = operation;
+    const bool retention = taskId == "retention";
+    auto task = initializeTask(
+        taskId, rowType_, PartitionedOutputNode::Kind::kBroadcast, 2, 1, 2);
+    if (!retention) {
+      bufferManager_->updateOutputBuffers(taskId, 2, true);
+    }
+    ContinueFuture producer;
+    auto page = makeSerializedPage(rowType_, 100);
+    ASSERT_TRUE(bufferManager_->enqueue(taskId, 0, std::move(page), &producer));
+    fetchOne(taskId, 0, 0);
+    fetchOne(taskId, 1, 0);
+    EXPECT_FALSE(producer.isReady());
+
+    bool interleaved = false;
+    {
+      // Run the other destination's acknowledgment after unlocking, while the
+      // first call still owns its temporary references to the broadcast page.
+      SCOPED_TESTVALUE_SET(
+          "facebook::velox::exec::OutputBuffer::releaseAfterAcknowledge",
+          std::function<void(void*)>([&](void*) {
+            if (interleaved) {
+              return;
+            }
+            interleaved = true;
+            if (retention) {
+              acknowledge(taskId, 0, 1);
+            }
+            if (taskId == "getData") {
+              bufferManager_->getData(
+                  taskId, 1, 1024, 1, [](auto, auto, auto) {});
+            } else if (taskId == "deleteResults") {
+              deleteResults(taskId, 1);
+            } else {
+              acknowledge(taskId, 1, 1);
+            }
+          }));
+      if (retention) {
+        bufferManager_->updateOutputBuffers(taskId, 2, true);
+      } else {
+        acknowledge(taskId, 0, 1);
+      }
+    }
+    EXPECT_TRUE(interleaved);
+    const auto stats = getStats(taskId);
+    EXPECT_EQ(stats.bufferedBytes, 0);
+    EXPECT_EQ(stats.bufferedPages, 0);
+    for (const auto& destination : stats.buffersStats) {
+      EXPECT_EQ(destination.bytesBuffered, 0);
+      EXPECT_EQ(destination.pagesBuffered, 0);
+    }
+    EXPECT_TRUE(producer.isReady());
+    bufferManager_->removeTask(taskId);
+  }
+}
+#endif
 
 TEST_P(
     DefaultOutputBufferManagerWithDifferentSerdeKindsTest,

@@ -318,6 +318,8 @@ namespace {
 void releaseAfterAcknowledge(
     std::vector<std::shared_ptr<SerializedPageBase>>& freed,
     std::vector<ContinuePromise>& promises) {
+  common::testutil::TestValue::adjust(
+      "facebook::velox::exec::OutputBuffer::releaseAfterAcknowledge", &freed);
   freed.clear();
   for (auto& promise : promises) {
     promise.setValue();
@@ -355,6 +357,7 @@ void OutputBuffer::updateOutputBuffers(
     return;
   }
 
+  std::vector<std::shared_ptr<SerializedPageBase>> freed;
   std::vector<ContinuePromise> promises;
   bool isFinished;
   {
@@ -370,10 +373,11 @@ void OutputBuffer::updateOutputBuffers(
 
     noMoreBuffers_ = true;
     isFinished = isFinishedLocked();
-    updateAfterAcknowledgeLocked(dataToBroadcast_, promises);
+    freed = std::move(dataToBroadcast_);
+    updateAfterAcknowledgeLocked(freed, promises);
   }
 
-  releaseAfterAcknowledge(dataToBroadcast_, promises);
+  releaseAfterAcknowledge(freed, promises);
   if (isFinished) {
     task_->setAllOutputConsumed();
   }
@@ -653,14 +657,18 @@ void OutputBuffer::acknowledge(int destination, int64_t sequence) {
 }
 
 void OutputBuffer::updateAfterAcknowledgeLocked(
-    const std::vector<std::shared_ptr<SerializedPageBase>>& freed,
+    std::vector<std::shared_ptr<SerializedPageBase>>& freed,
     std::vector<ContinuePromise>& promises) {
   uint64_t freedBytes{0};
   int freedPages{0};
-  for (const auto& free : freed) {
+  for (auto& free : freed) {
     if (free.use_count() == 1) {
       ++freedPages;
       freedBytes += free->size();
+    } else {
+      // Temporary references must not outlive the lock: another destination
+      // uses the reference count to identify the final acknowledgment.
+      free.reset();
     }
   }
   if (freedPages == 0) {
