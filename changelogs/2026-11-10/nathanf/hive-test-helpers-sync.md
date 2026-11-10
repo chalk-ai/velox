@@ -1,0 +1,1 @@
+- fix(hive): Sync the Azure, GCS, HDFS, and MinIO test server helpers with the Bazel build, use explicit `boost::process::v1` types, and update the Azure auth-type assertion to list DefaultCredential.
