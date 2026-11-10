@@ -617,9 +617,11 @@ TEST_F(RegexFunctionsTest, regexpReplaceCacheLimitTest) {
         "X" + std::to_string(i) + "-Y" + std::to_string(i));
   }
 
-  VELOX_ASSERT_THROW(
-      testingRegexpReplaceRows(strings, patterns, replaces),
-      "Max number of regex reached");
+  // The regex cache evicts instead of throwing, so patterns beyond the limit
+  // still evaluate.
+  auto result = testingRegexpReplaceRows(strings, patterns, replaces);
+  auto output = convertOutput(expectedOutputs, 1);
+  assertEqualVectors(result, output);
 }
 
 TEST_F(RegexFunctionsTest, regexpReplaceCacheMissLimit) {
