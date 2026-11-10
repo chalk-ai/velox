@@ -19,6 +19,7 @@ velox_add_library(
   LevelConversion.cpp
   XxHasher.cpp
   HEADERS
+  BitPacking.h
   BitStreamUtilsInternal.h
   BloomFilter.h
   Hasher.h
