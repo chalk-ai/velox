@@ -15,7 +15,7 @@
  */
 #include "velox/dwio/nimble/velox/FieldReader.h"
 
-#include <velox/type/StringView.h>
+#include "velox/type/StringView.h"
 #include <algorithm>
 #include <cstddef>
 
