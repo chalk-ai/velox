@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 namespace facebook::velox::dwrf::utils {
