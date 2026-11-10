@@ -1,0 +1,1 @@
+- Sync the Parquet reader and Arrow-based writer with the bazel-build branch: use the vendored Arrow spaced helpers in `writer/arrow/util/Spaced.h`, `std::popcount` in level conversion, and matching formatting. No intended behavior change.

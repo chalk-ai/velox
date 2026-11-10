@@ -19,8 +19,8 @@
 #pragma once
 
 #include "arrow/array.h"
-#include "arrow/extension_type.h"
 #include "arrow/status.h"
+#include "arrow/extension_type.h"
 #include "arrow/visitor_generate.h"
 
 namespace facebook::velox::parquet::arrow::util {
@@ -51,10 +51,8 @@ namespace facebook::velox::parquet::arrow::util {
 /// VisitArrayInline(some_array, &visitor);
 /// ```.
 template <typename VISITOR, typename... ARGS>
-inline ::arrow::Status visitArrayInline(
-    const ::arrow::Array& array,
-    VISITOR* visitor,
-    ARGS&&... args) {
+inline ::arrow::Status
+visitArrayInline(const ::arrow::Array& array, VISITOR* visitor, ARGS&&... args) {
   switch (array.type_id()) {
     ARROW_GENERATE_FOR_ALL_TYPES(ARRAY_VISIT_INLINE);
     default:

@@ -525,10 +525,9 @@ bool ColumnChunkMetaDataPtr::hasOffsetIndex() const {
 }
 
 common::CompressionKind ColumnChunkMetaDataPtr::compression() const {
-  return thriftCodecToCompressionKind(
-      apache::thrift::can_throw(
-          *apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
-               ->codec()));
+  return thriftCodecToCompressionKind(apache::thrift::can_throw(
+      *apache::thrift::can_throw(thriftColumnChunkPtr(ptr_)->meta_data())
+           ->codec()));
 }
 
 int64_t ColumnChunkMetaDataPtr::totalCompressedSize() const {
@@ -632,9 +631,8 @@ FileMetaDataPtr::FileMetaDataPtr(const void* metadata) : ptr_(metadata) {}
 FileMetaDataPtr::~FileMetaDataPtr() = default;
 
 RowGroupMetaDataPtr FileMetaDataPtr::rowGroup(int i) const {
-  return RowGroupMetaDataPtr(
-      reinterpret_cast<const void*>(
-          &(*thriftFileMetaDataPtr(ptr_)->row_groups())[i]));
+  return RowGroupMetaDataPtr(reinterpret_cast<const void*>(
+      &(*thriftFileMetaDataPtr(ptr_)->row_groups())[i]));
 }
 
 int64_t FileMetaDataPtr::numRows() const {
