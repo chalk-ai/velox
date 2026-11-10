@@ -102,7 +102,7 @@ encodeInts(const std::vector<T>& ints, T min, T max, memory::MemoryPool* pool) {
   auto buffer = AlignedBuffer::allocate<char>(size, pool);
   auto destination = buffer->asMutable<uint64_t>();
   for (auto i = 0; i < ints.size(); ++i) {
-    T sourceValue = subtractMin(ints[i], min);
+    T sourceValue = subtractMin<T>(ints[i], min);
     bits::copyBits(
         reinterpret_cast<uint64_t*>(&sourceValue),
         0,
