@@ -60,7 +60,6 @@ velox_add_test_headers(
   ColumnReader.h
   ColumnScanner.h
   FileReader.h
-  Hasher.h
   ParquetTestFile.h
   TestUtil.h
 )

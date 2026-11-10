@@ -1,0 +1,1 @@
+- Add Parquet bloom filter writing to the Arrow-based Parquet writer, configured per column through `ParquetWriterOptions::columnBloomFilterOptions` or the `parquet.writer.bloom.filter.{columns,fpp,ndv}` serde parameters.
