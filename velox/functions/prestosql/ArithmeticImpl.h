@@ -26,7 +26,6 @@
 #include "velox/common/base/Macros.h"
 #include "velox/type/CppToType.h"
 #include "velox/type/FloatingPointUtil.h"
-#include "velox/type/CppToType.h"
 
 namespace facebook::velox::functions {
 

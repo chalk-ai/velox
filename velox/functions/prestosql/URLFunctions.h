@@ -327,8 +327,7 @@ struct UrlExtractPortFunction {
 
     if (!uri.port.empty()) {
       try {
-        result = folly::to<int64_t>(
-            static_cast<folly::StringPiece>(uri.port));
+        result = folly::to<int64_t>(static_cast<folly::StringPiece>(uri.port));
         return true;
       } catch (folly::ConversionError const&) {
       }
