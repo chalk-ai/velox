@@ -1,0 +1,1 @@
+- Remove the duplicate arrow/util/logging.h include from ArrowHdfsInternal.cpp.

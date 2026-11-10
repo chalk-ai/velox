@@ -43,7 +43,6 @@
 #endif
 
 #include "arrow/result.h"
-#include "arrow/util/logging.h"
 #include "arrow/status.h"
 #include "arrow/util/io_util.h"
 #include "arrow/util/logging.h"
