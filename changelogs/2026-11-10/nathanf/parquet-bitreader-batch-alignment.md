@@ -1,0 +1,1 @@
+- Fix `BitReader::GetBatch` byte-offset truncation for batches whose bit position is not byte-aligned by bulk-unpacking a multiple of 8 values and finishing the tail bit-exactly. Replace the group-of-32 `unpack32`/`unpack64` shim with direct calls to the vendored Arrow `unpack`, and add `BitStreamUtilsTest` coverage.
