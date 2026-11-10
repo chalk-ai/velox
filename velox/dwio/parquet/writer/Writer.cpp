@@ -18,6 +18,8 @@
 
 #include "velox/dwio/parquet/writer/Writer.h"
 
+#include <folly/String.h>
+
 #include <algorithm>
 #include <exception>
 
