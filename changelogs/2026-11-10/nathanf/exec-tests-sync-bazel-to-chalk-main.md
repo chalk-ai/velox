@@ -1,0 +1,1 @@
+- Sync exec and vector test files (AggregationTest, LocalPartitionTest, RowNumberTest, TableScanTest, QueryAssertions, FlatMapVectorTest) from the bazel-build branch so both branches carry identical test code; no source changes.
