@@ -1,0 +1,1 @@
+- Align velox/functions test expectations with the regex cache, which evicts instead of throwing at its limit, and with DuckDB NaN results in the covariance reference query. Loosen the KLL sketch and set digest tolerances for standard-library differences.

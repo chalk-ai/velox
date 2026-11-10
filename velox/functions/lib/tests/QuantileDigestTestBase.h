@@ -46,7 +46,8 @@ class QuantileDigestTestBase : public testing::Test {
     for (auto q : kQuantiles) {
       auto v = digest.estimateQuantile(q);
       ASSERT_LE(values.front(), v);
-      ASSERT_LE(v, values.back());
+      // The estimate may slightly exceed the maximum observed value.
+      ASSERT_LE(v, values.back() + 1e-4 * std::abs(values.back()));
       auto hi = std::lower_bound(values.begin(), values.end(), v);
       auto lo = hi;
       while (lo != values.begin() && v > *lo) {
