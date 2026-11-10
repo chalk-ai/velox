@@ -836,11 +836,6 @@ AsyncDataCache::AsyncDataCache(
 
 AsyncDataCache::~AsyncDataCache() = default;
 
-std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
-    memory::MemoryAllocator* allocator) {
-  return create(allocator, nullptr);
-}
-
 // static
 std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
     memory::MemoryAllocator* allocator,
@@ -850,6 +845,11 @@ std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
       std::make_shared<AsyncDataCache>(options, allocator, std::move(ssdCache));
   allocator->registerCache(cache);
   return cache;
+}
+
+std::shared_ptr<AsyncDataCache> AsyncDataCache::create(
+    memory::MemoryAllocator* allocator) {
+      return AsyncDataCache::create(allocator, nullptr);
 }
 
 // static
