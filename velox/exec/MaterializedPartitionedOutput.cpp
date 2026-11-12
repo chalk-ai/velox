@@ -19,8 +19,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "velox/exec/OperatorUtils.h"
-#include "velox/exec/Task.h"
 #include "velox/serializers/RowSerializer.h"
 
 namespace facebook::velox::exec {
@@ -30,81 +28,17 @@ MaterializedPartitionedOutput::MaterializedPartitionedOutput(
     DriverCtx* ctx,
     const std::shared_ptr<const core::PartitionedOutputNode>& planNode,
     const std::shared_ptr<MaterializedOutputBufferManager>& manager)
-    : Operator(
-          ctx,
-          planNode->outputType(),
+    : MaterializedPartitionedOutputBase(
           operatorId,
-          planNode->id(),
+          ctx,
+          planNode,
+          manager,
           "MaterializedPartitionedOutput"),
-      numDestinations_(planNode->numPartitions()),
-      broadcast_(planNode->isBroadcast()),
-      outputChannels_(calculateOutputChannels(
-          planNode->inputType(),
-          planNode->outputType(),
-          planNode->outputType())),
-      keyChannels_(toChannels(planNode->inputType(), planNode->keys())),
-      partitionFunction_(
-          broadcast_ || numDestinations_ == 1
-              ? nullptr
-              : planNode->partitionFunctionSpec().create(
-                    numDestinations_,
-                    false)),
-      replicateNullsAndAny_(planNode->isReplicateNullsAndAny()),
-      buffer_(manager->buffer(ctx->task->taskId())),
-      targetSizeInBytes_(manager->outputBatchSizeBytes(numDestinations_)),
       rowGroupMaxBytes_(buffer_->partitionDrainThreshold()),
       fixedRowSize_(
           row::CompactRow::fixedRowSize(
               std::dynamic_pointer_cast<const RowType>(
-                  planNode->outputType()))) {
-  VELOX_CHECK_GT(numDestinations_, 0);
-  VELOX_CHECK_NOT_NULL(buffer_);
-}
-
-void MaterializedPartitionedOutput::initializeInput(RowVectorPtr input) {
-  if (outputType_->size() == 0) {
-    output_ = std::make_shared<RowVector>(
-        input->pool(),
-        outputType_,
-        nullptr,
-        input->size(),
-        std::vector<VectorPtr>{});
-  } else if (outputChannels_.empty()) {
-    output_ = std::move(input);
-  } else {
-    std::vector<VectorPtr> outputColumns;
-    outputColumns.reserve(outputChannels_.size());
-    for (const auto channel : outputChannels_) {
-      outputColumns.push_back(input->childAt(channel));
-    }
-    output_ = std::make_shared<RowVector>(
-        input->pool(),
-        outputType_,
-        nullptr,
-        input->size(),
-        std::move(outputColumns));
-  }
-
-  for (column_index_t channel = 0; channel < output_->childrenSize();
-       ++channel) {
-    output_->childAt(channel)->loadedVector();
-  }
-}
-
-void MaterializedPartitionedOutput::computePartitions(
-    const RowVector& input,
-    int32_t numRows) {
-  partitions_.resize(numRows);
-  if (broadcast_ || numDestinations_ == 1) {
-    std::fill(partitions_.begin(), partitions_.end(), 0);
-    return;
-  }
-  const auto singlePartition =
-      partitionFunction_->partition(input, partitions_);
-  if (singlePartition.has_value()) {
-    std::fill(partitions_.begin(), partitions_.end(), singlePartition.value());
-  }
-}
+                  planNode->outputType()))) {}
 
 void MaterializedPartitionedOutput::ensureFlatBufferCapacity(
     int64_t additionalBytes) {
@@ -190,51 +124,6 @@ void MaterializedPartitionedOutput::serializeRows(
   }
 }
 
-void MaterializedPartitionedOutput::collectNullRows(
-    const RowVector& input,
-    int32_t numRows) {
-  rows_.resize(numRows);
-  rows_.setAll();
-  nullRows_.resize(numRows);
-  nullRows_.clearAll();
-  decodedVectors_.resize(keyChannels_.size());
-
-  for (size_t keyIndex = 0; keyIndex < keyChannels_.size(); ++keyIndex) {
-    const auto keyChannel = keyChannels_[keyIndex];
-    if (keyChannel == kConstantChannel) {
-      continue;
-    }
-    const auto& keyVector = input.childAt(keyChannel);
-    if (!keyVector->mayHaveNulls()) {
-      continue;
-    }
-    auto& decoded = decodedVectors_[keyIndex];
-    decoded.decode(*keyVector, rows_);
-    if (const auto* rawNulls = decoded.nulls(&rows_)) {
-      bits::orWithNegatedBits(
-          nullRows_.asMutableRange().bits(), rawNulls, 0, numRows);
-    }
-  }
-  nullRows_.updateBounds();
-}
-
-std::vector<int32_t> MaterializedPartitionedOutput::selectRowsToReplicate(
-    int32_t numRows) {
-  std::vector<int32_t> rowsToReplicate;
-  int32_t firstNullRow = 0;
-  if (!replicatedAny_) {
-    rowsToReplicate.push_back(0);
-    replicatedAny_ = true;
-    firstNullRow = 1;
-  }
-  for (int32_t row = firstNullRow; row < numRows; ++row) {
-    if (nullRows_.isValid(row)) {
-      rowsToReplicate.push_back(row);
-    }
-  }
-  return rowsToReplicate;
-}
-
 void MaterializedPartitionedOutput::appendReplicaEntries(
     int32_t serializeStartRow,
     const std::vector<int32_t>& rowsToReplicate) {
@@ -260,43 +149,19 @@ void MaterializedPartitionedOutput::appendReplicaEntries(
   }
 }
 
-void MaterializedPartitionedOutput::expandReplicateRows(
-    int32_t serializeStartRow,
-    int32_t numRows) {
-  const auto rowsToReplicate = selectRowsToReplicate(numRows);
-  if (!rowsToReplicate.empty()) {
-    appendReplicaEntries(serializeStartRow, rowsToReplicate);
-  }
-}
-
-void MaterializedPartitionedOutput::addInput(RowVectorPtr input) {
-  auto rawInput = input;
-  initializeInput(std::move(input));
-  VELOX_CHECK_NOT_NULL(output_);
-  const auto numRows = output_->size();
-  if (numRows == 0) {
-    output_.reset();
-    return;
-  }
-
-  computePartitions(*rawInput, numRows);
-  if (shouldReplicate()) {
-    collectNullRows(*rawInput, numRows);
-  }
-
+void MaterializedPartitionedOutput::serializeInput(
+    int32_t numRows,
+    const std::vector<int32_t>& rowsToReplicate) {
   const auto serializeStartRow = rowCount_;
   row::CompactRow compactRow(output_);
   serializeRows(compactRow, numRows);
-  if (shouldReplicate()) {
-    expandReplicateRows(serializeStartRow, numRows);
+  if (!rowsToReplicate.empty()) {
+    appendReplicaEntries(serializeStartRow, rowsToReplicate);
   }
-  output_.reset();
 
   if (flatBufferSize_ >= targetSizeInBytes_) {
     flushBatch();
   }
-
-  blockingReason_ = buffer_->isBlocked(&future_);
 }
 
 void MaterializedPartitionedOutput::flushRowGroup(
@@ -383,71 +248,6 @@ void MaterializedPartitionedOutput::flushBatch() {
   rowPartitions_.clear();
   rowCount_ = 0;
   flatBufferSize_ = 0;
-}
-
-RowVectorPtr MaterializedPartitionedOutput::getOutput() {
-  return nullptr;
-}
-
-void MaterializedPartitionedOutput::noMoreInput() {
-  Operator::noMoreInput();
-  finish();
-}
-
-BlockingReason MaterializedPartitionedOutput::isBlocked(
-    ContinueFuture* future) {
-  if (blockingReason_ == BlockingReason::kNotBlocked) {
-    return BlockingReason::kNotBlocked;
-  }
-  *future = std::move(future_);
-  const auto reason = blockingReason_;
-  blockingReason_ = BlockingReason::kNotBlocked;
-  return reason;
-}
-
-bool MaterializedPartitionedOutput::isFinished() {
-  return finished_;
-}
-
-void MaterializedPartitionedOutput::recordBufferStats() {
-  for (const auto& [name, value] : buffer_->stats()) {
-    addRuntimeStat(name, RuntimeCounter(value));
-  }
-}
-
-void MaterializedPartitionedOutput::close() {
-  if (!finished_) {
-    buffer_->abort();
-  }
-  if (isLastDriver_) {
-    recordBufferStats();
-  }
-  Operator::close();
-}
-
-void MaterializedPartitionedOutput::finish() {
-  if (finished_) {
-    return;
-  }
-  flushBatch();
-
-  std::vector<ContinuePromise> peerPromises;
-  std::vector<std::shared_ptr<Driver>> peers;
-  ContinueFuture peerFuture;
-  auto* driverContext = operatorCtx()->driverCtx();
-  const auto isLast = driverContext->task->allPeersFinished(
-      planNodeId(), driverContext->driver, &peerFuture, peerPromises, peers);
-  if (isLast) {
-    // allPeersFinished returns true only for the last driver. That driver owns
-    // the shared buffer's terminal snapshot and publishes it exactly once.
-    isLastDriver_ = true;
-    buffer_->noMoreData();
-    driverContext->task->setAllOutputConsumed();
-    for (auto& promise : peerPromises) {
-      promise.setValue();
-    }
-  }
-  finished_ = true;
 }
 
 } // namespace facebook::velox::exec
