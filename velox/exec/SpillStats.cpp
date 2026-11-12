@@ -15,8 +15,10 @@
  */
 
 #include "velox/exec/SpillStats.h"
+#include <folly/hash/Hash.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <sstream>
+#include <thread>
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/base/SuccinctPrinter.h"
@@ -29,7 +31,10 @@ std::vector<SpillStats>& allSpillStats() {
 }
 
 SpillStats& localSpillStats() {
-  const auto idx = std::hash<std::thread::id>{}(std::this_thread::get_id());
+  // libc++ hashes std::thread::id to the aligned pthread ID, so mix it before
+  // taking the modulus or every thread maps to the same slot.
+  const auto idx = folly::hash::twang_mix64(
+      std::hash<std::thread::id>{}(std::this_thread::get_id()));
   auto& spillStatsVector = allSpillStats();
   return spillStatsVector[idx % spillStatsVector.size()];
 }
