@@ -55,6 +55,8 @@ class MaterializedOutputBufferManager final
       const std::string& taskId) const;
 
   /// Creates the Velox transport entry paired with this manager.
+  /// Selects CompactRow or Presto serialization from the plan node's serdeKind.
+  /// Rejects unsupported serialization kinds.
   std::shared_ptr<velox::exec::OutputTransportEntry> transportEntry();
 
   void initializeTask(

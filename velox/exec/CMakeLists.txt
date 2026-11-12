@@ -40,6 +40,8 @@ velox_add_library(
   MaterializedOutputBuffer.cpp
   MaterializedOutputBufferManager.cpp
   MaterializedPartitionedOutput.cpp
+  MaterializedPartitionedOutputBase.cpp
+  PrestoMaterializedPartitionedOutput.cpp
   SerializedPage.cpp
   Expand.cpp
   FilterProject.cpp
@@ -175,6 +177,8 @@ velox_add_library(
   MaterializedOutputBuffer.h
   MaterializedOutputBufferManager.h
   MaterializedPartitionedOutput.h
+  MaterializedPartitionedOutputBase.h
+  PrestoMaterializedPartitionedOutput.h
   MemoryReclaimer.h
   Merge.h
   MergeJoin.h

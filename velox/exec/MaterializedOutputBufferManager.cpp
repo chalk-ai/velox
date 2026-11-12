@@ -22,6 +22,7 @@
 
 #include "velox/common/base/Exceptions.h"
 #include "velox/exec/MaterializedPartitionedOutput.h"
+#include "velox/exec/PrestoMaterializedPartitionedOutput.h"
 #include "velox/exec/Task.h"
 
 namespace facebook::velox::exec {
@@ -88,9 +89,19 @@ MaterializedOutputBufferManager::transportEntry() {
          velox::exec::DriverCtx* ctx,
          const std::shared_ptr<const velox::core::PartitionedOutputNode>& node,
          bool /*eagerFlush*/,
-         const std::shared_ptr<MaterializedOutputBufferManager>& manager) {
-        return std::make_unique<MaterializedPartitionedOutput>(
-            operatorId, ctx, node, manager);
+         const std::shared_ptr<MaterializedOutputBufferManager>& manager)
+          -> std::unique_ptr<Operator> {
+        if (node->serdeKind() == "CompactRow") {
+          return std::make_unique<MaterializedPartitionedOutput>(
+              operatorId, ctx, node, manager);
+        }
+        if (node->serdeKind() == "Presto") {
+          return std::make_unique<PrestoMaterializedPartitionedOutput>(
+              operatorId, ctx, node, manager);
+        }
+        VELOX_USER_FAIL(
+            "Unsupported materialized output serialization: {}",
+            node->serdeKind());
       });
 }
 
