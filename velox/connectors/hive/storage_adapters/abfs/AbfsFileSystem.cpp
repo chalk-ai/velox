@@ -50,4 +50,19 @@ std::unique_ptr<WriteFile> AbfsFileSystem::openFileForWrite(
     const FileOptions& /*unused*/) {
   return std::make_unique<AbfsWriteFile>(path, *config_);
 }
+
+void AbfsFileSystem::remove(std::string_view path) {
+  const auto abfsPath = std::make_shared<AbfsPath>(path);
+  // Blob deletion also supports accounts whose DFS endpoint rejects soft
+  // delete.
+  auto client =
+      AzureClientProviderFactories::getReadFileClient(abfsPath, *config_);
+  try {
+    client->remove();
+  } catch (Azure::Storage::StorageException& error) {
+    throwStorageExceptionWithOperationDetails(
+        "Delete", std::string(path), error);
+  }
+}
+
 } // namespace facebook::velox::filesystems

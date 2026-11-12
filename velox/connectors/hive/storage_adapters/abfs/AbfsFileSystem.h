@@ -53,9 +53,8 @@ class AbfsFileSystem : public FileSystem {
     VELOX_UNSUPPORTED("rename for abfs not implemented");
   }
 
-  void remove(std::string_view path) override {
-    VELOX_UNSUPPORTED("remove for abfs not implemented");
-  }
+  /// Deletes the file, succeeding if it is already absent.
+  void remove(std::string_view path) override;
 
   bool exists(std::string_view path) override {
     VELOX_UNSUPPORTED("exists for abfs not implemented");

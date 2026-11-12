@@ -25,6 +25,9 @@ class AzureBlobClient {
  public:
   virtual ~AzureBlobClient() {}
 
+  /// Deletes the file, succeeding if it is already absent.
+  virtual void remove() = 0;
+
   virtual Azure::Response<Azure::Storage::Blobs::Models::BlobProperties>
   getProperties() = 0;
 
