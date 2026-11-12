@@ -28,7 +28,7 @@ class AzureClientProvider {
  public:
   virtual ~AzureClientProvider() = default;
 
-  // Creates AzureBlobClient for file read operations.
+  // Creates AzureBlobClient for file read and deletion operations.
   virtual std::unique_ptr<AzureBlobClient> getReadFileClient(
       const std::shared_ptr<AbfsPath>& path,
       const config::ConfigBase& config) = 0;
