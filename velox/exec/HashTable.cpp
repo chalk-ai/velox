@@ -2100,9 +2100,7 @@ struct JoinResultEmitter {
   bool operator()(vector_size_t probeRow, char* hit) {
     inputRows[numOut] = probeRow; // NOLINT
     hits[numOut] = hit;
-    if (hit != nullptr) {
-      totalBytes += sizeFunction(hit);
-    }
+    totalBytes += sizeFunction(hit);
     ++numOut;
     return numOut < maxOut && totalBytes < maxBytes;
   }
@@ -2163,7 +2161,7 @@ int32_t HashTable<ignoreNullKeys>::listJoinResultsSingleHit(
   uint64_t totalBytes{0};
   auto emit = makeJoinResultEmitter(
       inputRows, hits, numOut, totalBytes, maxBytes, [&](char* hit) {
-        return projectedRowSize(iter, hit);
+        return iter.probeRowSize + (hit ? projectedRowSize(iter, hit) : 0);
       });
 
   // Dispatch guarantees at most one hit per probe row: either
@@ -2205,7 +2203,7 @@ int32_t HashTable<ignoreNullKeys>::listJoinResultsInterleaved(
 
   auto emit = makeJoinResultEmitter(
       inputRows, hits, numOut, totalBytes, maxBytes, [&](char* hit) {
-        return projectedRowSize(iter, hit);
+        return iter.probeRowSize + (hit ? projectedRowSize(iter, hit) : 0);
       });
 
   while (true) {
@@ -2297,11 +2295,11 @@ int32_t HashTable<ignoreNullKeys>::listJoinResultsFastPath(
     folly::Range<char**> hits,
     uint64_t maxBytes) {
   int32_t numOut = 0;
+  const auto rowSize = iter.estimatedRowSize.value() + iter.probeRowSize;
   const auto maxOut = std::min(
       static_cast<uint64_t>(inputRows.size()),
-      (iter.estimatedRowSize.value() != 0
-           ? maxBytes / iter.estimatedRowSize.value()
-           : std::numeric_limits<uint64_t>::max()));
+      (rowSize != 0 ? std::max<uint64_t>(1, maxBytes / rowSize)
+                    : std::numeric_limits<uint64_t>::max()));
   int32_t i = iter.lastRowIndex;
   const auto numRows = iter.rows->size();
 
