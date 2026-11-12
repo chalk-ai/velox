@@ -72,6 +72,15 @@ bool isParquetReservedKeyword(
 
 constexpr int32_t kMissingPhysicalFieldId = std::numeric_limits<int32_t>::min();
 
+bool hasPhysicalFieldIds(const std::vector<thrift::SchemaElement>& schema) {
+  return std::any_of(
+      schema.begin() + 1,
+      schema.end(),
+      [](const thrift::SchemaElement& element) {
+        return element.field_id().has_value();
+      });
+}
+
 int32_t fieldIdOrMissing(const thrift::SchemaElement& schemaElement) {
   return schemaElement.field_id().value_or(kMissingPhysicalFieldId);
 }
@@ -361,6 +370,9 @@ class ReaderBase {
   const uint64_t filePreloadThreshold_;
   // Copy of options. Must be owned by 'this'.
   const dwio::common::ReaderOptions options_;
+  // The physical file can require a different mapping mode than the logical
+  // table metadata. In particular, older Parquet files may omit field IDs.
+  dwio::common::ColumnMappingMode columnMappingMode_;
   // Copy of Parquet-specific options, or defaults for direct ParquetReader
   // callers that do not go through ParquetReaderFactory.
   const ParquetReaderOptions parquetReaderOptions_;
@@ -400,6 +412,7 @@ ReaderBase::ReaderBase(
     : pool_{options.memoryPool()},
       filePreloadThreshold_{options.filePreloadThreshold()},
       options_{options},
+      columnMappingMode_{options.columnMappingMode()},
       parquetReaderOptions_{getParquetReaderOptions(options)},
       input_{std::move(input)},
       fileLength_{input_->getReadFile()->size()} {
@@ -515,6 +528,14 @@ void ReaderBase::initializeSchema() {
       0,
       "Invalid Parquet schema: root element must have at least 1 child");
 
+  // Iceberg field IDs describe the logical table schema, but older Parquet
+  // writers may omit physical field IDs from the file footer. Such a file
+  // cannot be matched by ID, so resolve it by name for this file only.
+  if (columnMappingMode_ == ColumnMappingMode::kParquetFieldId &&
+      !hasPhysicalFieldIds(*fileMetaData_->schema())) {
+    columnMappingMode_ = ColumnMappingMode::kName;
+  }
+
   uint32_t maxDefine = 0;
   uint32_t maxRepeat = 0;
   uint32_t schemaIdx = 0;
@@ -589,7 +610,7 @@ std::unique_ptr<ParquetTypeWithId> ReaderBase::getParquetColumnInfo(
     }
   }
 
-  const auto mappingMode = options_.columnMappingMode();
+  const auto mappingMode = columnMappingMode_;
   auto physicalName = *schemaElement.name();
   if (isFileColumnNamesReadAsLowerCase()) {
     physicalName = functions::stringImpl::utf8StrToLowerCopy(physicalName);
