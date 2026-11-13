@@ -27,6 +27,7 @@
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/exec/MaterializedOutputBufferManager.h"
 #include "velox/exec/OutputTransportRegistry.h"
+#include "velox/exec/PrestoMaterializedPartitionedOutput.h"
 #include "velox/exec/Task.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -113,6 +114,10 @@ class RecordingExchangeSink : public ExchangeSink {
 
 class MaterializedPartitionedOutputTest : public OperatorTestBase {
  protected:
+  virtual std::string serdeKind() const {
+    return "CompactRow";
+  }
+
   struct RunResult {
     std::shared_ptr<Task> task;
     std::shared_ptr<RecordingSinkState> sink;
@@ -132,7 +137,11 @@ class MaterializedPartitionedOutputTest : public OperatorTestBase {
         },
         64L << 20);
     auto registry = OutputTransportRegistry::create(nullptr);
-    registry->insert(std::string(kTransport), manager->transportEntry());
+    registry->insert(
+        std::string(kTransport),
+        serdeKind() == "Presto"
+            ? makePrestoMaterializedOutputTransportEntry(manager)
+            : manager->transportEntry());
 
     auto queryCtx = core::QueryCtx::create(driverExecutor_.get());
     queryCtx->setRegistry(OutputTransportRegistry::kRegistryKey, registry);
@@ -167,7 +176,7 @@ class MaterializedPartitionedOutputTest : public OperatorTestBase {
                         numPartitions,
                         replicateNullsAndAny,
                         {},
-                        "CompactRow",
+                        serdeKind(),
                         std::string(kTransport))
                     .planNode();
     return runPlan(std::move(plan), numPartitions, numDrivers);
@@ -177,17 +186,28 @@ class MaterializedPartitionedOutputTest : public OperatorTestBase {
       const std::shared_ptr<RecordingSinkState>& sink,
       const RowTypePtr& rowType) {
     std::vector<RowVectorPtr> results;
-    for (auto& data : sink->snapshotData()) {
-      if (data.empty()) {
-        continue;
-      }
-      ByteRange range{
-          reinterpret_cast<uint8_t*>(data.data()),
-          static_cast<int32_t>(data.size()),
-          0};
-      BufferInputStream stream({range});
+    for (const auto& data : sink->snapshotData()) {
+      auto pages = deserializePartition(data, rowType);
+      results.insert(results.end(), pages.begin(), pages.end());
+    }
+    return results;
+  }
+
+  std::vector<RowVectorPtr> deserializePartition(
+      std::string data,
+      const RowTypePtr& rowType) {
+    std::vector<RowVectorPtr> results;
+    if (data.empty()) {
+      return results;
+    }
+    ByteRange range{
+        reinterpret_cast<uint8_t*>(data.data()),
+        static_cast<int32_t>(data.size()),
+        0};
+    BufferInputStream stream({range});
+    while (!stream.atEnd()) {
       RowVectorPtr result;
-      getNamedVectorSerde("CompactRow")
+      getNamedVectorSerde(serdeKind())
           ->deserialize(&stream, pool(), rowType, &result, nullptr);
       results.push_back(std::move(result));
     }
@@ -466,6 +486,139 @@ TEST_F(MaterializedPartitionedOutputTest, propagatesSinkFinishFailure) {
       std::string::npos);
   EXPECT_TRUE(result.sink->aborted);
 }
+
+// Exercise the shared routing through both serialization implementations.
+class SharedMaterializedPartitionedOutputTest
+    : public MaterializedPartitionedOutputTest,
+      public testing::WithParamInterface<std::string> {
+ protected:
+  std::string serdeKind() const override {
+    return GetParam();
+  }
+};
+
+TEST_P(SharedMaterializedPartitionedOutputTest, partitionsBeforeProjection) {
+  constexpr int32_t kNumPartitions = 4;
+  auto data = makeRowVector({
+      makeFlatVector<int32_t>(100, [](auto row) { return row; }),
+      makeFlatVector<int64_t>(100, [](auto row) { return row * 7; }),
+  });
+  auto plan = PlanBuilder()
+                  .values({data})
+                  .partitionedOutput(
+                      {"c0"},
+                      kNumPartitions,
+                      false,
+                      {"c1"},
+                      serdeKind(),
+                      std::string(kTransport))
+                  .planNode();
+  const auto outputType = plan->outputType();
+  auto result = runPlan(std::move(plan), kNumPartitions);
+  const auto partitionData = result.sink->snapshotData();
+
+  HashPartitionFunction partitionFunction(
+      false, kNumPartitions, asRowType(data->type()), {0});
+  std::vector<uint32_t> partitions(data->size());
+  const auto singlePartition = partitionFunction.partition(*data, partitions);
+  for (int32_t partition = 0; partition < kNumPartitions; ++partition) {
+    SCOPED_TRACE(partition);
+    std::vector<int64_t> expected;
+    for (vector_size_t row = 0; row < data->size(); ++row) {
+      if (singlePartition.value_or(partitions[row]) ==
+          static_cast<uint32_t>(partition)) {
+        expected.push_back(row * 7);
+      }
+    }
+    assertEqualResults(
+        {makeRowVector({makeFlatVector<int64_t>(expected)})},
+        deserializePartition(partitionData[partition], outputType));
+  }
+}
+
+TEST_P(SharedMaterializedPartitionedOutputTest, replicationAcrossBatches) {
+  constexpr int32_t kNumPartitions = 4;
+  auto empty = makeRowVector({
+      makeFlatVector<int32_t>(0, [](auto) { return 0; }),
+      makeFlatVector<std::string>(0, [](auto) { return ""; }),
+  });
+  for (const bool firstRowNull : {false, true}) {
+    SCOPED_TRACE(firstRowNull);
+    auto first = makeRowVector({
+        makeNullableFlatVector<int32_t>(
+            {firstRowNull ? std::optional<int32_t>{} : 1, 2, std::nullopt}),
+        makeFlatVector<std::string>({"a", "b", "c"}),
+    });
+    auto second = makeRowVector({
+        makeNullableFlatVector<int32_t>({3, std::nullopt, 4}),
+        makeFlatVector<std::string>({"d", "e", "f"}),
+    });
+    auto result = runExchangeWrite(
+        {empty, first, empty, second}, kNumPartitions, 1, true);
+    std::map<std::string, int32_t> totals;
+    for (const auto& data : result.sink->snapshotData()) {
+      std::map<std::string, int32_t> counts;
+      for (const auto& vector :
+           deserializePartition(data, asRowType(first->type()))) {
+        auto* values = vector->childAt(1)->as<SimpleVector<StringView>>();
+        for (vector_size_t row = 0; row < vector->size(); ++row) {
+          const auto value = values->valueAt(row).str();
+          ++counts[value];
+          ++totals[value];
+        }
+      }
+      EXPECT_EQ(counts["a"], 1);
+      EXPECT_EQ(counts["c"], 1);
+      EXPECT_EQ(counts["e"], 1);
+    }
+    EXPECT_EQ(totals["b"], 1);
+    EXPECT_EQ(totals["d"], 1);
+    EXPECT_EQ(totals["f"], 1);
+  }
+}
+
+TEST_P(SharedMaterializedPartitionedOutputTest, broadcast) {
+  constexpr int32_t kNumPartitions = 4;
+  auto data = makeRowVector({
+      makeFlatVector<int32_t>({1, 2, 3}),
+      makeFlatVector<std::string>({"a", "b", "c"}),
+  });
+  auto source = PlanBuilder().values({data}, true).planNode();
+  auto plan = core::PartitionedOutputNode::broadcast(
+      "broadcast",
+      kNumPartitions,
+      asRowType(data->type()),
+      serdeKind(),
+      std::string(kTransport),
+      std::move(source));
+  auto result = runPlan(std::move(plan), kNumPartitions, 2);
+  EXPECT_TRUE(result.sink->finished);
+  for (const auto& partition : result.sink->snapshotData()) {
+    assertEqualResults(
+        {data, data}, deserializePartition(partition, asRowType(data->type())));
+  }
+}
+
+TEST_P(SharedMaterializedPartitionedOutputTest, propagatesSinkFinishFailure) {
+  auto data = makeRowVector({makeFlatVector<int32_t>({1, 2, 3})});
+  auto plan = PlanBuilder()
+                  .values({data})
+                  .partitionedOutput(
+                      {"c0"}, 4, {}, serdeKind(), std::string(kTransport))
+                  .planNode();
+  auto result = runPlan(
+      std::move(plan), 4, 1, /*failFinish=*/true, /*expectFailure=*/true);
+  EXPECT_NE(
+      result.task->errorMessage().find("Simulated sink finish failure"),
+      std::string::npos);
+  EXPECT_TRUE(result.sink->aborted);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Serde,
+    SharedMaterializedPartitionedOutputTest,
+    testing::Values(std::string("CompactRow"), std::string("Presto")),
+    [](const testing::TestParamInfo<std::string>& info) { return info.param; });
 
 } // namespace
 } // namespace facebook::velox::exec::test
