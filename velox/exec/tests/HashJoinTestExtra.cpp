@@ -15,6 +15,9 @@
  */
 
 #include <re2/re2.h>
+#include <chrono>
+#include <future>
+#include <thread>
 
 #include <fmt/format.h>
 #include "folly/synchronization/EventCount.h"
@@ -2522,6 +2525,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, reclaimDuringInputProcessing) {
           .referenceQuery(
               "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
           .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+          .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
           .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
             const auto statsPair = taskSpilledStats(*task);
             if (testData.expectedReclaimable) {
@@ -2678,6 +2682,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, reclaimDuringReserve) {
         .referenceQuery(
             "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
         .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+        .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
         .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
           const auto statsPair = taskSpilledStats(*task);
           ASSERT_GT(statsPair.first.spilledBytes, 0);
@@ -3080,6 +3085,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, reclaimDuringWaitForProbe) {
         .referenceQuery(
             "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
         .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+        .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
         .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
           const auto statsPair = taskSpilledStats(*task);
           ASSERT_GT(statsPair.first.spilledBytes, 0);
@@ -3697,6 +3703,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, exceededMaxSpillLevel) {
       .referenceQuery(
           "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
       .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+      .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
       .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
         auto opStats = toOperatorStats(task->taskStats());
         ASSERT_EQ(
@@ -4153,6 +4160,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, reclaimDuringTableBuild) {
       .referenceQuery(
           "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
       .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+      .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
       .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
         auto opStats = toOperatorStats(task->taskStats());
         ASSERT_GT(
@@ -4455,10 +4463,134 @@ DEBUG_ONLY_TEST_P(HashJoinTest, joinBuildSpillError) {
   waitForAllTasksToBeDeleted();
 }
 
+TEST_P(HashJoinTest, spilledProbeDriversDoNotWaitForPeers) {
+  // One probe batch round-robins onto one of the probe drivers, so the others
+  // run out of input immediately. The join output feeds a LocalMerge, whose
+  // bounded source queue blocks the loaded driver until the merge sees a row or
+  // the end from every other source. A probe driver that waited for its peers
+  // once its input ended would never end its source: the query would hang.
+  constexpr int32_t kNumRows = 20'000;
+  constexpr int32_t kNumDrivers = 4;
+  auto keys = makeFlatVector<int64_t>(kNumRows, [](auto row) { return row; });
+  auto probe = makeRowVector({"t0"}, {keys});
+  auto build = makeRowVector({"u0"}, {keys});
+
+  for (const bool injectSpill : {false, true}) {
+    SCOPED_TRACE(fmt::format("injectSpill: {}", injectSpill));
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    auto joinPlan =
+        PlanBuilder(planNodeIdGenerator)
+            .values({probe})
+            .localPartitionRoundRobin()
+            .hashJoin(
+                {"t0"},
+                {"u0"},
+                PlanBuilder(planNodeIdGenerator).values({build}).planNode(),
+                "",
+                {"t0"},
+                core::JoinType::kInner)
+            .planNode();
+    auto plan = PlanBuilder(planNodeIdGenerator)
+                    .localMerge({"t0"}, {joinPlan})
+                    .planNode();
+
+    auto spillDirectory = TempDirectoryPath::create();
+    auto queryResult = std::async(std::launch::async, [&]() {
+      TestScopedSpillInjection scopedSpillInjection(injectSpill ? 100 : 0);
+      return AssertQueryBuilder(plan)
+          .maxDrivers(kNumDrivers)
+          .spillDirectory(spillDirectory->getPath())
+          .config(core::QueryConfig::kSpillEnabled, true)
+          .config(core::QueryConfig::kJoinSpillEnabled, true)
+          .config(core::QueryConfig::kPreferredOutputBatchRows, 64)
+          .config(core::QueryConfig::kMaxOutputBatchRows, 64)
+          .copyResults(pool());
+    });
+    if (queryResult.wait_for(std::chrono::seconds(60)) !=
+        std::future_status::ready) {
+      for (auto& task : Task::getRunningTasks()) {
+        task->requestAbort().wait();
+      }
+      FAIL() << "Hash join probe drivers deadlocked with LocalMerge";
+    }
+    assertEqualResults({probe}, {queryResult.get()});
+  }
+  waitForAllTasksToBeDeleted();
+}
+
+DEBUG_ONLY_TEST_P(HashJoinTest, restoredTableBuildDoesNotWaitForIdleBuilder) {
+  // The HashBuild drivers restore spilled partitions. One of them is held off
+  // thread before it claims any restore work. Restoring a partition must not
+  // need it: the drivers that are running read all of its shards.
+  constexpr int32_t kNumDrivers = 3;
+  // The first table build is the unspilled table; later ones are restored.
+  std::atomic_int numTableBuilds{0};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::HashBuild::finishHashBuild",
+      std::function<void(HashBuild*)>(
+          [&](HashBuild* /*unused*/) { ++numTableBuilds; }));
+  std::atomic_bool heldBuilder{false};
+  std::atomic_bool restoredWhileHeld{false};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Driver::runInternal::isBlocked",
+      std::function<void(Operator*)>([&](Operator* op) {
+        auto* build = dynamic_cast<HashBuild*>(op);
+        if (build == nullptr || numTableBuilds == 0 ||
+            build->testingIsInputFromSpill() || heldBuilder.exchange(true)) {
+          return;
+        }
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (numTableBuilds < 2 &&
+               std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        restoredWhileHeld = numTableBuilds >= 2;
+      }));
+
+  constexpr int32_t kNumRows = 20'000;
+  auto keys = makeFlatVector<int64_t>(kNumRows, [](auto row) { return row; });
+  auto probe = makeRowVector({"t0"}, {keys});
+  auto build = makeRowVector({"u0"}, {keys});
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto plan = PlanBuilder(planNodeIdGenerator)
+                  .values({probe})
+                  .localPartitionRoundRobin()
+                  .hashJoin(
+                      {"t0"},
+                      {"u0"},
+                      PlanBuilder(planNodeIdGenerator)
+                          .values({build})
+                          .localPartitionRoundRobin()
+                          .planNode(),
+                      "",
+                      {"t0"},
+                      core::JoinType::kInner)
+                  .planNode();
+
+  auto spillDirectory = TempDirectoryPath::create();
+  RowVectorPtr result;
+  {
+    TestScopedSpillInjection scopedSpillInjection(100);
+    result = AssertQueryBuilder(plan)
+                 .maxDrivers(kNumDrivers)
+                 .spillDirectory(spillDirectory->getPath())
+                 .config(core::QueryConfig::kSpillEnabled, true)
+                 .config(core::QueryConfig::kJoinSpillEnabled, true)
+                 .copyResults(pool());
+  }
+  ASSERT_TRUE(heldBuilder);
+  ASSERT_TRUE(restoredWhileHeld)
+      << "A restored table waited for a HashBuild driver that claimed no work";
+  assertEqualResults({probe}, {result});
+  waitForAllTasksToBeDeleted();
+}
+
 DEBUG_ONLY_TEST_P(HashJoinTest, probeSpillOnWaitForPeers) {
   // This test creates a scenario when tester probe thread finishes processing
-  // input, entering kWaitForPeers state, and the other thread is still
-  // processing, spill is triggered properly performed.
+  // input while the other thread is still processing, and checks that spill
+  // is triggered and properly performed. The tester stays attached to the
+  // table in kRunning: probe operators never wait for their peers.
 
   folly::EventCount startWait;
   folly::Synchronized<std::string> testerOpName;
@@ -4482,8 +4614,8 @@ DEBUG_ONLY_TEST_P(HashJoinTest, probeSpillOnWaitForPeers) {
         startWait.await([&]() { return injectedSpillOnce.load(); });
       }));
 
-  // tester probe operator is guaranteed to be in kWaitForPeers state the next
-  // isBlocked() is called after noMoreInput() is called.
+  // tester probe operator has finished its input the next time isBlocked() is
+  // called after noMoreInput() is called.
   std::atomic_bool noMoreInputCalled{false};
   SCOPED_TESTVALUE_SET(
       "facebook::velox::exec::Driver::runInternal::noMoreInput",
@@ -4506,7 +4638,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, probeSpillOnWaitForPeers) {
         injectedSpillOnce = true;
         EXPECT_EQ(
             dynamic_cast<HashProbe*>(op)->testingState(),
-            ProbeOperatorState::kWaitForPeers);
+            ProbeOperatorState::kRunning);
         testingRunArbitration(op->pool());
       }));
 
@@ -4900,6 +5032,8 @@ DEBUG_ONLY_TEST_P(HashJoinTest, hashProbeSpillWhenOneOfProbeFinish) {
 
   std::atomic_bool probeWaitFlag{true};
   folly::EventCount probeWait;
+  std::atomic_bool arbitrationWaitFlag{true};
+  folly::EventCount arbitrationWait;
   std::atomic_int numBlockedProbeOps{0};
   SCOPED_TESTVALUE_SET(
       "facebook::velox::exec::Driver::runInternal::getOutput",
@@ -4908,7 +5042,11 @@ DEBUG_ONLY_TEST_P(HashJoinTest, hashProbeSpillWhenOneOfProbeFinish) {
           return;
         }
         if (++numBlockedProbeOps <= numDrivers - 1) {
+          // Keep these probes' input unprocessed until the arbitration has
+          // run, off thread so that the task can pause.
+          TestSuspendedSection suspendedSection(op->operatorCtx()->driver());
           probeWait.await([&]() { return !probeWaitFlag.load(); });
+          arbitrationWait.await([&]() { return !arbitrationWaitFlag.load(); });
           return;
         }
       }));
@@ -4949,6 +5087,8 @@ DEBUG_ONLY_TEST_P(HashJoinTest, hashProbeSpillWhenOneOfProbeFinish) {
   // Wait until one of the hash probe operator has finished.
   probeWait.await([&]() { return !probeWaitFlag.load(); });
   memory::testingRunArbitration();
+  arbitrationWaitFlag = false;
+  arbitrationWait.notifyAll();
   queryThread.join();
 }
 
@@ -5491,6 +5631,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, buildReclaimedMemoryReport) {
         .referenceQuery(
             "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
         .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+        .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
         .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
           const auto statsPair = taskSpilledStats(*task);
           ASSERT_GT(statsPair.first.spilledBytes, 0);
@@ -5596,6 +5737,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, probeReclaimedMemoryReport) {
         .referenceQuery(
             "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
         .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+        .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
         .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
           const auto statsPair = taskSpilledStats(*task);
           // The spill triggered at the probe side.
@@ -5677,6 +5819,7 @@ DEBUG_ONLY_TEST_P(HashJoinTest, hashTableCleanupAfterProbeFinish) {
       .referenceQuery(
           "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
       .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+      .config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3")
       .run();
   ASSERT_TRUE(tableEmpty);
 }

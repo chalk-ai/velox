@@ -139,6 +139,7 @@ const std::vector<config::ConfigProperty>& QueryConfig::registeredProperties() {
     VELOX_REGISTER_QUERY_CONFIG(kRowNumberSpillFileCreateConfig);
     VELOX_REGISTER_QUERY_CONFIG(kSpillStartPartitionBit);
     VELOX_REGISTER_QUERY_CONFIG(kSpillNumPartitionBits);
+    VELOX_REGISTER_QUERY_CONFIG(kHashJoinSpillNumPartitionBits);
     VELOX_REGISTER_QUERY_CONFIG(kMinSpillableReservationPct);
     VELOX_REGISTER_QUERY_CONFIG(kSpillableReservationGrowthPct);
 

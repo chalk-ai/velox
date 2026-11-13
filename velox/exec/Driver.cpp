@@ -179,11 +179,20 @@ std::optional<common::SpillConfig> DriverCtx::makeSpillConfig(
       };
 
   std::string fileCreateConfig = queryConfig.spillFileCreateConfig();
+  uint8_t numPartitionBits = queryConfig.spillNumPartitionBits();
+  uint64_t writeBufferSize = queryConfig.spillWriteBufferSize();
   if (isHashJoinSpillOperator(operatorType)) {
     const auto& hashJoinConfig = queryConfig.hashJoinSpillFileCreateConfig();
     if (!hashJoinConfig.empty()) {
       fileCreateConfig = hashJoinConfig;
     }
+    // Every partition being written holds its own write buffer, so finer hash
+    // join partitioning shrinks each buffer to keep the total unchanged.
+    const auto hashJoinBits = queryConfig.hashJoinSpillNumPartitionBits();
+    if (hashJoinBits > numPartitionBits) {
+      writeBufferSize >>= (hashJoinBits - numPartitionBits);
+    }
+    numPartitionBits = hashJoinBits;
   } else if (isAggregationSpillOperator(operatorType)) {
     const auto& aggregationConfig =
         queryConfig.aggregationSpillFileCreateConfig();
@@ -202,13 +211,13 @@ std::optional<common::SpillConfig> DriverCtx::makeSpillConfig(
       std::move(updateAndCheckSpillLimitCb),
       spillFilePrefix,
       queryConfig.maxSpillFileSize(),
-      queryConfig.spillWriteBufferSize(),
+      writeBufferSize,
       queryConfig.spillReadBufferSize(),
       task->queryCtx()->spillExecutor(),
       queryConfig.minSpillableReservationPct(),
       queryConfig.spillableReservationGrowthPct(),
       queryConfig.spillStartPartitionBit(),
-      queryConfig.spillNumPartitionBits(),
+      numPartitionBits,
       queryConfig.maxSpillLevel(),
       queryConfig.maxSpillRunRows(),
       queryConfig.writerFlushThresholdBytes(),
@@ -519,6 +528,12 @@ CpuWallTiming Driver::processLazyIoStats(
 }
 
 bool Driver::shouldYield() const {
+  // A pending pause (e.g. memory arbitration) waits for every running driver to
+  // go off thread, so long operator loops must return even without time
+  // slicing.
+  if (task()->pauseRequested()) {
+    return true;
+  }
   if (cpuSliceMs_ == 0) {
     return false;
   }

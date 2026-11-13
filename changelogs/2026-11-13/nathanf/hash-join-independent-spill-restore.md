@@ -1,0 +1,6 @@
+- Fix hash join spill restore requiring probe drivers to wait for each other: a probe driver that runs out of input now restores the spilled partitions it holds rows for on its own, sharing in-memory tables with drivers that need the same partition at the same time, so a multi-driver hash join with spilling no longer deadlocks against a downstream consumer such as LocalMerge
+- Fix restored spill partitions waiting for every HashBuild driver: builders claim per-file shards of a partition, and the one that reads the last shard merges and publishes the table
+- Delete hash join build and probe spill files as soon as no probe driver can still need them, instead of when the task finishes
+- Add `hash_join_spill_num_partition_bits` (default 6, 64-way partitioning) so the restored tables that probe drivers hold at once stay small; an explicit `spiller_num_partition_bits` still applies when it is unset, and per-partition write buffers shrink to keep the total unchanged
+- Make `Driver::shouldYield()` return true when the task has a pause pending, so long operator loops give up the thread for memory arbitration even without CPU time slicing
+- Run `velox/exec/tests/HashJoinTestExtra.cpp` as its own Bazel test target; it was compiled into a library and never run

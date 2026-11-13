@@ -697,6 +697,13 @@ class HashJoinBuilder {
       // want many spilled vectors in a spilled file to trigger recursive
       // spilling.
       config(core::QueryConfig::kSpillWriteBufferSize, std::to_string(0));
+      // Partition bits start at hash bit 48, so the default 6 bits per level
+      // only reach spill level 1. Deeper levels need narrower partitions.
+      if ((maxSpillLevel == -1 || maxSpillLevel > 1) &&
+          !configs_.count(core::QueryConfig::kHashJoinSpillNumPartitionBits) &&
+          !configs_.count(core::QueryConfig::kSpillNumPartitionBits)) {
+        config(core::QueryConfig::kHashJoinSpillNumPartitionBits, "3");
+      }
       spillPct = 100;
     } else if (!spillDirectory_.empty()) {
       builder.spillDirectory(spillDirectory_);
