@@ -15,6 +15,7 @@
  */
 
 #include "velox/exec/HashJoinBridge.h"
+#include "velox/common/file/FileSystems.h"
 #include "velox/exec/HashBuild.h"
 
 namespace facebook::velox::exec {
@@ -69,6 +70,23 @@ void HashJoinBridge::start() {
   std::lock_guard<std::mutex> l(mutex_);
   started_ = true;
   VELOX_CHECK_GT(numBuilders_, 0);
+  if (sharedSpillRestore_) {
+    // Every probe driver starts with pending work on the unspilled table,
+    // which the HashBuild operators are building from their input.
+    auto& root = sharedPartitions_[std::nullopt];
+    root.state = SharedPartition::State::kBuilding;
+    root.numPendingWork = numProbers_;
+    totalPendingWork_ = numProbers_;
+    buildInProgress_ = true;
+  }
+}
+
+void HashJoinBridge::addProber(bool emitBuildSideRows) {
+  std::lock_guard<std::mutex> l(mutex_);
+  VELOX_CHECK(!started_);
+  sharedSpillRestore_ = true;
+  emitBuildSideRows_ = emitBuildSideRows;
+  ++numProbers_;
 }
 
 void HashJoinBridge::addBuilder() {
@@ -78,9 +96,27 @@ void HashJoinBridge::addBuilder() {
 }
 
 void HashJoinBridge::reclaim() {
-  std::lock_guard<std::mutex> l(mutex_);
+  std::unique_lock<std::mutex> l(mutex_);
   VELOX_CHECK(tableSpillFunc_ == nullptr || !probeStarted_);
   if (tableSpillFunc_ == nullptr) {
+    return;
+  }
+  if (sharedSpillRestore_) {
+    auto& root = sharedPartitions_.at(std::nullopt);
+    if (root.state != SharedPartition::State::kInMemory ||
+        root.table == nullptr || root.table->numDistinct() == 0) {
+      return;
+    }
+    auto table = root.table;
+    auto spillPartitionSet = tableSpillFunc_(table);
+    table->clear(true);
+    std::vector<SpillFiles> filesToDelete;
+    splitLocked(
+        std::nullopt,
+        std::move(table),
+        std::move(spillPartitionSet),
+        filesToDelete);
+    notifySharedWaiters(l, std::move(filesToDelete));
     return;
   }
   if (!buildResult_.has_value() || buildResult_->table == nullptr ||
@@ -230,6 +266,21 @@ void HashJoinBridge::setHashTable(
     HashJoinTableSpillFunc&& tableSpillFunc) {
   VELOX_CHECK_NOT_NULL(table, "setHashTable called with null table");
   VELOX_CHECK(table->numDistinct() == 0 || spillPartitionSet.empty());
+  if (sharedSpillRestore_) {
+    std::unique_lock<std::mutex> l(mutex_);
+    VELOX_CHECK(started_);
+    if (!probeStarted_ && !restoringSpillPartitionId_.has_value()) {
+      tableSpillFunc_ = std::move(tableSpillFunc);
+    }
+    std::vector<SpillFiles> filesToDelete;
+    setSharedHashTableLocked(
+        std::move(table),
+        std::move(spillPartitionSet),
+        hasNullKeys,
+        filesToDelete);
+    notifySharedWaiters(l, std::move(filesToDelete));
+    return;
+  }
   std::vector<ContinuePromise> promises;
   {
     std::lock_guard<std::mutex> l(mutex_);
@@ -275,6 +326,7 @@ void HashJoinBridge::appendSpilledHashTablePartitions(
       !spillPartitionSet.empty(), "Spilled table partitions can't be empty");
   std::lock_guard<std::mutex> l(mutex_);
   VELOX_CHECK(started_);
+  VELOX_CHECK(!sharedSpillRestore_);
   VELOX_CHECK(probeStarted_);
   VELOX_CHECK(buildResult_.has_value());
   VELOX_CHECK(restoringSpillShards_.empty());
@@ -291,6 +343,20 @@ void HashJoinBridge::appendSpilledHashTablePartitionsLocked(
 }
 
 void HashJoinBridge::setAntiJoinHasNullKeys() {
+  if (sharedSpillRestore_) {
+    std::unique_lock<std::mutex> l(mutex_);
+    VELOX_CHECK(started_);
+    VELOX_CHECK(!restoringSpillPartitionId_.has_value());
+    // A null build key makes the join return nothing: the unspilled table
+    // carries 'hasNullKeys' without a table, and nothing else is restored.
+    auto& root = sharedPartitions_.at(std::nullopt);
+    root.state = SharedPartition::State::kInMemory;
+    root.table = nullptr;
+    root.hasNullKeys = true;
+    buildInProgress_ = false;
+    notifySharedWaiters(l, {});
+    return;
+  }
   std::vector<ContinuePromise> promises;
   {
     std::lock_guard<std::mutex> l(mutex_);
@@ -315,6 +381,7 @@ std::optional<HashJoinBridge::HashBuildResult> HashJoinBridge::tableOrFuture(
       !buildResult_.has_value() ||
       (!restoringSpillPartitionId_.has_value() &&
        restoringSpillShards_.empty()));
+  VELOX_CHECK(!sharedSpillRestore_);
   probeStarted_ = true;
   tableSpillFunc_ = nullptr;
   if (buildResult_.has_value()) {
@@ -330,6 +397,7 @@ void HashJoinBridge::probeFinished(bool restart) {
   {
     std::lock_guard<std::mutex> l(mutex_);
     VELOX_CHECK(started_);
+    VELOX_CHECK(!sharedSpillRestore_);
     VELOX_CHECK(buildResult_.has_value());
     VELOX_CHECK(
         !restoringSpillPartitionId_.has_value() &&
@@ -378,6 +446,7 @@ std::optional<HashJoinBridge::SpillInput> HashJoinBridge::spillInputOrFuture(
   std::lock_guard<std::mutex> l(mutex_);
   VELOX_CHECK(started_);
   VELOX_CHECK(!cancelled_, "Getting spill input after join is aborted");
+  VELOX_CHECK(!sharedSpillRestore_);
   VELOX_DCHECK(
       !restoringSpillPartitionId_.has_value() || !buildResult_.has_value());
 
@@ -402,6 +471,554 @@ std::optional<HashJoinBridge::SpillInput> HashJoinBridge::spillInputOrFuture(
   auto spillShard = std::move(restoringSpillShards_.back());
   restoringSpillShards_.pop_back();
   return SpillInput(std::move(spillShard));
+}
+
+void deleteSpillFiles(const SpillFiles& files) {
+  for (const auto& file : files) {
+    try {
+      filesystems::getFileSystem(file.path, nullptr)->remove(file.path);
+    } catch (const std::exception& e) {
+      // The task removes its spill directory when it finishes, so a failed
+      // delete only keeps the file until then.
+      LOG(WARNING) << "Failed to delete spill file " << file.path << ": "
+                   << e.what();
+    }
+  }
+}
+
+void HashJoinBridge::notifySharedWaiters(
+    std::unique_lock<std::mutex>& lock,
+    std::vector<SpillFiles> filesToDelete) {
+  auto promises = std::move(promises_);
+  promises_.clear();
+  lock.unlock();
+  notify(std::move(promises));
+  for (const auto& files : filesToDelete) {
+    deleteSpillFiles(files);
+  }
+}
+
+bool HashJoinBridge::allSharedWorkDoneLocked() const {
+  return totalPendingWork_ == 0 && finalizeQueue_.empty() &&
+      numFinalizing_ == 0;
+}
+
+bool HashJoinBridge::neededLocked(const PartitionKey& partition) const {
+  PartitionKey key = partition;
+  for (;;) {
+    const auto it = sharedPartitions_.find(key);
+    if (it != sharedPartitions_.end() && it->second.numPendingWork > 0) {
+      return true;
+    }
+    if (!key.has_value()) {
+      return false;
+    }
+    key = key->parentId();
+  }
+}
+
+void HashJoinBridge::releaseUnneededLocked(
+    const PartitionKey& partition,
+    std::vector<SpillFiles>& filesToDelete) {
+  auto it = sharedPartitions_.find(partition);
+  if (it == sharedPartitions_.end()) {
+    return;
+  }
+  auto& entry = it->second;
+  if (entry.numPendingWork > 0) {
+    return;
+  }
+  using State = SharedPartition::State;
+  if (entry.state == State::kSplit) {
+    // A split table is empty and its build files are already deleted; only
+    // its children carry rows.
+    const auto children = entry.children;
+    if (entry.numAttached == 0) {
+      sharedPartitions_.erase(it);
+    }
+    for (const auto& child : children) {
+      releaseUnneededLocked(child, filesToDelete);
+    }
+    return;
+  }
+  if (emitBuildSideRows_) {
+    // No probe row can reach this table any more, so its probed flags are
+    // final. One driver emits its build-side rows, then finishFinalize()
+    // releases it.
+    if (!entry.finalizeAssigned) {
+      entry.finalizeAssigned = true;
+      finalizeQueue_.push_back(partition);
+    }
+    return;
+  }
+  // Attached operators release it when they detach; a running build releases
+  // it when it completes.
+  if (entry.numAttached > 0 || entry.state == State::kBuilding) {
+    return;
+  }
+  if (entry.state == State::kQueued) {
+    buildQueue_.erase(
+        std::remove(buildQueue_.begin(), buildQueue_.end(), *partition),
+        buildQueue_.end());
+  }
+  if (entry.table != nullptr) {
+    entry.table->clear(true);
+  }
+  filesToDelete.push_back(std::move(entry.buildFiles));
+  sharedPartitions_.erase(it);
+}
+
+void HashJoinBridge::onWorkDroppedLocked(
+    const PartitionKey& partition,
+    std::vector<SpillFiles>& filesToDelete) {
+  if (!neededLocked(partition)) {
+    releaseUnneededLocked(partition, filesToDelete);
+    return;
+  }
+  const auto it = sharedPartitions_.find(partition);
+  if (it == sharedPartitions_.end()) {
+    return;
+  }
+  // Free an idle table that is still needed but can be rebuilt from its spill
+  // files. A table that emits build-side rows carries probed flags, so it
+  // stays in memory until finalized or spilled by memory arbitration.
+  auto& entry = it->second;
+  if (!emitBuildSideRows_ && entry.state == SharedPartition::State::kInMemory &&
+      entry.numAttached == 0 && !entry.buildFiles.empty()) {
+    entry.table->clear(true);
+    entry.table.reset();
+    entry.state = SharedPartition::State::kSpilled;
+  }
+}
+
+void HashJoinBridge::splitLocked(
+    const PartitionKey& partition,
+    std::shared_ptr<BaseHashTable> table,
+    SpillPartitionSet children,
+    std::vector<SpillFiles>& filesToDelete) {
+  VELOX_CHECK(!children.empty());
+  auto& entry = sharedPartitions_.at(partition);
+  VELOX_CHECK(
+      entry.state == SharedPartition::State::kInMemory ||
+      entry.state == SharedPartition::State::kBuilding);
+  entry.state = SharedPartition::State::kSplit;
+  entry.table = std::move(table);
+  // The children hold every row of this table, so its files are obsolete.
+  filesToDelete.push_back(std::move(entry.buildFiles));
+  entry.buildFiles.clear();
+  for (auto& [id, spillPartition] : children) {
+    VELOX_CHECK_EQ(sharedPartitions_.count(id), 0, "{}", id.toString());
+    auto& child = sharedPartitions_[id];
+    child.buildFiles = spillPartition->files();
+    entry.children.insert(id);
+  }
+  if (!neededLocked(partition)) {
+    releaseUnneededLocked(partition, filesToDelete);
+  }
+}
+
+void HashJoinBridge::maybeStartNextBuildLocked() {
+  if (buildInProgress_) {
+    return;
+  }
+  while (!buildQueue_.empty()) {
+    const auto id = buildQueue_.front();
+    buildQueue_.pop_front();
+    auto it = sharedPartitions_.find(id);
+    if (it == sharedPartitions_.end() ||
+        it->second.state != SharedPartition::State::kQueued) {
+      continue;
+    }
+    it->second.state = SharedPartition::State::kBuilding;
+    buildInProgress_ = true;
+    restoringSpillPartitionId_ = id;
+    VELOX_CHECK(restoreBuilders_.empty());
+    VELOX_CHECK_EQ(numActiveRestoreBuilders_, 0);
+    // Builders read a copy: the files stay canonical until the partition is
+    // released, so a dropped table can be built again. One shard per file lets
+    // whichever builders are running share the work.
+    const auto& files = it->second.buildFiles;
+    VELOX_CHECK(!files.empty());
+    SpillPartition spillPartition(id, files);
+    restoringSpillShards_ = spillPartition.split(files.size());
+    return;
+  }
+}
+
+void HashJoinBridge::setSharedHashTableLocked(
+    std::shared_ptr<BaseHashTable> table,
+    SpillPartitionSet spillPartitionSet,
+    bool hasNullKeys,
+    std::vector<SpillFiles>& filesToDelete) {
+  VELOX_CHECK(buildInProgress_);
+  VELOX_CHECK(restoringSpillShards_.empty());
+  const PartitionKey partition = restoringSpillPartitionId_;
+  restoringSpillPartitionId_.reset();
+  buildInProgress_ = false;
+  ++buildGeneration_;
+  VELOX_CHECK_EQ(numActiveRestoreBuilders_, 0);
+  restoreBuilders_.clear();
+
+  auto& entry = sharedPartitions_.at(partition);
+  VELOX_CHECK(entry.state == SharedPartition::State::kBuilding);
+  // Null-aware joins need this even when the table spilled.
+  entry.hasNullKeys = hasNullKeys;
+  if (!spillPartitionSet.empty()) {
+    splitLocked(
+        partition,
+        std::move(table),
+        std::move(spillPartitionSet),
+        filesToDelete);
+  } else {
+    entry.state = SharedPartition::State::kInMemory;
+    entry.table = std::move(table);
+    // Releases the table if every operator that asked for it went away.
+    if (entry.numAttached == 0) {
+      onWorkDroppedLocked(partition, filesToDelete);
+    }
+  }
+  maybeStartNextBuildLocked();
+}
+
+std::optional<HashJoinBridge::SpillInput> HashJoinBridge::claimRestoreShard(
+    HashBuild* builder,
+    uint64_t* generation,
+    ContinueFuture* future) {
+  std::lock_guard<std::mutex> l(mutex_);
+  VELOX_CHECK(started_);
+  VELOX_CHECK(sharedSpillRestore_);
+  VELOX_CHECK(!cancelled_, "Getting spill input after join is aborted");
+  if (!restoringSpillShards_.empty()) {
+    auto shard = std::move(restoringSpillShards_.back());
+    restoringSpillShards_.pop_back();
+    restoreBuilders_.push_back(builder);
+    ++numActiveRestoreBuilders_;
+    *generation = buildGeneration_;
+    return SpillInput(std::move(shard));
+  }
+  // No probe operator can request another table once all work is done.
+  if (!buildInProgress_ && allSharedWorkDoneLocked()) {
+    return SpillInput{};
+  }
+  promises_.emplace_back("HashJoinBridge::claimRestoreShard");
+  *future = promises_.back().getSemiFuture();
+  return std::nullopt;
+}
+
+std::unique_ptr<SpillPartition> HashJoinBridge::claimMoreRestoreShard() {
+  std::lock_guard<std::mutex> l(mutex_);
+  if (restoringSpillShards_.empty()) {
+    return nullptr;
+  }
+  auto shard = std::move(restoringSpillShards_.back());
+  restoringSpillShards_.pop_back();
+  return shard;
+}
+
+std::optional<std::vector<HashBuild*>> HashJoinBridge::finishRestoreShards() {
+  std::lock_guard<std::mutex> l(mutex_);
+  VELOX_CHECK(buildInProgress_);
+  VELOX_CHECK_GT(numActiveRestoreBuilders_, 0);
+  // Shards are only added when a build starts, so none can appear after the
+  // caller found none left.
+  if (--numActiveRestoreBuilders_ > 0 || !restoringSpillShards_.empty()) {
+    return std::nullopt;
+  }
+  return restoreBuilders_;
+}
+
+bool HashJoinBridge::restoreMergeDoneOrFuture(
+    uint64_t generation,
+    ContinueFuture* future) {
+  std::lock_guard<std::mutex> l(mutex_);
+  VELOX_CHECK(!cancelled_, "Waiting for hash table after join is aborted");
+  if (buildGeneration_ > generation) {
+    return true;
+  }
+  promises_.emplace_back("HashJoinBridge::restoreMergeDoneOrFuture");
+  *future = promises_.back().getSemiFuture();
+  return false;
+}
+
+std::optional<HashJoinBridge::HashBuildResult> HashJoinBridge::acquireTable(
+    const PartitionKey& partition,
+    bool reserved,
+    ContinueFuture* future) {
+  std::unique_lock<std::mutex> l(mutex_);
+  VELOX_CHECK(started_);
+  VELOX_CHECK(sharedSpillRestore_);
+  VELOX_CHECK(!cancelled_, "Getting hash table after join is aborted");
+  probeStarted_ = true;
+  tableSpillFunc_ = nullptr;
+
+  auto& entry = sharedPartitions_.at(partition);
+  if (!reserved) {
+    ++entry.numAttached;
+  }
+  using State = SharedPartition::State;
+  switch (entry.state) {
+    case State::kInMemory:
+      if (entry.table == nullptr) {
+        VELOX_CHECK(entry.hasNullKeys);
+        return HashBuildResult{};
+      }
+      return HashBuildResult(entry.table, partition, {}, entry.hasNullKeys);
+    case State::kSplit:
+      return HashBuildResult(
+          entry.table, partition, entry.children, entry.hasNullKeys);
+    case State::kSpilled:
+      VELOX_CHECK(partition.has_value());
+      entry.state = State::kQueued;
+      buildQueue_.push_back(partition.value());
+      [[fallthrough]];
+    case State::kQueued:
+      [[fallthrough]];
+    case State::kBuilding: {
+      const bool wasBuilding = buildInProgress_;
+      maybeStartNextBuildLocked();
+      // Wake the idle HashBuild operators if a build started.
+      std::vector<ContinuePromise> promises;
+      if (!wasBuilding && buildInProgress_) {
+        promises = std::move(promises_);
+        promises_.clear();
+      }
+      promises_.emplace_back("HashJoinBridge::acquireTable");
+      *future = promises_.back().getSemiFuture();
+      l.unlock();
+      notify(std::move(promises));
+      return std::nullopt;
+    }
+  }
+  VELOX_UNREACHABLE();
+}
+
+bool HashJoinBridge::releaseTable(
+    const PartitionKey& partition,
+    const std::vector<SpillPartitionId>& newWork,
+    ProbeInputFlags flags) {
+  std::unique_lock<std::mutex> l(mutex_);
+  VELOX_CHECK(sharedSpillRestore_);
+  probeInputFlags_.sawInput |= flags.sawInput;
+  probeInputFlags_.sawNullKeys |= flags.sawNullKeys;
+
+  auto& entry = sharedPartitions_.at(partition);
+  VELOX_CHECK_GT(entry.numAttached, 0);
+  VELOX_CHECK_GT(entry.numPendingWork, 0);
+  --entry.numAttached;
+  --entry.numPendingWork;
+  --totalPendingWork_;
+  // The children were created when this partition split, and this operator's
+  // pending work on it kept them alive until now.
+  for (const auto& id : newWork) {
+    ++sharedPartitions_.at(id).numPendingWork;
+    ++totalPendingWork_;
+  }
+
+  std::vector<SpillFiles> filesToDelete;
+  bool finalize{false};
+  if (emitBuildSideRows_ && entry.state == SharedPartition::State::kInMemory &&
+      entry.table != nullptr && !entry.finalizeAssigned &&
+      !neededLocked(partition)) {
+    // The caller is the last user of the table; it emits the build-side rows
+    // from the table it already holds.
+    entry.finalizeAssigned = true;
+    ++entry.numAttached;
+    ++numFinalizing_;
+    finalize = true;
+  } else {
+    onWorkDroppedLocked(partition, filesToDelete);
+  }
+  if (allSharedWorkDoneLocked()) {
+    notifySharedWaiters(l, std::move(filesToDelete));
+  } else {
+    l.unlock();
+    for (const auto& files : filesToDelete) {
+      deleteSpillFiles(files);
+    }
+  }
+  return finalize;
+}
+
+std::optional<HashJoinBridge::PartitionKey> HashJoinBridge::takeFinalizeWork() {
+  std::lock_guard<std::mutex> l(mutex_);
+  while (!finalizeQueue_.empty()) {
+    auto partition = finalizeQueue_.front();
+    finalizeQueue_.pop_front();
+    if (sharedPartitions_.count(partition) == 0) {
+      continue;
+    }
+    ++numFinalizing_;
+    return partition;
+  }
+  return std::nullopt;
+}
+
+void HashJoinBridge::finishFinalize(const PartitionKey& partition) {
+  std::unique_lock<std::mutex> l(mutex_);
+  auto it = sharedPartitions_.find(partition);
+  VELOX_CHECK(it != sharedPartitions_.end());
+  auto& entry = it->second;
+  VELOX_CHECK_GT(entry.numAttached, 0);
+  VELOX_CHECK_GT(numFinalizing_, 0);
+  --entry.numAttached;
+  --numFinalizing_;
+  std::vector<SpillFiles> filesToDelete;
+  if (entry.state != SharedPartition::State::kSplit) {
+    if (entry.table != nullptr) {
+      entry.table->clear(true);
+    }
+    filesToDelete.push_back(std::move(entry.buildFiles));
+  }
+  if (entry.numAttached == 0) {
+    sharedPartitions_.erase(it);
+  }
+  if (allSharedWorkDoneLocked()) {
+    notifySharedWaiters(l, std::move(filesToDelete));
+  } else {
+    l.unlock();
+    for (const auto& files : filesToDelete) {
+      deleteSpillFiles(files);
+    }
+  }
+}
+
+HashJoinBridge::ProbeInputFlags HashJoinBridge::probeInputFlags() {
+  std::lock_guard<std::mutex> l(mutex_);
+  return probeInputFlags_;
+}
+
+SpillPartitionId HashJoinBridge::chooseNextWork(
+    const std::vector<SpillPartitionId>& candidates) {
+  VELOX_CHECK(!candidates.empty());
+  std::lock_guard<std::mutex> l(mutex_);
+  using State = SharedPartition::State;
+  const auto rank = [&](const SpillPartitionId& id) {
+    const auto it = sharedPartitions_.find(id);
+    if (it == sharedPartitions_.end()) {
+      return 4;
+    }
+    switch (it->second.state) {
+      case State::kInMemory:
+      case State::kSplit:
+        return 0;
+      case State::kBuilding:
+        return 1;
+      case State::kQueued:
+        return 2;
+      case State::kSpilled:
+        return 3;
+    }
+    return 4;
+  };
+  auto best = candidates.front();
+  auto bestRank = rank(best);
+  for (const auto& id : candidates) {
+    const auto idRank = rank(id);
+    if (idRank < bestRank) {
+      best = id;
+      bestRank = idRank;
+    }
+  }
+  return best;
+}
+
+void HashJoinBridge::abandonProbeWork(
+    const std::optional<PartitionKey>& current,
+    bool attached,
+    bool holdsWork,
+    bool finalizing,
+    const std::vector<SpillPartitionId>& pendingWork) {
+  std::unique_lock<std::mutex> l(mutex_);
+  if (!sharedSpillRestore_ || !started_) {
+    return;
+  }
+  std::vector<SpillFiles> filesToDelete;
+  for (const auto& id : pendingWork) {
+    --sharedPartitions_.at(id).numPendingWork;
+    --totalPendingWork_;
+  }
+  if (current.has_value()) {
+    auto& entry = sharedPartitions_.at(*current);
+    if (attached) {
+      --entry.numAttached;
+    }
+    if (holdsWork) {
+      --entry.numPendingWork;
+      --totalPendingWork_;
+    }
+    if (finalizing) {
+      // Hand the build-side rows to another driver.
+      --numFinalizing_;
+      if (entry.state != SharedPartition::State::kSplit) {
+        finalizeQueue_.push_back(*current);
+      }
+    }
+    onWorkDroppedLocked(*current, filesToDelete);
+  }
+  for (const auto& id : pendingWork) {
+    onWorkDroppedLocked(id, filesToDelete);
+  }
+  notifySharedWaiters(l, std::move(filesToDelete));
+}
+
+void HashJoinBridge::splitPartition(
+    const PartitionKey& partition,
+    SpillPartitionSet children) {
+  std::unique_lock<std::mutex> l(mutex_);
+  VELOX_CHECK(sharedSpillRestore_);
+  auto table = sharedPartitions_.at(partition).table;
+  std::vector<SpillFiles> filesToDelete;
+  splitLocked(partition, std::move(table), std::move(children), filesToDelete);
+  l.unlock();
+  for (const auto& files : filesToDelete) {
+    deleteSpillFiles(files);
+  }
+}
+
+int32_t HashJoinBridge::numPendingWork(const PartitionKey& partition) {
+  std::lock_guard<std::mutex> l(mutex_);
+  const auto it = sharedPartitions_.find(partition);
+  return it == sharedPartitions_.end() ? 0 : it->second.numPendingWork;
+}
+
+int32_t HashJoinBridge::spillIdleTables(
+    const std::function<SpillPartitionSet(
+        const PartitionKey&,
+        const std::shared_ptr<BaseHashTable>&)>& spillFunc) {
+  // Runs under memory arbitration with the task paused, so no operator touches
+  // the tables while they spill.
+  std::unique_lock<std::mutex> l(mutex_);
+  // Before any probe attaches, reclaim() spills the unspilled table on behalf
+  // of the build side.
+  if (!sharedSpillRestore_ || !probeStarted_) {
+    return 0;
+  }
+  std::vector<PartitionKey> idle;
+  for (const auto& [partition, entry] : sharedPartitions_) {
+    if (entry.state == SharedPartition::State::kInMemory &&
+        entry.numAttached == 0 && entry.table != nullptr &&
+        entry.table->numDistinct() > 0) {
+      idle.push_back(partition);
+    }
+  }
+  std::vector<SpillFiles> filesToDelete;
+  int32_t numSpilled{0};
+  for (const auto& partition : idle) {
+    auto table = sharedPartitions_.at(partition).table;
+    auto children = spillFunc(partition, table);
+    if (children.empty()) {
+      continue;
+    }
+    table->clear(true);
+    splitLocked(
+        partition, std::move(table), std::move(children), filesToDelete);
+    ++numSpilled;
+  }
+  l.unlock();
+  for (const auto& files : filesToDelete) {
+    deleteSpillFiles(files);
+  }
+  return numSpilled;
 }
 
 bool HashJoinBridge::testingHasMoreSpilledPartitions() {
@@ -451,7 +1068,14 @@ uint64_t HashJoinMemoryReclaimer::reclaim(
 
     if (!hasReclaimedFromProbe) {
       // The same as build operator, we only need to reclaim from any one of the
-      // hash probe operator.
+      // hash probe operator. Skip one that can't act, e.g. because its driver
+      // finished: probe operators no longer wait for each other, so some can
+      // close while others still hold tables.
+      uint64_t reclaimableBytes{0};
+      if (child->reclaimer() == nullptr ||
+          !child->reclaimer()->reclaimableBytes(*child, reclaimableBytes)) {
+        return true;
+      }
       hasReclaimedFromProbe = true;
       child->reclaim(targetBytes, maxWaitMs, stats);
     }

@@ -823,6 +823,10 @@ bool HashBuild::finishHashBuild() {
   // table.
   pool()->release();
 
+  if (sharedRestoreBuild()) {
+    return finishSharedRestoreShard();
+  }
+
   std::vector<ContinuePromise> promises;
   std::vector<std::shared_ptr<Driver>> peers;
   // The last Driver to hit HashBuild::finish gathers the data from
@@ -871,20 +875,28 @@ bool HashBuild::finishHashBuild() {
 
   std::vector<HashBuild*> otherBuilds;
   otherBuilds.reserve(peers.size());
+  for (auto& peer : peers) {
+    auto* build = dynamic_cast<HashBuild*>(peer->findOperator(planNodeId()));
+    VELOX_CHECK_NOT_NULL(build);
+    otherBuilds.push_back(build);
+  }
+  mergeTablesAndSetHashTable(otherBuilds);
+  return true;
+}
+
+void HashBuild::mergeTablesAndSetHashTable(
+    const std::vector<HashBuild*>& otherBuilds) {
   uint64_t numRows{0};
   {
     std::lock_guard<std::mutex> l(mutex_);
     numRows += table_->rows()->numRows();
   }
-  for (auto& peer : peers) {
-    auto op = peer->findOperator(planNodeId());
-    HashBuild* build = dynamic_cast<HashBuild*>(op);
-    VELOX_CHECK_NOT_NULL(build);
+  for (auto* build : otherBuilds) {
     if (build->joinHasNullKeys_) {
       joinHasNullKeys_ = true;
       if (isAntiJoin(joinType_) && nullAware_ && !joinNode_->filter()) {
         joinBridge_->setAntiJoinHasNullKeys();
-        return true;
+        return;
       }
     }
     {
@@ -895,13 +907,12 @@ bool HashBuild::finishHashBuild() {
           " been closed.");
       numRows += build->table_->rows()->numRows();
     }
-    otherBuilds.push_back(build);
   }
 
   ensureTableFits(numRows);
 
   std::vector<std::unique_ptr<BaseHashTable>> otherTables;
-  otherTables.reserve(peers.size());
+  otherTables.reserve(otherBuilds.size());
   SpillPartitionSet spillPartitions;
   for (auto* build : otherBuilds) {
     std::unique_ptr<HashBuildSpiller> spiller;
@@ -989,6 +1000,49 @@ bool HashBuild::finishHashBuild() {
   if (canSpill()) {
     stateCleared_ = true;
   }
+}
+
+bool HashBuild::sharedRestoreBuild() const {
+  return joinBridge_->sharedSpillRestore() && restoringPartitionId_.has_value();
+}
+
+bool HashBuild::finishSharedRestoreShard() {
+  auto builders = joinBridge_->finishRestoreShards();
+  if (!builders.has_value()) {
+    // Operators still reading shards of this table; the last one merges ours.
+    awaitingRestoreMerge_ = true;
+    if (joinBridge_->restoreMergeDoneOrFuture(restoreGeneration_, &future_)) {
+      awaitingRestoreMerge_ = false;
+      return true;
+    }
+    setState(State::kWaitForBuild);
+    return false;
+  }
+
+  TestValue::adjust("facebook::velox::exec::HashBuild::finishHashBuild", this);
+  std::vector<HashBuild*> otherBuilds;
+  otherBuilds.reserve(builders->size());
+  for (auto* build : builders.value()) {
+    if (build != this) {
+      otherBuilds.push_back(build);
+    }
+  }
+  mergeTablesAndSetHashTable(otherBuilds);
+  return true;
+}
+
+bool HashBuild::claimMoreRestoreShard() {
+  if (!sharedRestoreBuild()) {
+    return false;
+  }
+  auto shard = joinBridge_->claimMoreRestoreShard();
+  if (shard == nullptr) {
+    return false;
+  }
+  VELOX_CHECK_EQ(shard->id(), restoringPartitionId_.value());
+  // Rows of every shard go into this operator's table and spiller.
+  spillInputReader_ = shard->createUnorderedReader(
+      spillConfig()->readBufferSize, pool(), spillStats_.get());
   return true;
 }
 
@@ -1044,7 +1098,9 @@ void HashBuild::postHashBuildProcess() {
     return;
   }
 
-  auto spillInput = joinBridge_->spillInputOrFuture(&future_);
+  auto spillInput = joinBridge_->sharedSpillRestore()
+      ? joinBridge_->claimRestoreShard(this, &restoreGeneration_, &future_)
+      : joinBridge_->spillInputOrFuture(&future_);
   if (!spillInput.has_value()) {
     VELOX_CHECK(future_.valid());
     setState(State::kWaitForProbe);
@@ -1086,17 +1142,19 @@ void HashBuild::setupSpillInput(HashJoinBridge::SpillInput spillInput) {
 void HashBuild::processSpillInput() {
   checkRunning();
 
-  while (spillInputReader_->nextBatch(spillInput_)) {
-    addInput(std::move(spillInput_));
-    if (!isRunning()) {
-      return;
+  do {
+    while (spillInputReader_->nextBatch(spillInput_)) {
+      addInput(std::move(spillInput_));
+      if (!isRunning()) {
+        return;
+      }
+      if (shouldYield()) {
+        state_ = State::kYield;
+        future_ = ContinueFuture{folly::Unit{}};
+        return;
+      }
     }
-    if (shouldYield()) {
-      state_ = State::kYield;
-      future_ = ContinueFuture{folly::Unit{}};
-      return;
-    }
-  }
+  } while (claimMoreRestoreShard());
   noMoreInputInternal();
 }
 
@@ -1204,6 +1262,15 @@ BlockingReason HashBuild::isBlocked(ContinueFuture* future) {
     case State::kWaitForBuild:
       if (receivedCachedHashTable()) {
         break;
+      }
+      // A wakeup is not proof the merge happened: the bridge wakes all its
+      // waiters on any state change.
+      if (awaitingRestoreMerge_ && !future_.valid()) {
+        if (!joinBridge_->restoreMergeDoneOrFuture(
+                restoreGeneration_, &future_)) {
+          break;
+        }
+        awaitingRestoreMerge_ = false;
       }
       // We were waiting for peer drivers to finish - fall through to
       // kWaitForProbe which has the same logic.
@@ -1339,9 +1406,14 @@ void HashBuild::reclaim(
     return;
   }
 
+  // With shared spill restore, an idle operator still reclaims for the ones
+  // building a table, since the join reclaimer asks only one of them.
+  const bool sharedRestore =
+      joinBridge_ != nullptr && joinBridge_->sharedSpillRestore();
+
   // NOTE: a hash build operator is reclaimable if it is in the middle of table
   // build processing and is not under non-reclaimable execution section.
-  if (nonReclaimableState()) {
+  if (!sharedRestore && nonReclaimableState()) {
     // TODO: reduce the log frequency if it is too verbose.
     RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
     ++stats.numNonReclaimableAttempts;
@@ -1363,8 +1435,26 @@ void HashBuild::reclaim(
 
   const auto& task = driver->task();
   VELOX_CHECK(task->pauseRequested());
-  const std::vector<Operator*> operators =
+  std::vector<Operator*> operators =
       task->findPeerOperators(operatorCtx_->driverCtx()->pipelineId, this);
+  if (sharedRestore) {
+    // Only the operators building the current table hold build state; the
+    // others are idle until they claim a shard.
+    std::erase_if(operators, [](Operator* op) {
+      const auto* buildOp = static_cast<HashBuild*>(op);
+      return buildOp->stateCleared_ || buildOp->spiller_ == nullptr;
+    });
+    if (operators.empty()) {
+      RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
+      ++stats.numNonReclaimableAttempts;
+      LOG(WARNING) << "Can't reclaim from hash build operator, no hash build "
+                      "operator is building a table, state_["
+                   << stateName(state_) << "], " << pool()->name()
+                   << ", root pool: " << pool()->root()->name()
+                   << ", used: " << succinctBytes(pool()->usedBytes());
+      return;
+    }
+  }
 
   for (auto* op : operators) {
     HashBuild* buildOp = dynamic_cast<HashBuild*>(op);

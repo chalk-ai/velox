@@ -281,7 +281,7 @@ class SpillPartitionId {
 
   /// Maximum number of partition bits per spill level supported by
   /// 'SpillPartitionId'.
-  static constexpr uint32_t kMaxPartitionBits{3};
+  static constexpr uint32_t kMaxPartitionBits{6};
 
   /// Constructs a default invalid id.
   SpillPartitionId() = default;
@@ -338,12 +338,12 @@ class SpillPartitionId {
   static constexpr uint32_t kInvalidEncodedId{0xFFFFFFFF};
 
   // Number of bits to represent one spill level, details see 'encodedId_'.
-  static constexpr uint8_t kNumPartitionBits = 3;
+  static constexpr uint8_t kNumPartitionBits = 6;
   static constexpr uint8_t kSpillLevelBitOffset = 29;
 
   // Bit mask for the partition number of the spill level, details see
   // 'encodedId_'
-  static constexpr uint32_t kPartitionBitMask = 0x00000007;
+  static constexpr uint32_t kPartitionBitMask = 0x0000003F;
 
   // Bit mask for the depth of this spill level, details see 'encodedId_'.
   static constexpr uint32_t kSpillLevelBitMask = 0xE0000000;
@@ -351,11 +351,11 @@ class SpillPartitionId {
   // Encoded hirachical spill partition id. Below shows the layout from the low
   // bits.
   //   <LSB>
-  //   (0 ~ 2 bits): Represents the partition number at the 1st level.
-  //   (3 ~ 5 bits): Represents the partition number at the 2nd level.
-  //   (6 ~ 8 bits): Represents the partition number at the 3rd level.
-  //   (9 ~ 11 bits): Represents the partition number at the 4th level.
-  //   (12 ~ 28 bits): Unused
+  //   (0 ~ 5 bits): Represents the partition number at the 1st level.
+  //   (6 ~ 11 bits): Represents the partition number at the 2nd level.
+  //   (12 ~ 17 bits): Represents the partition number at the 3rd level.
+  //   (18 ~ 23 bits): Represents the partition number at the 4th level.
+  //   (24 ~ 28 bits): Unused
   //   (29 ~ 31 bits): Represents the current spill level.
   //   <MSB>
   uint32_t encodedId_{kInvalidEncodedId};

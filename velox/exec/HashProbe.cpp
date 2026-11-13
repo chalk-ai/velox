@@ -16,6 +16,7 @@
 
 #include "velox/exec/HashProbe.h"
 #include <folly/ScopeGuard.h>
+#include <map>
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/testutil/TestValue.h"
@@ -166,6 +167,15 @@ HashProbe::HashProbe(
   VELOX_USER_CHECK_GE(bypassBloomFilterMinRows_, 0);
   VELOX_USER_CHECK_GE(bypassBloomFilterMinPct_, 0);
   VELOX_USER_CHECK_LE(bypassBloomFilterMinPct_, 100);
+  // Mixed grouped execution restarts the probe per group over the same
+  // spilled table partitions, which the legacy peer barrier coordinates.
+  if (canSpill() &&
+      !operatorCtx_->task()->hasMixedExecutionGroupJoin(joinNode_.get())) {
+    sharedSpillRestore_ = true;
+    hasSharedPartition_ = true;
+    sharedWorkHeld_ = true;
+    joinBridge_->addProber(needLastProbe());
+  }
 }
 
 void HashProbe::initialize() {
@@ -321,6 +331,9 @@ void HashProbe::maybeSetupSpillInputReader(
   auto partition = std::move(iter->second);
   VELOX_CHECK_EQ(partition->id(), restoredPartitionId.value());
   restoringPartitionId_ = restoredPartitionId;
+  if (sharedSpillRestore_) {
+    restoringProbeFiles_ = partition->files();
+  }
   spillInputReader_ = partition->createUnorderedReader(
       spillConfig_->readBufferSize, pool(), spillStats_.get());
   inputSpillPartitionSet_.erase(iter);
@@ -534,10 +547,31 @@ void HashProbe::asyncWaitForHashTable() {
   // of disk spilling has been triggered.
   pool()->release();
 
-  auto hashBuildResult = joinBridge_->tableOrFuture(&future_);
+  std::optional<HashJoinBridge::HashBuildResult> hashBuildResult;
+  if (sharedSpillRestore_) {
+    hashBuildResult = joinBridge_->acquireTable(
+        sharedPartition_, sharedTableReserved_, &future_);
+    sharedTableReserved_ = true;
+  } else {
+    hashBuildResult = joinBridge_->tableOrFuture(&future_);
+  }
   if (!hashBuildResult.has_value()) {
     VELOX_CHECK(future_.valid());
     setState(ProbeOperatorState::kWaitForBuild);
+    return;
+  }
+
+  if (sharedFinalizing_) {
+    // A split table is empty; its children emit their own build-side rows.
+    if (hashBuildResult->table == nullptr ||
+        !hashBuildResult->spillPartitionIds.empty()) {
+      finishSharedPartition();
+      return;
+    }
+    table_ = std::move(hashBuildResult->table);
+    restoringPartitionId_ = sharedPartition_;
+    noMoreSpillInput_ = true;
+    beginFinalizing();
     return;
   }
 
@@ -994,8 +1028,7 @@ void HashProbe::fillOutput(vector_size_t size) {
 
 RowVectorPtr HashProbe::getBuildSideOutput() {
   if (buildSideOutputRowContainerId_ == -1) {
-    buildSideOutputRowContainerId_ =
-        joinBridge_->getAndIncrementUnclaimedRowContainerId();
+    buildSideOutputRowContainerId_ = nextBuildSideRowContainerId();
     lastProbeIterator_.reset();
   }
   if (buildSideOutputRowContainerId_ >= table_->numRowContainers()) {
@@ -1032,8 +1065,7 @@ RowVectorPtr HashProbe::getBuildSideOutput() {
           outputTableRows);
     }
     if (numOut == 0) {
-      buildSideOutputRowContainerId_ =
-          joinBridge_->getAndIncrementUnclaimedRowContainerId();
+      buildSideOutputRowContainerId_ = nextBuildSideRowContainerId();
       lastProbeIterator_.reset();
     }
   }
@@ -1227,6 +1259,11 @@ RowVectorPtr HashProbe::getOutputInternal(bool toSpillOutput) {
     if (toSpillOutput) {
       VELOX_CHECK(memory::underMemoryArbitration());
       VELOX_CHECK(canReclaim());
+      return nullptr;
+    }
+
+    if (sharedSpillRestore_) {
+      finishSharedPartition();
       return nullptr;
     }
 
@@ -1967,6 +2004,12 @@ void HashProbe::noMoreInputInternal() {
         spillStats_->spillSortTimeNanos.load(std::memory_order_relaxed), 0);
   }
 
+  if (sharedSpillRestore_) {
+    // No peer barrier: finishSharedPartition() releases the table once the
+    // output of the pending input has been produced.
+    return;
+  }
+
   std::vector<ContinuePromise> promises;
   std::vector<std::shared_ptr<Driver>> peers;
 
@@ -2186,6 +2229,10 @@ void HashProbe::reclaim(
   auto* driver = operatorCtx_->driver();
   VELOX_CHECK_NOT_NULL(driver);
   VELOX_CHECK(!nonReclaimableSection_);
+  if (sharedSpillRestore_) {
+    reclaimShared(stats);
+    return;
+  }
 
   if (UNLIKELY(exceededMaxSpillLevelLimit_)) {
     // 'canReclaim()' already checks the spill limit is not exceeding max, there
@@ -2453,6 +2500,8 @@ void HashProbe::checkMaxSpillLevel(
 void HashProbe::close() {
   Operator::close();
 
+  abandonSharedWork();
+
   // Free up major memory usage.
   joinBridge_.reset();
   inputSpiller_.reset();
@@ -2467,6 +2516,234 @@ void HashProbe::close() {
   if (lastProber_) {
     wakeupPeerOperators();
   }
+}
+
+int HashProbe::nextBuildSideRowContainerId() {
+  if (sharedSpillRestore_) {
+    // Only this operator emits the build-side rows of its table.
+    return nextBuildSideRowContainerId_++;
+  }
+  return joinBridge_->getAndIncrementUnclaimedRowContainerId();
+}
+
+void HashProbe::beginFinalizing() {
+  VELOX_CHECK(sharedSpillRestore_);
+  VELOX_CHECK_NOT_NULL(table_);
+  sharedFinalizing_ = true;
+  lastProber_ = true;
+  buildSideOutputRowContainerId_ = -1;
+  nextBuildSideRowContainerId_ = 0;
+  // The emitted rows depend on what every driver saw, not just this one. Both
+  // flags only ever turn on, so merging them into this operator is safe for
+  // its later partitions.
+  const auto flags = joinBridge_->probeInputFlags();
+  noInput_ = noInput_ && !flags.sawInput;
+  probeSideHasNullKeys_ = probeSideHasNullKeys_ || flags.sawNullKeys;
+}
+
+void HashProbe::finishSharedPartition() {
+  VELOX_CHECK(sharedSpillRestore_);
+  VELOX_CHECK(hasSharedPartition_);
+  if (sharedFinalizing_) {
+    joinBridge_->finishFinalize(sharedPartition_);
+    sharedFinalizing_ = false;
+  } else {
+    VELOX_CHECK(sharedWorkHeld_);
+    // Probe rows spilled while probing this partition are new pending work.
+    removeEmptyPartitions(inputSpillPartitionSet_);
+    std::vector<SpillPartitionId> newWork;
+    for (const auto& [id, partition] : inputSpillPartitionSet_) {
+      if (!pendingSpillWork_.contains(id)) {
+        newWork.push_back(id);
+      }
+    }
+    pendingSpillWork_.insert(newWork.begin(), newWork.end());
+    deleteSpillFiles(restoringProbeFiles_);
+    restoringProbeFiles_.clear();
+    const bool finalize = joinBridge_->releaseTable(
+        sharedPartition_, newWork, {!noInput_, probeSideHasNullKeys_});
+    sharedWorkHeld_ = false;
+    if (finalize) {
+      // The next getOutput() call emits the build-side rows of 'table_'.
+      beginFinalizing();
+      return;
+    }
+  }
+
+  hasSharedPartition_ = false;
+  sharedTableReserved_ = false;
+  lastProber_ = false;
+  inputSpiller_.reset();
+  spillInputReader_.reset();
+  restoringPartitionId_.reset();
+  spillInputPartitionIds_.clear();
+  noMoreSpillInput_ = false;
+  startNextSharedPartition();
+}
+
+void HashProbe::startNextSharedPartition() {
+  VELOX_CHECK(!hasSharedPartition_);
+  if (!pendingSpillWork_.empty()) {
+    std::vector<SpillPartitionId> candidates(
+        pendingSpillWork_.begin(), pendingSpillWork_.end());
+    std::sort(candidates.begin(), candidates.end());
+    const auto next = joinBridge_->chooseNextWork(candidates);
+    pendingSpillWork_.erase(next);
+    sharedPartition_ = next;
+    sharedWorkHeld_ = true;
+  } else if (auto partition = joinBridge_->takeFinalizeWork()) {
+    sharedPartition_ = std::move(partition.value());
+    sharedFinalizing_ = true;
+  } else {
+    // 'table_' keeps pointing at the last table, which the bridge frees.
+    setState(ProbeOperatorState::kFinish);
+    return;
+  }
+  hasSharedPartition_ = true;
+  table_.reset();
+  asyncWaitForHashTable();
+}
+
+void HashProbe::abandonSharedWork() {
+  if (!sharedSpillRestore_ || joinBridge_ == nullptr ||
+      (!hasSharedPartition_ && pendingSpillWork_.empty())) {
+    return;
+  }
+  std::optional<HashJoinBridge::PartitionKey> current;
+  if (hasSharedPartition_) {
+    current = sharedPartition_;
+  }
+  const std::vector<SpillPartitionId> pendingWork(
+      pendingSpillWork_.begin(), pendingSpillWork_.end());
+  try {
+    joinBridge_->abandonProbeWork(
+        current,
+        sharedTableReserved_,
+        sharedWorkHeld_,
+        sharedFinalizing_,
+        pendingWork);
+  } catch (const std::exception& e) {
+    // close() must not throw; a failed task has no work left to share.
+    LOG(WARNING) << "Failed to release hash probe work: " << e.what();
+  }
+  hasSharedPartition_ = false;
+  sharedTableReserved_ = false;
+  sharedWorkHeld_ = false;
+  sharedFinalizing_ = false;
+  pendingSpillWork_.clear();
+}
+
+void HashProbe::reclaimShared(memory::MemoryReclaimer::Stats& stats) {
+  const auto* config = spillConfig();
+  VELOX_CHECK_NOT_NULL(config);
+  VELOX_CHECK(operatorCtx_->task()->pauseRequested());
+  if (joinBridge_ == nullptr) {
+    return;
+  }
+
+  // Idle tables have no probe rows in flight, so they spill with their probed
+  // flags and nothing else to coordinate.
+  const auto numIdleTablesSpilled = joinBridge_->spillIdleTables(
+      [&](const HashJoinBridge::PartitionKey& partition,
+          const std::shared_ptr<BaseHashTable>& table) -> SpillPartitionSet {
+        uint8_t startBit = config->startPartitionBit;
+        if (partition.has_value()) {
+          startBit = partitionBitOffset(
+                         partition.value(),
+                         config->startPartitionBit,
+                         config->numPartitionBits) +
+              config->numPartitionBits;
+        }
+        if (config->exceedSpillLevelLimit(startBit)) {
+          return {};
+        }
+        return spillHashJoinTable(
+            table,
+            partition,
+            HashBitRange(startBit, startBit + config->numPartitionBits),
+            joinNode_,
+            config,
+            spillStats_.get());
+      });
+
+  // The join's memory reclaimer asks one probe operator to reclaim for all of
+  // them, and this one may already be finished, so reclaim every table that
+  // probe operators are attached to.
+  std::map<BaseHashTable*, std::vector<HashProbe*>> tableOps;
+  for (auto* peer : findPeerOperators()) {
+    VELOX_CHECK_NOT_NULL(peer);
+    if (peer->hasSharedPartition_ && peer->table_ != nullptr) {
+      tableOps[peer->table_.get()].push_back(peer);
+    }
+  }
+  if (tableOps.empty() && numIdleTablesSpilled == 0) {
+    RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
+    ++stats.numNonReclaimableAttempts;
+    return;
+  }
+  for (auto& [table, probeOps] : tableOps) {
+    reclaimSharedTable(probeOps, stats);
+  }
+}
+
+void HashProbe::reclaimSharedTable(
+    const std::vector<HashProbe*>& probeOps,
+    memory::MemoryReclaimer::Stats& stats) {
+  VELOX_CHECK(!probeOps.empty());
+  bool hasMoreProbeInput{false};
+  bool hasFinalizer{false};
+  int32_t numAttachedWork{0};
+  for (auto* probeOp : probeOps) {
+    if (probeOp->exceededMaxSpillLevelLimit_) {
+      return;
+    }
+    if (probeOp->nonReclaimableState()) {
+      RECORD_METRIC_VALUE(kMetricMemoryNonReclaimableCount);
+      ++stats.numNonReclaimableAttempts;
+      return;
+    }
+    hasMoreProbeInput |= !probeOp->noMoreSpillInput_;
+    hasFinalizer |= probeOp->sharedFinalizing_;
+    numAttachedWork += probeOp->sharedWorkHeld_ ? 1 : 0;
+  }
+  auto* owner = probeOps.front();
+  VELOX_CHECK(owner->restoringPartitionId_ == owner->sharedPartition_);
+
+  spillOutput(probeOps);
+
+  // The table must survive (spilled) if a probe row still needs it: an
+  // attached operator with input left, or a driver holding rows for this
+  // partition that has not attached yet; or if its build-side rows are still
+  // to be emitted and no attached operator has spilled them as output above.
+  const bool needTable = hasMoreProbeInput ||
+      joinBridge_->numPendingWork(owner->sharedPartition_) > numAttachedWork ||
+      (needLastProbe() && !hasFinalizer);
+  if (!needTable) {
+    // Everything the table still had to produce was just spilled as output.
+    owner->table_->clear(true);
+    for (auto* probeOp : probeOps) {
+      probeOp->pool()->release();
+    }
+    return;
+  }
+
+  auto spillPartitionSet = spillHashJoinTable(
+      owner->table_,
+      owner->restoringPartitionId_,
+      owner->tableSpillHashBits_,
+      joinNode_,
+      owner->spillConfig(),
+      owner->spillStats_.get());
+  VELOX_CHECK(!spillPartitionSet.empty());
+  const auto spillPartitionIdSet = toSpillPartitionIdSet(spillPartitionSet);
+  for (auto* probeOp : probeOps) {
+    probeOp->clearBuffers();
+    probeOp->maybeSetupInputSpiller(spillPartitionIdSet);
+    probeOp->pool()->release();
+  }
+  owner->table_->clear(true);
+  joinBridge_->splitPartition(
+      owner->sharedPartition_, std::move(spillPartitionSet));
 }
 
 void HashProbe::clearBuffers() {

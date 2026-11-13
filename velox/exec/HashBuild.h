@@ -98,6 +98,10 @@ class HashBuild final : public Operator {
     return exceededMaxSpillLevelLimit_;
   }
 
+  bool testingIsInputFromSpill() const {
+    return isInputFromSpill();
+  }
+
   const std::vector<column_index_t>& dependentChannels() const {
     return dependentChannels_;
   }
@@ -148,6 +152,23 @@ class HashBuild final : public Operator {
   // reaches to the hash build barrier, is responsible to build the hash table
   // merged from all the other drivers.
   bool finishHashBuild();
+
+  // Merges the tables of this operator and 'otherBuilds' into 'table_' and
+  // hands it to the join bridge.
+  void mergeTablesAndSetHashTable(const std::vector<HashBuild*>& otherBuilds);
+
+  // True if this operator builds a table from spilled partition shards it
+  // claims from the join bridge (see HashJoinBridge::claimRestoreShard()).
+  bool sharedRestoreBuild() const;
+
+  // Shared spill restore: invoked after this operator read every shard it
+  // claimed. The operator that reads the last outstanding shard merges the
+  // tables of all operators that read one; the others wait for that merge.
+  bool finishSharedRestoreShard();
+
+  // Shared spill restore: claims another shard of the table this operator is
+  // building and reads it into the same table. Returns false if none is left.
+  bool claimMoreRestoreShard();
 
   // Invoked after the hash table has been built. It waits for any spill data to
   // process after the probe side has finished processing the previously built
@@ -305,6 +326,14 @@ class HashBuild final : public Operator {
   tsan_atomic<bool> exceededMaxSpillLevelLimit_{false};
 
   State state_{State::kRunning};
+
+  // Shared spill restore: the join bridge's build generation when this
+  // operator claimed its first shard of the table being built.
+  uint64_t restoreGeneration_{0};
+
+  // Shared spill restore: true while this operator waits for another one to
+  // merge its table.
+  bool awaitingRestoreMerge_{false};
 
   // For hash table caching: the resolved cache key from HashJoinNode.
   // If set, this operator coordinates via HashTableCache.

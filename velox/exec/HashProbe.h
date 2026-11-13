@@ -278,6 +278,35 @@ class HashProbe : public Operator {
   void checkMaxSpillLevel(
       const std::optional<SpillPartitionId>& restoredPartitionId);
 
+  // Shared spill restore: invoked when this operator has no more probe rows
+  // for 'sharedPartition_' and has emitted its build-side rows if it had to.
+  // Releases the table and moves to the next partition or finishes.
+  void finishSharedPartition();
+
+  // Shared spill restore: picks the next partition to probe, or the next
+  // table to emit build-side rows from, or finishes.
+  void startNextSharedPartition();
+
+  // Shared spill restore: invoked on close to release what the bridge counts
+  // for this operator.
+  void abandonSharedWork();
+
+  // Shared spill restore: spills the idle tables of the bridge, and the table
+  // of every group of peer operators attached to one.
+  void reclaimShared(memory::MemoryReclaimer::Stats& stats);
+
+  // Shared spill restore: spills the table 'probeOps' are attached to, or
+  // frees it once it has nothing left to produce.
+  void reclaimSharedTable(
+      const std::vector<HashProbe*>& probeOps,
+      memory::MemoryReclaimer::Stats& stats);
+
+  // Returns the next row container of 'table_' to emit build-side rows from.
+  int nextBuildSideRowContainerId();
+
+  // Shared spill restore: starts emitting the build-side rows of 'table_'.
+  void beginFinalizing();
+
   bool canSpill() const override;
 
   // Indicates if the probe input is read from spilled data or not.
@@ -796,6 +825,37 @@ class HashProbe : public Operator {
   // The index of the row container in the current hash table that this hash
   // probe oprator is processing to output build-side rows.
   int buildSideOutputRowContainerId_{-1};
+
+  // Shared spill restore (see HashJoinBridge::addProber()). This operator
+  // never waits for its peers: after its input ends it restores the spilled
+  // partitions it holds probe rows for, then emits the build-side rows of
+  // tables the bridge hands it, then finishes.
+  bool sharedSpillRestore_{false};
+
+  // The table partition this operator works on, if 'hasSharedPartition_'.
+  HashJoinBridge::PartitionKey sharedPartition_;
+  bool hasSharedPartition_{false};
+
+  // True once the bridge counts this operator as attached to
+  // 'sharedPartition_', including while it waits for the table build.
+  bool sharedTableReserved_{false};
+
+  // True while this operator holds pending probe rows for 'sharedPartition_'.
+  bool sharedWorkHeld_{false};
+
+  // True while this operator emits the build-side rows of 'sharedPartition_'.
+  bool sharedFinalizing_{false};
+
+  // Partitions in 'inputSpillPartitionSet_' the bridge counts as this
+  // operator's pending work and that it has not started yet.
+  SpillPartitionIdSet pendingSpillWork_;
+
+  // Probe spill files of the partition being restored, deleted once it is
+  // probed.
+  SpillFiles restoringProbeFiles_;
+
+  // Next row container to emit build-side rows from while finalizing.
+  int nextBuildSideRowContainerId_{0};
 };
 
 inline std::ostream& operator<<(std::ostream& os, ProbeOperatorState state) {

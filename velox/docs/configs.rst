@@ -561,8 +561,17 @@ Spilling
    * - spiller_num_partition_bits
      - integer
      - 3
-     - The number of bits (N) used to calculate the spilling partition number for hash join and RowNumber: 2 ^ N. At the moment the maximum
-       value is 3, meaning we only support up to 8-way spill partitioning.
+     - The number of bits (N) used to calculate the spilling partition number for RowNumber, and for hash join when
+       `hash_join_spill_num_partition_bits` is unset: 2 ^ N. At the moment the maximum value is 3, meaning we only support up
+       to 8-way spill partitioning.
+   * - hash_join_spill_num_partition_bits
+     - integer
+     - 6
+     - The number of bits (N) used to calculate the spilling partition number for hash join: 2 ^ N, up to 6 (64-way). If unset,
+       an explicit `spiller_num_partition_bits` applies instead. Hash probe
+       drivers restore spilled partitions independently, holding up to one restored table each, so finer partitions keep their total
+       memory near a single 8-way partition. Each partition's spill write buffer shrinks by the same factor relative to
+       `spiller_num_partition_bits`, keeping the total write buffer memory unchanged.
    * - testing.spill_pct
      - integer
      - 0

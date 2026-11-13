@@ -15,6 +15,11 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <deque>
+#include <functional>
+#include <map>
+
 #include "velox/exec/HashBitRange.h"
 #include "velox/exec/HashTable.h"
 #include "velox/exec/JoinBridge.h"
@@ -26,6 +31,7 @@ struct HashTableHolder;
 }
 
 namespace facebook::velox::exec {
+class HashBuild;
 class HashBuildSpiller;
 
 namespace test {
@@ -155,6 +161,145 @@ class HashJoinBridge : public JoinBridge {
     unclaimedRowContainerId_.store(0);
   }
 
+  // Shared spill restore.
+  //
+  // When probe-side spilling is enabled (outside mixed grouped execution),
+  // HashProbe drivers never wait for each other. Each driver probes the
+  // unspilled table with its own input, then restores the spilled partitions
+  // it has probe rows for, in its own order. Drivers only wait for a table
+  // that the HashBuild drivers are building; a table in memory is shared by
+  // every driver that attaches to it.
+  //
+  // The bridge owns every table partition: its canonical build-side spill
+  // files, its in-memory table while one exists, and the counts that decide
+  // when the table and files are released:
+  // - pending work: probe drivers that hold (or may still spill) probe rows for
+  //   a partition. A partition is needed while it or an ancestor has pending
+  //   work, since rows of an ancestor can still spill into it.
+  // - attachments: probe drivers holding or waiting for the in-memory table.
+  // An unneeded partition is finalized once: joins that emit build-side rows
+  // (right, full, right semi, right anti) hand it to one driver to emit them;
+  // then its table is freed and its spill files are deleted.
+
+  /// Identifies a table partition. std::nullopt is the table built from the
+  /// unspilled build input.
+  using PartitionKey = std::optional<SpillPartitionId>;
+
+  /// Invoked by HashProbe operator ctor to use shared spill restore.
+  /// 'emitBuildSideRows' tells if the join emits build-side rows after probing
+  /// a table. All probe operators must register before start().
+  void addProber(bool emitBuildSideRows);
+
+  /// Returns true if HashProbe operators registered with addProber().
+  bool sharedSpillRestore() const {
+    return sharedSpillRestore_;
+  }
+
+  /// Invoked by HashProbe operator to attach to the table of 'partition'.
+  /// Returns the table if it is in memory or 'partition' has been split into
+  /// child partitions (then 'spillPartitionIds' lists them and the table is
+  /// empty). Otherwise schedules a build if needed, sets 'future', and keeps
+  /// the attachment reserved: the caller passes 'reserved' = true when it
+  /// retries after 'future' completes.
+  std::optional<HashBuildResult> acquireTable(
+      const PartitionKey& partition,
+      bool reserved,
+      ContinueFuture* future);
+
+  /// Join-wide probe input properties needed to emit build-side rows.
+  struct ProbeInputFlags {
+    bool sawInput{false};
+    bool sawNullKeys{false};
+  };
+
+  /// Invoked by HashProbe operator after it finished its probe rows for
+  /// 'partition'. 'newWork' lists the child partitions it spilled probe rows
+  /// into, which become its pending work. Returns true if the caller must emit
+  /// the build-side rows of 'partition': it stays attached and calls
+  /// finishFinalize() when done. Otherwise the caller is detached.
+  bool releaseTable(
+      const PartitionKey& partition,
+      const std::vector<SpillPartitionId>& newWork,
+      ProbeInputFlags flags);
+
+  /// Takes an unneeded partition whose build-side rows nobody has emitted. The
+  /// caller acquires its table, emits its build-side rows and calls
+  /// finishFinalize(). If the acquired table was split, the caller calls
+  /// finishFinalize() right away; the children are finalized on their own.
+  std::optional<PartitionKey> takeFinalizeWork();
+
+  /// Invoked after emitting the build-side rows of 'partition' (or finding it
+  /// split). Frees its table and deletes its spill files.
+  void finishFinalize(const PartitionKey& partition);
+
+  /// Returns the probe input properties of all probe operators that released a
+  /// table so far.
+  ProbeInputFlags probeInputFlags();
+
+  /// Picks the next partition to probe among 'candidates' (non-empty),
+  /// preferring a table that is in memory or being built so that drivers share
+  /// it instead of building it again.
+  SpillPartitionId chooseNextWork(
+      const std::vector<SpillPartitionId>& candidates);
+
+  /// Invoked by HashProbe operator on close to drop whatever it still holds:
+  /// its attachment to 'current' (if 'attached'), its pending work on
+  /// 'current' (if 'holdsWork'), its finalization of 'current' (if
+  /// 'finalizing', handed to another driver), and its pending work on
+  /// 'pendingWork'.
+  void abandonProbeWork(
+      const std::optional<PartitionKey>& current,
+      bool attached,
+      bool holdsWork,
+      bool finalizing,
+      const std::vector<SpillPartitionId>& pendingWork);
+
+  /// Invoked by HashProbe operator after spilling the attached in-memory table
+  /// of 'partition' under memory pressure. 'children' holds the spilled child
+  /// partitions which replace it.
+  void splitPartition(
+      const PartitionKey& partition,
+      SpillPartitionSet children);
+
+  /// Returns the number of probe drivers holding probe rows for 'partition'.
+  int32_t numPendingWork(const PartitionKey& partition);
+
+  /// Shared spill restore, for HashBuild operators. A table restored from
+  /// spill is split into shards (one per spill file). HashBuild operators
+  /// claim shards until none is left, so a table never waits for an operator
+  /// that claimed nothing; the operator that reads the last outstanding shard
+  /// merges the tables of every operator that read one.
+
+  /// Returns a shard of the table being built and records 'builder' as one
+  /// of its builders, returns a SpillInput without partition once the join is
+  /// done, or sets 'future'. 'generation' receives the build the shard belongs
+  /// to, for restoreMergeDoneOrFuture().
+  std::optional<SpillInput> claimRestoreShard(
+      HashBuild* builder,
+      uint64_t* generation,
+      ContinueFuture* future);
+
+  /// Returns another unclaimed shard of the table being built, or null.
+  std::unique_ptr<SpillPartition> claimMoreRestoreShard();
+
+  /// Invoked by a HashBuild operator that read all the shards it claimed.
+  /// Returns every operator that read a shard of this table if the caller read
+  /// the last outstanding one; the caller then merges their tables.
+  std::optional<std::vector<HashBuild*>> finishRestoreShards();
+
+  /// Returns true once the table of build 'generation' has been set; otherwise
+  /// sets 'future'.
+  bool restoreMergeDoneOrFuture(uint64_t generation, ContinueFuture* future);
+
+  /// Spills in-memory tables no probe operator is attached to, under memory
+  /// arbitration. 'spillFunc' spills one table into its child partitions and
+  /// returns an empty set if it can't be spilled. Returns the number of tables
+  /// spilled.
+  int32_t spillIdleTables(
+      const std::function<SpillPartitionSet(
+          const PartitionKey&,
+          const std::shared_ptr<BaseHashTable>&)>& spillFunc);
+
  private:
   void appendSpilledHashTablePartitionsLocked(
       SpillPartitionSet&& spillPartitionSet);
@@ -201,6 +346,85 @@ class HashJoinBridge : public JoinBridge {
   // in parallel, drivers call getAndIncrementClaimedRowContainerId() to ensure
   // the row containers they process do not overlap with each other.
   std::atomic_int unclaimedRowContainerId_{0};
+
+  // Shared spill restore state, guarded by 'mutex_'. See addProber().
+  struct SharedPartition {
+    enum class State {
+      // Only the build-side spill files exist.
+      kSpilled,
+      // Waiting in 'buildQueue_'.
+      kQueued,
+      // HashBuild operators are building the table.
+      kBuilding,
+      // 'table' is in memory.
+      kInMemory,
+      // Replaced by the 'children' partitions; 'table' is empty.
+      kSplit,
+    };
+
+    State state{State::kSpilled};
+    // Canonical build-side spill files. Empty for the unspilled table and once
+    // split.
+    SpillFiles buildFiles;
+    std::shared_ptr<BaseHashTable> table;
+    bool hasNullKeys{false};
+    SpillPartitionIdSet children;
+    int32_t numPendingWork{0};
+    int32_t numAttached{0};
+    // Set once the build-side rows are queued for emission or being emitted.
+    bool finalizeAssigned{false};
+  };
+
+  bool allSharedWorkDoneLocked() const;
+
+  bool neededLocked(const PartitionKey& partition) const;
+
+  // Handles 'partition' and its descendants that became unneeded.
+  void releaseUnneededLocked(
+      const PartitionKey& partition,
+      std::vector<SpillFiles>& filesToDelete);
+
+  void onWorkDroppedLocked(
+      const PartitionKey& partition,
+      std::vector<SpillFiles>& filesToDelete);
+
+  void splitLocked(
+      const PartitionKey& partition,
+      std::shared_ptr<BaseHashTable> table,
+      SpillPartitionSet children,
+      std::vector<SpillFiles>& filesToDelete);
+
+  void maybeStartNextBuildLocked();
+
+  void setSharedHashTableLocked(
+      std::shared_ptr<BaseHashTable> table,
+      SpillPartitionSet spillPartitionSet,
+      bool hasNullKeys,
+      std::vector<SpillFiles>& filesToDelete);
+
+  // Wakes every waiter in 'promises_' and deletes 'filesToDelete' outside the
+  // lock.
+  void notifySharedWaiters(
+      std::unique_lock<std::mutex>& lock,
+      std::vector<SpillFiles> filesToDelete);
+
+  bool sharedSpillRestore_{false};
+  bool emitBuildSideRows_{false};
+  int32_t numProbers_{0};
+  std::map<PartitionKey, SharedPartition> sharedPartitions_;
+  std::deque<SpillPartitionId> buildQueue_;
+  std::deque<PartitionKey> finalizeQueue_;
+  // True from the start of a table build until setHashTable().
+  bool buildInProgress_{false};
+  // Incremented by every setHashTable().
+  uint64_t buildGeneration_{0};
+  // HashBuild operators that claimed a shard of the table being built.
+  std::vector<HashBuild*> restoreBuilders_;
+  // Operators in 'restoreBuilders_' still reading their shards.
+  int32_t numActiveRestoreBuilders_{0};
+  int64_t totalPendingWork_{0};
+  int32_t numFinalizing_{0};
+  ProbeInputFlags probeInputFlags_;
 
   friend test::HashJoinBridgeTestHelper;
 };
@@ -302,4 +526,8 @@ RowTypePtr hashJoinTableSpillType(
 bool isHashJoinTableSpillType(
     const RowTypePtr& spillType,
     core::JoinType joinType);
+
+/// Deletes 'files' from their file system. Failures are logged: the task
+/// removes its spill directory when it finishes.
+void deleteSpillFiles(const SpillFiles& files);
 } // namespace facebook::velox::exec

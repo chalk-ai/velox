@@ -855,6 +855,19 @@ class QueryConfig {
       3,
       "Number of bits for spill partition calculation.")
 
+  /// Number of spill partition bits for hash join. Max 6 (64-way
+  /// partitioning). If unset, an explicit 'spiller_num_partition_bits' applies
+  /// to hash join too. Hash probe drivers restore spilled partitions
+  /// independently, so up to one restored table per driver is in memory at
+  /// once; finer partitions keep that total near what a single 8-way
+  /// partition used when drivers restored in lockstep.
+  VELOX_QUERY_CONFIG_PROPERTY(
+      kHashJoinSpillNumPartitionBits,
+      "hash_join_spill_num_partition_bits",
+      uint8_t,
+      6,
+      "Number of bits for hash join spill partition calculation.")
+
   /// The minimal available spillable memory reservation in percentage of the
   /// current memory usage.
   VELOX_QUERY_CONFIG(
@@ -1605,6 +1618,21 @@ class QueryConfig {
     constexpr uint8_t kMaxBits = 3;
     return std::min(
         kMaxBits, get<uint8_t>(kSpillNumPartitionBits, kDefaultBits));
+  }
+
+  uint8_t hashJoinSpillNumPartitionBits() const {
+    constexpr uint8_t kDefaultBits = 6;
+    // SpillPartitionId::kMaxPartitionBits.
+    constexpr uint8_t kMaxBits = 6;
+    if (const auto bits = get<uint8_t>(kHashJoinSpillNumPartitionBits)) {
+      return std::min(kMaxBits, bits.value());
+    }
+    // A query that sets the general partition bits was tuned when they also
+    // governed hash join, so they keep doing so.
+    if (get<uint8_t>(kSpillNumPartitionBits).has_value()) {
+      return spillNumPartitionBits();
+    }
+    return kDefaultBits;
   }
 
   uint32_t taskPartitionedWriterCount() const {

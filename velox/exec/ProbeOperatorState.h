@@ -38,11 +38,11 @@ enum class ProbeOperatorState {
   kRunning = 1,
   /// This state has different handling for hash and nested loop join probe.
   /// For hash probe, wait for all the peer probe operators to finish processing
-  /// inputs.
-  /// This state only applies when disk spilling is enabled. The last finished
-  /// operator will notify the build operators to build the next hash table
-  /// from the spilled data. Then all the peer probe operators will wait for
-  /// the next hash table to build.
+  /// inputs. This only applies with disk spilling in mixed grouped execution,
+  /// or when emitting build-side rows in parallel. The last finished operator
+  /// notifies the build operators to build the next hash table from the
+  /// spilled data. Otherwise hash probe operators restore spilled partitions
+  /// independently (see HashJoinBridge::addProber()) and never wait here.
   /// For nested loop join probe, when doing right/full join, after the
   /// completion of emitting matching and probe-side mismatching data, non-last
   /// operators wait for the last probe operator to take over build-side
