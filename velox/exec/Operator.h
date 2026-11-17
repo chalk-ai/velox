@@ -160,6 +160,18 @@ class Operator : public BaseRuntimeStatWriter {
         const core::PlanNodePtr& /* node */) {
       return std::nullopt;
     }
+
+    /// Returns the memory reclaimer for the memory pool that holds the memory
+    /// pools of the plan node's operators in 'task'. Returns nullptr if the
+    /// plan node cannot be handled by this factory, or to use the default.
+    /// 'task' calls this while it holds its lock, when it first creates a
+    /// memory pool for the plan node's operators. A join node's bridges exist
+    /// by then.
+    virtual std::unique_ptr<memory::MemoryReclaimer> toNodeReclaimer(
+        const core::PlanNodePtr& /* node */,
+        const std::shared_ptr<Task>& /* task */) {
+      return nullptr;
+    }
   };
 
   /// The name for background cpu time metric if operator has background cpu
@@ -480,6 +492,13 @@ class Operator : public BaseRuntimeStatWriter {
   /// Calls `maxDrivers` on all the registered PlanNodeTranslators and returns
   /// the first one that is not std::nullopt or std::nullopt otherwise.
   static std::optional<uint32_t> maxDrivers(const core::PlanNodePtr& planNode);
+
+  /// Calls all the registered PlanNodeTranslators on 'planNode' and returns the
+  /// result of the first one that returns non-nullptr or nullptr if all return
+  /// nullptr.
+  static std::unique_ptr<memory::MemoryReclaimer> nodeReclaimerFromPlanNode(
+      const core::PlanNodePtr& planNode,
+      const std::shared_ptr<Task>& task);
 
   /// The scoped objects to mark an operator is under non-reclaimable execution
   /// section or not. This prevents the memory arbitrator from reclaiming memory

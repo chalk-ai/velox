@@ -797,7 +797,14 @@ velox::memory::MemoryPool* Task::getOrAddNodePool(
     return nodePools_[planNodeId];
   }
   childPools_.push_back(pool_->addAggregateChild(
-      fmt::format("node.{}", planNodeId), createNodeReclaimer([&]() {
+      fmt::format("node.{}", planNodeId),
+      createNodeReclaimer([&]() -> std::unique_ptr<memory::MemoryReclaimer> {
+        if (auto planNode = findPlanNode(planNodeId)) {
+          if (auto reclaimer = Operator::nodeReclaimerFromPlanNode(
+                  planNode, shared_from_this())) {
+            return reclaimer;
+          }
+        }
         return exec::ParallelMemoryReclaimer::create(
             queryCtx_->spillExecutor());
       })));
@@ -807,6 +814,17 @@ velox::memory::MemoryPool* Task::getOrAddNodePool(
     getOrAddCustomNodePool(tag, planNodeId);
   }
   return nodePool;
+}
+
+core::PlanNodePtr Task::findPlanNode(const core::PlanNodeId& planNodeId) const {
+  for (const auto& factory : driverFactories_) {
+    for (const auto& planNode : factory->planNodes) {
+      if (planNode->id() == planNodeId) {
+        return planNode;
+      }
+    }
+  }
+  return nullptr;
 }
 
 memory::MemoryPool* Task::getOrAddCustomNodePool(
@@ -2617,17 +2635,7 @@ void Task::addCustomJoinBridgesLocked(
     // a different factory: in mixed execution mode the ungrouped build factory
     // must create the bridge, but the plan node lives in the grouped probe
     // factory.  Search all factories to find it.
-    auto findNode = [&]() -> core::PlanNodePtr {
-      for (const auto& factory : driverFactories_) {
-        for (const auto& planNode : factory->planNodes) {
-          if (planNode->id() == planNodeId) {
-            return planNode;
-          }
-        }
-      }
-      return nullptr;
-    };
-    auto planNode = findNode();
+    auto planNode = findPlanNode(planNodeId);
     VELOX_CHECK_NOT_NULL(
         planNode, "Plan node {} for custom join bridge not found", planNodeId);
     if (auto joinBridge = Operator::joinBridgeFromPlanNode(planNode)) {
@@ -2644,6 +2652,13 @@ std::shared_ptr<JoinBridge> Task::getCustomJoinBridge(
     uint32_t splitGroupId,
     const core::PlanNodeId& planNodeId) {
   return getCustomJoinBridgeInternal(splitGroupId, planNodeId);
+}
+
+std::shared_ptr<JoinBridge> Task::getCustomJoinBridgeLocked(
+    uint32_t splitGroupId,
+    const core::PlanNodeId& planNodeId) {
+  return getJoinBridgeInternalLocked<JoinBridge>(
+      splitGroupId, planNodeId, &SplitGroupState::customBridges);
 }
 
 void Task::addNestedLoopJoinBridgesLocked(
@@ -3096,7 +3111,8 @@ TaskStats Task::taskStats() const {
       const auto blockingReason = driver->blockingReason();
       if (blockingReason != BlockingReason::kNotBlocked) {
         ++taskStats.numBlockedDrivers[blockingReason];
-        ++taskStats.pipelineStats[pipeline_id].numBlockedDrivers[blockingReason];
+        ++taskStats.pipelineStats[pipeline_id]
+              .numBlockedDrivers[blockingReason];
       }
     }
     // Find the longest running operator.

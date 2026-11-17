@@ -250,6 +250,19 @@ void Operator::unregisterAllOperators() {
   translators().clear();
 }
 
+// static
+std::unique_ptr<memory::MemoryReclaimer> Operator::nodeReclaimerFromPlanNode(
+    const core::PlanNodePtr& planNode,
+    const std::shared_ptr<Task>& task) {
+  for (auto& translator : translators()) {
+    auto reclaimer = translator->toNodeReclaimer(planNode, task);
+    if (reclaimer) {
+      return reclaimer;
+    }
+  }
+  return nullptr;
+}
+
 std::optional<uint32_t> Operator::maxDrivers(
     const core::PlanNodePtr& planNode) {
   for (auto& translator : translators()) {

@@ -687,6 +687,13 @@ class Task : public std::enable_shared_from_this<Task> {
       uint32_t splitGroupId,
       const core::PlanNodeId& planNodeId);
 
+  /// Same as getCustomJoinBridge() for a caller that holds the task lock, such
+  /// as an operator constructor that registers with its bridge before the
+  /// bridge starts.
+  std::shared_ptr<JoinBridge> getCustomJoinBridgeLocked(
+      uint32_t splitGroupId,
+      const core::PlanNodeId& planNodeId);
+
   /// Transitions this to kFinished state if all Drivers are
   /// finished. Otherwise sets a flag so that the last Driver to finish
   /// will transition the state.
@@ -1003,8 +1010,12 @@ class Task : public std::enable_shared_from_this<Task> {
   memory::MemoryPool* getOrAddSharedOperatorPool();
 
   // Creates new instance of memory pool for a plan node, stores it in the task
-  // to ensure lifetime and returns a raw pointer.
+  // to ensure lifetime and returns a raw pointer. A registered
+  // PlanNodeTranslator can supply its reclaimer (toNodeReclaimer()).
   memory::MemoryPool* getOrAddNodePool(const core::PlanNodeId& planNodeId);
+
+  // Returns the plan node 'planNodeId' from any driver factory, or nullptr.
+  core::PlanNodePtr findPlanNode(const core::PlanNodeId& planNodeId) const;
 
   // Similar to getOrAddNodePool but creates the memory pool instance for a hash
   // join plan node. If 'splitGroupId' is not kUngroupedGroupId, it specifies
