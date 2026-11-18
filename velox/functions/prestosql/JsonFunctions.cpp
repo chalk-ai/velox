@@ -197,10 +197,6 @@ class JsonParseImpl {
       exec::EvalCtx& context,
       VectorPtr& localResult,
       bool nullOnError) const {
-    // Initialize errors here so that we get the proper exception context.
-    folly::call_once(
-        initializeErrors_, [this] { simdjsonErrorsToExceptions(errors_); });
-
     if (arg->isConstantEncoding()) {
       auto value = arg->as<ConstantVector<StringView>>()->valueAt(0);
       auto size = value.size();
@@ -224,7 +220,7 @@ class JsonParseImpl {
             localResult = BaseVector::createNullConstant(
                 JSON(), rows.end(), context.pool());
           } else {
-            context.setErrors(rows, errors_[error]);
+            context.setErrors(rows, errors_.get(error));
           }
           return;
         }
@@ -315,7 +311,7 @@ class JsonParseImpl {
         auto size = prepareInput(value, needNormalizes[row]);
         if (auto error = parse(size, needNormalizes[row])) {
           if (!nullOnError) {
-            context.setVeloxExceptionError(row, errors_[error]);
+            context.setVeloxExceptionError(row, errors_.get(error));
           } else {
             bits::setNull(rawNullsOnErrors, row, true);
           }
@@ -551,8 +547,8 @@ class JsonParseImpl {
     fastSortKeys_.clear();
   }
 
-  mutable folly::once_flag initializeErrors_;
-  mutable std::exception_ptr errors_[simdjson::NUM_ERROR_CODES];
+  // Built per error code on first use; see SimdjsonErrors.
+  SimdjsonErrors errors_;
   // Padding is needed in case string view is inlined.
   mutable std::string paddedInput_;
   mutable JsonViews views_;
