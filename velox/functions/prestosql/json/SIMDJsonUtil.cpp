@@ -28,6 +28,17 @@ void simdjsonErrorsToExceptions(
   }
 }
 
+const std::exception_ptr& SimdjsonErrors::get(simdjson::error_code code) const {
+  const auto index = static_cast<size_t>(code);
+  VELOX_DCHECK_GT(index, 0);
+  VELOX_DCHECK_LT(index, errors_.size());
+  folly::call_once(once_[index], [&] {
+    errors_[index] = toVeloxException(
+        std::make_exception_ptr(simdjson::simdjson_error(code)));
+  });
+  return errors_[index];
+}
+
 simdjson::simdjson_result<simdjson::ondemand::document> simdjsonParse(
     const simdjson::padded_string_view& json) {
   thread_local simdjson::ondemand::parser parser;

@@ -17,6 +17,7 @@
 #pragma once
 
 #include "velox/expression/CastExpr.h"
+#include "velox/functions/prestosql/json/SIMDJsonUtil.h"
 #include "velox/functions/prestosql/json/SIMDJsonWrapper.h"
 
 namespace facebook::velox {
@@ -53,8 +54,8 @@ class JsonCastOperator : public exec::CastOperator {
       const SelectivityVector& rows,
       BaseVector& result) const;
 
-  mutable folly::once_flag initializeErrors_;
-  mutable std::exception_ptr errors_[simdjson::NUM_ERROR_CODES];
+  // Built per error code on first use; see SimdjsonErrors.
+  SimdjsonErrors errors_;
   mutable std::string paddedInput_;
 };
 } // namespace facebook::velox

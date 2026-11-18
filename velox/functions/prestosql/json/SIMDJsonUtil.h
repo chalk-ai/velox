@@ -18,6 +18,10 @@
 #include "velox/functions/prestosql/json/SIMDJsonWrapper.h"
 
 #include <folly/Preprocessor.h>
+#include <folly/synchronization/CallOnce.h>
+
+#include <array>
+#include <exception>
 
 #define SIMDJSON_ASSIGN_OR_RAISE_IMPL(_resultName, _lhs, _rexpr) \
   auto&& _resultName = (_rexpr);                                 \
@@ -42,6 +46,28 @@ namespace facebook::velox {
 /// Initialize the exceptions array with all possible simdjson error codes.
 void simdjsonErrorsToExceptions(
     std::exception_ptr exceptions[simdjson::NUM_ERROR_CODES]);
+
+/// Per-error-code cache of VeloxExceptions for simdjson errors, built on first
+/// use.
+///
+/// Each VeloxException captures the current expression context, including
+/// the full text of the top-level expression. Building one exception per
+/// error code up front (simdjsonErrorsToExceptions) therefore stores
+/// NUM_ERROR_CODES copies of that text in every function instance, even when
+/// no error ever happens. Large expressions that are kept alive in an
+/// ExprSetPool make this tens of GB. Building only the codes that actually
+/// occur keeps the cost proportional to real errors.
+///
+/// get() must be called during expression evaluation so the exception gets
+/// the right context, exactly like the eager initialization it replaces.
+class SimdjsonErrors {
+ public:
+  const std::exception_ptr& get(simdjson::error_code code) const;
+
+ private:
+  mutable std::array<folly::once_flag, simdjson::NUM_ERROR_CODES> once_;
+  mutable std::array<std::exception_ptr, simdjson::NUM_ERROR_CODES> errors_;
+};
 
 /// Parse the input json string using a thread local on demand parser.
 simdjson::simdjson_result<simdjson::ondemand::document> simdjsonParse(

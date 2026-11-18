@@ -734,8 +734,8 @@ PendingJsonCastError& pendingJsonCastError() {
 }
 
 // Builds a VeloxUserError exception_ptr for a JSON cast type mismatch WITHOUT
-// throwing (mirrors simdjsonErrorsToExceptions()'s prebuilt-exception
-// approach), so the per-row error path never throws through the cast recursion.
+// throwing (mirrors the prebuilt-exception approach of SimdjsonErrors), so
+// the per-row error path never throws through the cast recursion.
 std::exception_ptr makeJsonCastUserError(const std::string& message) {
   return std::make_exception_ptr(VeloxUserError(
       __FILE__,
@@ -1425,7 +1425,7 @@ void JsonCastOperator::castFromJson(
                 row, makeJsonCastUserError(pending.message));
             pending.valid = false;
           } else {
-            context.setVeloxExceptionError(row, errors_[error]);
+            context.setVeloxExceptionError(row, errors_.get(error));
           }
           writer.commitNull();
         }
@@ -1477,9 +1477,6 @@ void JsonCastOperator::castFrom(
     const SelectivityVector& rows,
     const TypePtr& resultType,
     VectorPtr& result) const {
-  // Initialize errors here so that we get the proper exception context.
-  folly::call_once(
-      initializeErrors_, [this] { simdjsonErrorsToExceptions(errors_); });
   context.ensureWritable(rows, resultType, result);
   // Casting to unsupported types should have been rejected by isSupportedType()
   // in the caller.
