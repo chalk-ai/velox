@@ -115,9 +115,9 @@ std::vector<std::unique_ptr<SerializedPageBase>> ExchangeQueue::dequeueLocked(
   VELOX_CHECK_NOT_NULL(future);
   TestValue::adjust(
       "facebook::velox::exec::ExchangeQueue::dequeueLocked", this);
-  if (!error_.empty()) {
+  if (error_ != nullptr) {
     *atEnd = true;
-    VELOX_FAIL(error_);
+    std::rethrow_exception(error_);
   }
 
   *atEnd = false;
@@ -155,13 +155,22 @@ std::vector<std::unique_ptr<SerializedPageBase>> ExchangeQueue::dequeueLocked(
 }
 
 void ExchangeQueue::setError(const std::string& error) {
+  try {
+    VELOX_FAIL(error);
+  } catch (...) {
+    setError(std::current_exception());
+  }
+}
+
+void ExchangeQueue::setError(std::exception_ptr error) {
+  VELOX_CHECK(error != nullptr, "Exchange queue error must not be null");
   std::vector<ContinuePromise> promises;
   {
     std::lock_guard<std::mutex> l(mutex_);
-    if (!error_.empty()) {
+    if (error_ != nullptr) {
       return;
     }
-    error_ = error;
+    error_ = std::move(error);
     noMoreInput_ = true;
     // NOTE: clear the serialized page queue as we won't consume from an errored
     // queue.

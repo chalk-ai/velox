@@ -15,6 +15,7 @@
  */
 #include "velox/exec/InMemoryExchangeClient.h"
 
+#include <folly/ExceptionWrapper.h>
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 
@@ -245,10 +246,9 @@ void InMemoryExchangeClient::request(std::vector<RequestSpec>&& requestSpecs) {
               }
               self->request(std::move(requestSpecs));
             })
-        .thenError(
-            folly::tag_t<std::exception>{}, [self](const std::exception& e) {
-              self->queue_->setError(e.what());
-            });
+        .thenError([self](folly::exception_wrapper&& error) {
+          self->queue_->setError(error.to_exception_ptr());
+        });
   }
 }
 

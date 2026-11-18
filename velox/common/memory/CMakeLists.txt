@@ -29,6 +29,7 @@ velox_add_library(
   MemoryAllocator.cpp
   MemoryArbitrator.cpp
   MemoryPool.cpp
+  MemoryPoolIOBuf.cpp
   MmapAllocator.cpp
   MmapArena.cpp
   RawVector.cpp
@@ -48,6 +49,7 @@ velox_add_library(
   MemoryAllocator.h
   MemoryArbitrator.h
   MemoryPool.h
+  MemoryPoolIOBuf.h
   MmapAllocator.h
   MmapArena.h
   RawVector.h

@@ -42,11 +42,12 @@ class FileExchangeSink final : public ExchangeSink {
       std::string taskId,
       int32_t numPartitions);
 
-  /// Appends one length-delimited serialized page to a partition file.
+  /// Appends one non-empty length-delimited serialized page to a partition
+  /// file.
   void append(int32_t partition, std::string_view page) override;
 
-  /// Appends one length-delimited serialized page without coalescing its
-  /// IOBuf chain.
+  /// Appends one non-empty length-delimited serialized page without coalescing
+  /// its IOBuf chain.
   void append(int32_t partition, std::unique_ptr<folly::IOBuf> page) override;
 
   /// Closes all partition files and returns non-empty committed locations.

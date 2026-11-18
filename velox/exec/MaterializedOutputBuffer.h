@@ -30,8 +30,8 @@
 #include <folly/io/IOBuf.h>
 #include "velox/common/future/VeloxPromise.h"
 #include "velox/common/memory/MemoryPool.h"
+#include "velox/exec/BlockingReason.h"
 #include "velox/exec/ExchangeSink.h"
-#include "velox/exec/Operator.h"
 
 namespace facebook::velox::exec {
 
@@ -117,6 +117,9 @@ class MaterializedOutputBuffer {
   folly::F14FastMap<int32_t, std::string> outputLocations() const;
 
   /// Allocates a RowGroup IOBuf tracked by the configured memory pool.
+  /// Retains the pool until the final reference to the shared buffer is
+  /// released. Falls back to an untracked allocation when no pool is
+  /// configured.
   std::unique_ptr<folly::IOBuf> allocateTrackedIOBuf(size_t size);
 
   int32_t numPartitions() const {
@@ -175,8 +178,6 @@ class MaterializedOutputBuffer {
   void flushDrained(
       int32_t partition,
       std::deque<std::unique_ptr<folly::IOBuf>>& rowGroups);
-
-  static void freeTrackedIOBuf(void* buffer, void* userData);
 
   const int32_t numPartitions_;
   const int64_t maxBufferedBytes_;

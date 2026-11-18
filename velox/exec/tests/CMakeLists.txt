@@ -479,7 +479,11 @@ target_link_libraries(
   GTest::gmock
 )
 
-add_executable(materialized_output_buffer_test MaterializedOutputBufferTest.cpp)
+add_executable(
+  materialized_output_buffer_test
+  MaterializedOutputBufferTest.cpp
+  MaterializedOutputBufferAllocationTest.cpp
+)
 add_test(materialized_output_buffer_test materialized_output_buffer_test)
 target_link_libraries(
   materialized_output_buffer_test
