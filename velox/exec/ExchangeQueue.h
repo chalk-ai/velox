@@ -17,6 +17,7 @@
 
 #include "velox/exec/SerializedPage.h"
 
+#include <exception>
 #include <mutex>
 
 namespace facebook::velox::exec {
@@ -60,6 +61,10 @@ class ExchangeQueue {
   /// contacted, this registers an error message and causes the reading
   /// Exchanges to throw with the message.
   void setError(const std::string& error);
+
+  /// Registers a non-null exception, preserving its type and error code.
+  /// The first error is retained and waiting consumers are notified.
+  void setError(std::exception_ptr error);
 
   /// Returns pages of data.
   ///
@@ -178,9 +183,8 @@ class ExchangeQueue {
   // The map from consumer id to the waiting promise
   folly::F14FastMap<int, ContinuePromise> promises_;
 
-  // When set, all promises will be realized and the next dequeue will
-  // throw an exception with this message.
-  std::string error_;
+  // First error to rethrow on dequeue after notifying all waiting consumers.
+  std::exception_ptr error_;
   // Total size of SerializedPages in queue.
   int64_t totalBytes_{0};
   // Number of SerializedPages received.

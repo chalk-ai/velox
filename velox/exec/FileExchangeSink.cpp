@@ -107,8 +107,9 @@ void FileExchangeSink::append(
 
   std::lock_guard<std::mutex> lock(mutex_);
   VELOX_CHECK(!closed_);
-  auto& partitionWriter = this->partitionWriter(partition);
   const auto pageSize = page->computeChainDataLength();
+  VELOX_CHECK_GT(pageSize, 0, "File exchange page must not be empty");
+  auto& partitionWriter = this->partitionWriter(partition);
   const auto encodedPageSize = file_exchange::encodePageSize(pageSize);
   partitionWriter.append(&encodedPageSize, sizeof(file_exchange::PageSize));
   for (const auto& range : *page) {

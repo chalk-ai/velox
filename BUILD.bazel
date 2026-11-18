@@ -5069,6 +5069,7 @@ cc_test(
         ":test_utils_base",
         "@fmt",
         "@folly//folly:dynamic",
+        "@folly//folly:exception_wrapper",
         "@folly//folly:executor",
         "@folly//folly:json",
         "@folly//folly:scope_guard",

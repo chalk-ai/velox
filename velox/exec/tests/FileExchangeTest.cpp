@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 
 #include <fmt/format.h>
 #include <folly/ScopeGuard.h>
@@ -207,14 +208,52 @@ TEST_F(FileExchangeTest, dataRequestsRespectPageBudget) {
 }
 
 TEST_F(FileExchangeTest, emptyPageIsRejectedBySizeProbe) {
-  FileExchangeSink sink(rootDirectory_, "exchange", "task", 1);
-  sink.append(0, "");
-  const auto output = sink.finish();
+  const auto filePath = fmt::format("{}/empty-page.bin", rootDirectory_);
+  const auto contents = fileContents({""});
+  std::ofstream file(filePath, std::ios::binary);
+  file.write(contents.data(), contents.size());
+  file.close();
   auto queue = std::make_shared<ExchangeQueue>(1, 0);
-  FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+  FileExchangeSource source(
+      fileLocation(filePath, contents), 0, queue, pool_.get());
   // The exchange protocol requires strictly positive advertised page sizes.
   VELOX_ASSERT_THROW(
       source.requestDataSizes({}).get(), "Empty page payload in file");
+}
+
+TEST_F(FileExchangeTest, emptyPagesAreRejectedBeforeWriting) {
+  for (int inputKind = 0; inputKind < 3; ++inputKind) {
+    SCOPED_TRACE(inputKind);
+    const auto exchangeId = fmt::format("exchange_{}", inputKind);
+    FileExchangeSink sink(rootDirectory_, exchangeId, "task", 1);
+    const auto appendEmptyPage = [&]() {
+      if (inputKind == 0) {
+        sink.append(0, std::string_view{});
+      } else {
+        auto page = folly::IOBuf::create(0);
+        if (inputKind == 2) {
+          page->appendToChain(folly::IOBuf::create(0));
+        }
+        sink.append(0, std::move(page));
+      }
+    };
+    VELOX_ASSERT_THROW(
+        appendEmptyPage(), "File exchange page must not be empty");
+    EXPECT_EQ(sink.stats().at("totalPages"), 0);
+    EXPECT_EQ(sink.stats().at("totalBytesWritten"), 0);
+    EXPECT_FALSE(
+        std::filesystem::exists(
+            fmt::format(
+                "{}/{}/partition_0/task.bin", rootDirectory_, exchangeId)));
+
+    sink.append(0, "valid page");
+    const auto output = sink.finish();
+    const auto outputFile =
+        file_exchange::ExchangeOutputFile::deserialize(output.locations.at(0));
+    const auto expected = fileContents({"valid page"});
+    EXPECT_EQ(outputFile.size, expected.size());
+    EXPECT_EQ(outputFile.checksum, checksum(expected));
+  }
 }
 
 TEST_F(FileExchangeTest, emptyFileEndsOnSizeProbe) {
@@ -397,6 +436,97 @@ TEST_F(FileExchangeTest, checksumFailureReleasesQueuedPayloads) {
   ContinueFuture future;
   VELOX_ASSERT_THROW(
       client->next(0, 1, &atEnd, &future), "File exchange checksum mismatch");
+}
+
+TEST_F(FileExchangeTest, clientPreservesMemoryLimitErrorCode) {
+  constexpr int64_t kPageBytes = 2 << 20;
+  for (const bool queuePageBeforeFailure : {false, true}) {
+    SCOPED_TRACE(queuePageBeforeFailure);
+    FileExchangeSink sink(
+        rootDirectory_,
+        fmt::format("exchange_{}", queuePageBeforeFailure),
+        "task",
+        1);
+    if (queuePageBeforeFailure) {
+      sink.append(0, std::string(4'096, 'a'));
+    }
+    sink.append(0, std::string(kPageBytes, 'b'));
+    const auto output = sink.finish();
+    auto limitedRoot =
+        memory::memoryManager()->addRootPool("limited-client", 1 << 20);
+    auto limitedPool = limitedRoot->addLeafChild("exchange");
+    folly::ManualExecutor executor;
+    auto client = std::make_shared<InMemoryExchangeClient>(
+        "consumer", 0, 4 * kPageBytes, 1, 0, limitedPool.get(), &executor);
+    SCOPE_EXIT {
+      client->close();
+      runUntilIdle(executor);
+    };
+    client->addRemoteTaskId(output.locations.at(0));
+    client->noMoreRemoteTasks();
+    bool atEnd = false;
+    ContinueFuture future;
+    EXPECT_THAT(client->next(0, 1, &atEnd, &future), testing::IsEmpty());
+    ASSERT_TRUE(future.valid());
+    EXPECT_FALSE(future.isReady());
+    runUntilIdle(executor);
+    EXPECT_TRUE(future.isReady());
+    EXPECT_EQ(limitedPool->usedBytes(), 0);
+    // A later error must not replace the original allocation failure.
+    client->queue()->setError("secondary failure");
+    for (int i = 0; i < 2; ++i) {
+      VELOX_ASSERT_THROW_CODE(
+          client->next(0, 1, &atEnd, &future),
+          error_code::kMemCapExceeded,
+          "Exceeded memory pool capacity");
+      EXPECT_TRUE(atEnd);
+    }
+  }
+}
+
+TEST_F(FileExchangeTest, queueStringErrorsWakeConsumersAndKeepFirstError) {
+  auto queue = std::make_shared<ExchangeQueue>(1, 0);
+  bool atEnd = false;
+  ContinueFuture future;
+  auto stalePromise = ContinuePromise::makeEmpty();
+  {
+    std::lock_guard<std::mutex> lock(queue->mutex());
+    EXPECT_THAT(
+        queue->dequeueLocked(0, 1, &atEnd, &future, &stalePromise),
+        testing::IsEmpty());
+  }
+  EXPECT_FALSE(future.isReady());
+  queue->setError("first failure");
+  queue->setError("later failure");
+  queue->setError(
+      std::make_exception_ptr(std::runtime_error("typed secondary failure")));
+  EXPECT_TRUE(future.isReady());
+  std::lock_guard<std::mutex> lock(queue->mutex());
+  VELOX_ASSERT_THROW_CODE(
+      queue->dequeueLocked(0, 1, &atEnd, &future, &stalePromise),
+      error_code::kInvalidState,
+      "first failure");
+  EXPECT_TRUE(atEnd);
+}
+
+TEST_F(FileExchangeTest, queuePreservesExceptionTypeAndIdentity) {
+  auto queue = std::make_shared<ExchangeQueue>(1, 0);
+  const auto error =
+      std::make_exception_ptr(std::runtime_error("source failure"));
+  queue->setError(error);
+  queue->setError("secondary failure");
+  bool atEnd = false;
+  ContinueFuture future;
+  auto stalePromise = ContinuePromise::makeEmpty();
+  std::lock_guard<std::mutex> lock(queue->mutex());
+  try {
+    queue->dequeueLocked(0, 1, &atEnd, &future, &stalePromise);
+    FAIL() << "Expected source exception";
+  } catch (const std::runtime_error& received) {
+    EXPECT_STREQ(received.what(), "source failure");
+    EXPECT_EQ(std::current_exception(), error);
+  }
+  EXPECT_TRUE(atEnd);
 }
 
 #ifndef NDEBUG
