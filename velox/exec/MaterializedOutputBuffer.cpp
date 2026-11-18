@@ -23,6 +23,7 @@
 #include <folly/ScopeGuard.h>
 #include <glog/logging.h>
 #include "velox/common/base/Exceptions.h"
+#include "velox/common/memory/MemoryPoolIOBuf.h"
 
 namespace facebook::velox::exec {
 namespace {
@@ -42,11 +43,6 @@ int64_t computePartitionDrainThreshold(
   VELOX_CHECK_GT(requestedThreshold, 0);
   return std::min(requestedThreshold, maxBufferedBytes / numPartitions);
 }
-
-struct TrackedBufferInfo {
-  memory::MemoryPool* pool;
-  size_t size;
-};
 
 } // namespace
 
@@ -222,18 +218,7 @@ std::unique_ptr<folly::IOBuf> MaterializedOutputBuffer::allocateTrackedIOBuf(
   if (pool_ == nullptr) {
     return folly::IOBuf::create(size);
   }
-  void* buffer = pool_->allocate(size);
-  auto* info = new TrackedBufferInfo{pool_.get(), size};
-  auto iobuf =
-      folly::IOBuf::takeOwnership(buffer, size, freeTrackedIOBuf, info);
-  iobuf->trimEnd(size);
-  return iobuf;
-}
-
-void MaterializedOutputBuffer::freeTrackedIOBuf(void* buffer, void* userData) {
-  auto* info = static_cast<TrackedBufferInfo*>(userData);
-  info->pool->free(buffer, info->size);
-  delete info;
+  return memory::allocateIOBuf(pool_, size);
 }
 
 void MaterializedOutputBuffer::enqueue(

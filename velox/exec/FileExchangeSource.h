@@ -53,7 +53,7 @@ class FileExchangeSource : public ExchangeSource {
 
   void pause() override {}
 
-  /// Prevents new reads and discards results of an in-flight read.
+  /// Signals cancellation without waiting for an in-flight read to finish.
   void close() override;
 
   /// Reports the next page's size without reading its payload.
@@ -110,8 +110,8 @@ class FileExchangeSource : public ExchangeSource {
   std::shared_ptr<filesystems::FileSystem> fileSystem_;
   // Lazily opened input file retained until this source is destroyed.
   std::unique_ptr<ReadFile> file_;
-  // True after close prevents further reads and enqueues. Written under the
-  // queue mutex to synchronize with publication of pages and end of stream.
+  // Signals cancellation to reads and enqueues without taking the queue mutex.
+  // The client clears the queue under that mutex after closing all sources.
   std::atomic_bool closed_{false};
   // True after the terminal queue marker has been emitted. Guarded by the
   // exchange queue mutex together with ExchangeSource::atEnd_.

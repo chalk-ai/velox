@@ -23,39 +23,11 @@
 #include <folly/io/IOBuf.h>
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/future/VeloxPromise.h"
+#include "velox/common/memory/MemoryPoolIOBuf.h"
 #include "velox/exec/FileExchangeFormat.h"
 #include "velox/exec/SerializedPage.h"
 
 namespace facebook::velox::exec {
-namespace {
-
-// Keeps the pool alive until all IOBuf clones have released the payload.
-struct PageBufferOwner {
-  // Pool responsible for freeing the allocation.
-  std::shared_ptr<memory::MemoryPool> pool;
-  // Allocation size before pool alignment.
-  uint64_t size;
-};
-
-std::unique_ptr<folly::IOBuf> allocatePageBuffer(
-    const std::shared_ptr<memory::MemoryPool>& pool,
-    uint64_t size) {
-  auto owner = std::make_unique<PageBufferOwner>(pool, size);
-  auto* data = pool->allocate(size);
-  // takeOwnership invokes the deleter on construction failure as well.
-  return folly::IOBuf::takeOwnership(
-      data,
-      size,
-      0,
-      [](void* buffer, void* userData) {
-        const std::unique_ptr<PageBufferOwner> owner{
-            static_cast<PageBufferOwner*>(userData)};
-        owner->pool->free(buffer, owner->size);
-      },
-      owner.release());
-}
-
-} // namespace
 
 FileExchangeSource::FileExchangeSource(
     const std::string& taskId,
@@ -131,7 +103,7 @@ std::optional<uint64_t> FileExchangeSource::readPageSize() {
 std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage() {
   const auto pageSize = nextPageSize_.value();
   // Pool allocation can arbitrate memory and must run outside the queue lock.
-  auto buffer = allocatePageBuffer(pool_, pageSize);
+  auto buffer = memory::allocateIOBuf(pool_, pageSize);
   if (closed_) {
     return nullptr;
   }
@@ -240,7 +212,6 @@ folly::SemiFuture<ExchangeSource::Response> FileExchangeSource::request(
 }
 
 void FileExchangeSource::close() {
-  std::lock_guard<std::mutex> lock(queue_->mutex());
   closed_ = true;
 }
 
