@@ -18,10 +18,10 @@
 #include "velox/functions/prestosql/json/SIMDJsonWrapper.h"
 
 #include <folly/Preprocessor.h>
-#include <folly/synchronization/CallOnce.h>
 
 #include <array>
 #include <exception>
+#include <mutex>
 
 #define SIMDJSON_ASSIGN_OR_RAISE_IMPL(_resultName, _lhs, _rexpr) \
   auto&& _resultName = (_rexpr);                                 \
@@ -65,7 +65,7 @@ class SimdjsonErrors {
   const std::exception_ptr& get(simdjson::error_code code) const;
 
  private:
-  mutable std::array<folly::once_flag, simdjson::NUM_ERROR_CODES> once_;
+  mutable std::array<std::once_flag, simdjson::NUM_ERROR_CODES> once_;
   mutable std::array<std::exception_ptr, simdjson::NUM_ERROR_CODES> errors_;
 };
 
