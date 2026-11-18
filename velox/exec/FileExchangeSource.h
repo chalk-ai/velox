@@ -19,6 +19,7 @@
 #include <folly/container/F14Map.h>
 #include <folly/dynamic.h>
 #include <atomic>
+#include <optional>
 #include <string>
 #include "velox/common/file/File.h"
 #include "velox/common/file/FileSystems.h"
@@ -44,16 +45,18 @@ class FileExchangeSource : public ExchangeSource {
   /// Claims the next request while the source remains open.
   bool shouldRequestLocked() override;
 
-  /// Reads and enqueues pages up to the requested byte budget.
+  /// Reads pages within the byte budget, allowing an oversized first page.
+  /// A zero byte budget requests only the next page's size.
   folly::SemiFuture<Response> request(
       uint32_t maxBytes,
       std::chrono::microseconds maxWait) override;
 
   void pause() override {}
 
-  /// Prevents new requests from starting.
+  /// Prevents new reads and discards results of an in-flight read.
   void close() override;
 
+  /// Reports the next page's size without reading its payload.
   folly::SemiFuture<Response> requestDataSizes(
       std::chrono::microseconds maxWait) override {
     return request(0, maxWait);
@@ -75,14 +78,18 @@ class FileExchangeSource : public ExchangeSource {
   // Opens the paged input file on first request.
   void openFile();
 
-  // Reads the next page, or returns null at end of file.
+  // Reads and caches one size header, or returns nullopt at end of file.
+  std::optional<uint64_t> readPageSize();
+
+  // Reads the payload described by the cached header, or returns null if
+  // memory arbitration closes the source before payload I/O starts.
   std::unique_ptr<SerializedPageBase> readPage();
 
-  // Enqueues a page and wakes waiting consumers.
-  void enqueuePage(std::unique_ptr<SerializedPageBase> page);
+  // Enqueues a page and wakes consumers. Returns false if closed.
+  bool enqueuePage(std::unique_ptr<SerializedPageBase> page);
 
-  // Verifies the complete file before publishing successful end of stream.
-  void enqueueEnd();
+  // Verifies and publishes end of stream. Returns false if closed.
+  bool enqueueEnd();
 
   // Verifies the completed file against its committed checksum.
   void verifyChecksum() const;
@@ -97,11 +104,14 @@ class FileExchangeSource : public ExchangeSource {
   uint64_t fileBytesRead_{0};
   // Incremental CRC32C of physical file bytes consumed so far.
   uint32_t fileChecksum_{~0U};
+  // Size of the unread payload whose header is already included in the CRC.
+  std::optional<uint64_t> nextPageSize_;
   // Filesystem that owns the input file implementation.
   std::shared_ptr<filesystems::FileSystem> fileSystem_;
   // Lazily opened input file retained until this source is destroyed.
   std::unique_ptr<ReadFile> file_;
-  // True after close prevents further reads.
+  // True after close prevents further reads and enqueues. Written under the
+  // queue mutex to synchronize with publication of pages and end of stream.
   std::atomic_bool closed_{false};
   // True after the terminal queue marker has been emitted. Guarded by the
   // exchange queue mutex together with ExchangeSource::atEnd_.

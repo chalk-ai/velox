@@ -5042,6 +5042,49 @@ cc_library(
 )
 
 cc_test(
+    name = "velox_exec_file_exchange_test",
+    size = "small",
+    srcs = [
+        "velox/exec/ExchangeQueue.cpp",
+        "velox/exec/ExchangeQueue.h",
+        "velox/exec/ExchangeSink.cpp",
+        "velox/exec/ExchangeSink.h",
+        "velox/exec/ExchangeSource.cpp",
+        "velox/exec/ExchangeSource.h",
+        "velox/exec/FileExchangeFormat.cpp",
+        "velox/exec/FileExchangeFormat.h",
+        "velox/exec/FileExchangeSink.cpp",
+        "velox/exec/FileExchangeSink.h",
+        "velox/exec/FileExchangeSource.cpp",
+        "velox/exec/FileExchangeSource.h",
+        "velox/exec/InMemoryExchangeClient.cpp",
+        "velox/exec/InMemoryExchangeClient.h",
+        "velox/exec/SerializedPage.cpp",
+        "velox/exec/SerializedPage.h",
+        "velox/exec/tests/FileExchangeTest.cpp",
+    ],
+    copts = ["-std=c++20"],
+    deps = [
+        ":base",
+        ":test_utils_base",
+        "@fmt",
+        "@folly//folly:dynamic",
+        "@folly//folly:executor",
+        "@folly//folly:json",
+        "@folly//folly:scope_guard",
+        "@folly//folly/container:f14_hash",
+        "@folly//folly/executors:manual_executor",
+        "@folly//folly/futures:core",
+        "@folly//folly/hash:checksum",
+        "@folly//folly/io:iobuf",
+        "@folly//folly/lang:bits",
+        "@folly//folly/testing:test_util",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "velox_common_base_tests_ConcurrentCounterTest",
     srcs = ["velox/common/base/tests/ConcurrentCounterTest.cpp"],
     deps = [
