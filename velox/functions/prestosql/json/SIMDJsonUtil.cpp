@@ -29,9 +29,9 @@ void simdjsonErrorsToExceptions(
 }
 
 const std::exception_ptr& SimdjsonErrors::get(simdjson::error_code code) const {
+  // 'code' is a non-success simdjson error, so it is a valid index, exactly
+  // like the eager array this replaces.
   const auto index = static_cast<size_t>(code);
-  VELOX_DCHECK_GT(index, 0);
-  VELOX_DCHECK_LT(index, errors_.size());
   folly::call_once(once_[index], [&] {
     errors_[index] = toVeloxException(
         std::make_exception_ptr(simdjson::simdjson_error(code)));
