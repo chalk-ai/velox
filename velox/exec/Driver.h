@@ -413,8 +413,9 @@ class Driver : public std::enable_shared_from_this<Driver> {
     return state_;
   }
 
-  /// Returns true if this driver is running on thread and has exceeded the cpu
-  /// time slice limit if set.
+  /// Returns true if this driver's task has a pause or termination pending, or
+  /// if this driver is running on thread and has exceeded the cpu time slice
+  /// limit if set.
   bool shouldYield() const;
 
   /// Inline function to check if operator batch size stats are enabled.

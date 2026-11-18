@@ -519,6 +519,12 @@ CpuWallTiming Driver::processLazyIoStats(
 }
 
 bool Driver::shouldYield() const {
+  // A task pause or termination waits for every driver to go off thread, so an
+  // operator checking this inside a long call returns at once instead of
+  // holding up a memory arbitration until its next operator-call boundary.
+  if (task()->pauseRequested() || task()->isCancelled()) {
+    return true;
+  }
   if (cpuSliceMs_ == 0) {
     return false;
   }

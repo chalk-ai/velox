@@ -691,11 +691,11 @@ class Operator : public BaseRuntimeStatWriter {
   /// could copy directly from input to output if no cardinality change.
   bool isIdentityProjection_ = false;
 
-  /// Returns true if the driver should yield execution to prevent getting
-  /// stuck in long processing loops that exceed their allocated CPU time
-  /// slice limits. Operators should call this method as yield points during
-  /// time-consuming operations to allow other tasks to be scheduled and
-  /// maintain system responsiveness.
+  /// Returns true if the driver should yield execution: its task has a pause or
+  /// termination pending, or it is stuck in a long processing loop that exceeds
+  /// its allocated CPU time slice limit. Operators should call this method as
+  /// yield points during time-consuming operations so that memory arbitration
+  /// can pause the task and other tasks can be scheduled.
   bool shouldYield() const {
     return operatorCtx_->driverCtx()->driver->shouldYield();
   }
