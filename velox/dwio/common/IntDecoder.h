@@ -19,6 +19,7 @@
 #include <folly/Likely.h>
 #include <folly/Range.h>
 #include <folly/Varint.h>
+#include <folly/lang/Bits.h>
 #include "velox/common/base/Nulls.h"
 #include "velox/common/encode/Coding.h"
 #include "velox/dwio/common/IntCodecCommon.h"
@@ -320,18 +321,18 @@ inline int64_t IntDecoder<isSigned>::readLongLE() {
   if (bufferStart_ && bufferStart_ + sizeof(int64_t) <= bufferEnd_) {
     bufferStart_ += numBytes_;
     if (numBytes_ == 8) {
-      return *reinterpret_cast<const int64_t*>(bufferStart_ - 8);
+      return folly::loadUnaligned<int64_t>(bufferStart_ - 8);
     }
     if (numBytes_ == 4) {
       if (isSigned) {
-        return *reinterpret_cast<const int32_t*>(bufferStart_ - 4);
+        return folly::loadUnaligned<int32_t>(bufferStart_ - 4);
       }
-      return *reinterpret_cast<const uint32_t*>(bufferStart_ - 4);
+      return folly::loadUnaligned<uint32_t>(bufferStart_ - 4);
     }
     if (isSigned) {
-      return *reinterpret_cast<const int16_t*>(bufferStart_ - 2);
+      return folly::loadUnaligned<int16_t>(bufferStart_ - 2);
     }
-    return *reinterpret_cast<const uint16_t*>(bufferStart_ - 2);
+    return folly::loadUnaligned<uint16_t>(bufferStart_ - 2);
   }
 
   char b;
