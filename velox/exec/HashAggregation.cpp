@@ -419,8 +419,17 @@ RowVectorPtr HashAggregation::getOutput() {
   }
 
   const auto& queryConfig = operatorCtx_->driverCtx()->queryConfig();
-  const auto maxOutputRows =
+  vector_size_t maxOutputRows =
       isGlobal_ ? 1 : outputBatchRows(estimatedOutputRowSize_);
+  // Without spill, every remaining group is in the row container, so a batch
+  // never holds more than numRows() groups. Sizing the output (and the group
+  // pointer array GroupingSet::getOutput allocates) to that bound instead of a
+  // full output batch returns the same rows; extractGroups resizes the result
+  // to the groups it lists either way.
+  if (!isGlobal_ && !groupingSet_->hasSpilled()) {
+    maxOutputRows = static_cast<vector_size_t>(std::min<int64_t>(
+        maxOutputRows, std::max<int64_t>(1, groupingSet_->numRows())));
+  }
   // Reuse output vectors if possible.
   prepareOutput(maxOutputRows);
 
