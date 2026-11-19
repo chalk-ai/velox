@@ -16,17 +16,52 @@
 
 #include "velox/exec/FileExchangeSource.h"
 
+#include <cstdint>
+#include <memory>
 #include <mutex>
+#include <utility>
 
 #include <folly/Conv.h>
 #include <folly/hash/Checksum.h>
 #include <folly/io/IOBuf.h>
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/future/VeloxPromise.h"
+#include "velox/common/memory/MemoryPool.h"
 #include "velox/exec/FileExchangeFormat.h"
-#include "velox/serializers/PrestoSerializer.h"
+#include "velox/exec/SerializedPage.h"
 
 namespace facebook::velox::exec {
+namespace {
+
+struct TrackedBufferInfo {
+  // Keep the pool alive until the last IOBuf reference is freed.
+  std::shared_ptr<memory::MemoryPool> pool;
+  int64_t size;
+};
+
+void freeTrackedIOBuf(void* buffer, void* userData) {
+  auto* info = static_cast<TrackedBufferInfo*>(userData);
+  info->pool->free(buffer, info->size);
+  delete info;
+}
+
+std::unique_ptr<folly::IOBuf> allocatePageBuffer(
+    const std::shared_ptr<memory::MemoryPool>& pool,
+    uint64_t size) {
+  if (size == 0) {
+    return folly::IOBuf::create(0);
+  }
+
+  // Create cleanup state first so allocation failures cannot leak the payload.
+  auto info = std::make_unique<TrackedBufferInfo>(
+      TrackedBufferInfo{pool, folly::to<int64_t>(size)});
+  void* buffer = pool->allocate(info->size);
+  // Folly invokes the callback on construction failure as well as final release.
+  return folly::IOBuf::takeOwnership(
+      buffer, size, 0, freeTrackedIOBuf, info.release());
+}
+
+} // namespace
 
 FileExchangeSource::FileExchangeSource(
     const std::string& taskId,
@@ -100,7 +135,7 @@ std::optional<uint64_t> FileExchangeSource::readPageSize() {
 
 std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage(
     uint64_t pageSize) {
-  auto buffer = folly::IOBuf::create(pageSize);
+  auto buffer = allocatePageBuffer(pool_, pageSize);
   const auto pageData =
       file_->pread(fileBytesRead_, pageSize, buffer->writableData());
   VELOX_CHECK_EQ(

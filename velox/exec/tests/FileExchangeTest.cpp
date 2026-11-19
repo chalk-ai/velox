@@ -17,8 +17,11 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 
 #include <fmt/format.h>
+#include <folly/ScopeGuard.h>
 #include <folly/hash/Checksum.h>
 #include <folly/testing/TestUtil.h>
 #include <gtest/gtest.h>
@@ -26,6 +29,7 @@
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/file/tests/FaultyFileSystem.h"
+#include "velox/common/file/tests/FaultyFileSystemOperations.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/exec/FileExchangeFormat.h"
 #include "velox/exec/FileExchangeSink.h"
@@ -46,7 +50,37 @@ class FileExchangeTest : public testing::Test {
     temporaryDirectory_ =
         std::make_unique<folly::test::TemporaryDirectory>("file_exchange_test");
     rootDirectory_ = temporaryDirectory_->path().string();
-    pool_ = memory::memoryManager()->addRootPool("file_exchange_test");
+    rootPool_ = memory::memoryManager()->addRootPool("file_exchange_test");
+    pool_ = rootPool_->addLeafChild("file_exchange_source");
+  }
+
+  static std::shared_ptr<ExchangeQueue> makeExchangeQueue() {
+    auto queue = std::make_shared<ExchangeQueue>(1, 0);
+    {
+      std::lock_guard<std::mutex> lock(queue->mutex());
+      queue->addSourceLocked();
+    }
+    queue->noMoreSources();
+    return queue;
+  }
+
+  static std::vector<std::unique_ptr<SerializedPageBase>> dequeueAllPages(
+      const std::shared_ptr<ExchangeQueue>& queue) {
+    bool atEnd = false;
+    ContinueFuture future;
+    auto stalePromise = ContinuePromise::makeEmpty();
+    std::vector<std::unique_ptr<SerializedPageBase>> pages;
+    {
+      std::lock_guard<std::mutex> lock(queue->mutex());
+      pages = queue->dequeueLocked(
+          0,
+          std::numeric_limits<uint32_t>::max(),
+          &atEnd,
+          &future,
+          &stalePromise);
+    }
+    EXPECT_TRUE(atEnd);
+    return pages;
   }
 
   static std::string pageData(const SerializedPageBase& page) {
@@ -87,6 +121,7 @@ class FileExchangeTest : public testing::Test {
 
   std::unique_ptr<folly::test::TemporaryDirectory> temporaryDirectory_;
   std::string rootDirectory_;
+  std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> pool_;
 };
 
@@ -136,6 +171,120 @@ TEST_F(FileExchangeTest, multiplePagesShareOnePartitionFile) {
   ASSERT_EQ(pages.size(), 2);
   EXPECT_EQ(pageData(*pages[0]), "first page");
   EXPECT_EQ(pageData(*pages[1]), "second page");
+}
+
+TEST_F(FileExchangeTest, payloadMemoryRemainsAccountedUntilPageIsFreed) {
+  const std::string payload(123, 'x');
+  FileExchangeSink sink(rootDirectory_, "exchange", "task", 1);
+  sink.append(0, payload);
+  const auto output = sink.finish();
+
+  auto queue = makeExchangeQueue();
+  FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+  const auto baselineBytes = pool_->usedBytes();
+  const auto baselineRootBytes = rootPool_->usedBytes();
+
+  source.request(std::numeric_limits<uint32_t>::max(), {}).get();
+  const auto queuedBytes = pool_->usedBytes();
+  EXPECT_GE(queuedBytes - baselineBytes, static_cast<int64_t>(payload.size()));
+  EXPECT_EQ(
+      rootPool_->usedBytes(), baselineRootBytes + queuedBytes - baselineBytes);
+  EXPECT_EQ(queue->totalBytes(), payload.size());
+
+  auto pages = dequeueAllPages(queue);
+  ASSERT_EQ(pages.size(), 1);
+  EXPECT_EQ(queue->totalBytes(), 0);
+  EXPECT_EQ(pool_->usedBytes(), queuedBytes);
+  EXPECT_EQ(pageData(*pages[0]), payload);
+
+  pages.clear();
+  EXPECT_EQ(pool_->usedBytes(), baselineBytes);
+  EXPECT_EQ(rootPool_->usedBytes(), baselineRootBytes);
+}
+
+TEST_F(FileExchangeTest, bufferCloneRetainsPayloadAndPoolAfterSourceDestruction) {
+  const std::string payload(123, 'x');
+  FileExchangeSink sink(rootDirectory_, "exchange", "task", 1);
+  sink.append(0, payload);
+  const auto output = sink.finish();
+
+  const auto baselineBytes = pool_->usedBytes();
+  const std::weak_ptr<memory::MemoryPool> weakPool = pool_;
+  const std::weak_ptr<memory::MemoryPool> weakRootPool = rootPool_;
+  std::unique_ptr<folly::IOBuf> clone;
+  int64_t allocatedBytes{0};
+  {
+    auto queue = makeExchangeQueue();
+    FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+    source.request(std::numeric_limits<uint32_t>::max(), {}).get();
+    allocatedBytes = pool_->usedBytes();
+    EXPECT_GE(
+        allocatedBytes - baselineBytes, static_cast<int64_t>(payload.size()));
+
+    auto pages = dequeueAllPages(queue);
+    ASSERT_EQ(pages.size(), 1);
+    clone = pages[0]->getIOBuf();
+  }
+
+  pool_.reset();
+  rootPool_.reset();
+  EXPECT_FALSE(weakRootPool.expired());
+  EXPECT_EQ(
+      std::string(
+          reinterpret_cast<const char*>(clone->data()), clone->length()),
+      payload);
+  {
+    auto pool = weakPool.lock();
+    ASSERT_NE(pool, nullptr);
+    EXPECT_EQ(pool->usedBytes(), allocatedBytes);
+
+    clone.reset();
+    EXPECT_EQ(pool->usedBytes(), baselineBytes);
+  }
+  EXPECT_TRUE(weakPool.expired());
+  EXPECT_TRUE(weakRootPool.expired());
+}
+
+TEST_F(FileExchangeTest, failedPayloadReadReleasesAllocation) {
+  using tests::utils::FaultFileOperation;
+  using tests::utils::FaultFileReadOperation;
+
+  FileExchangeSink sink(
+      fmt::format("faulty:{}", rootDirectory_), "exchange", "task", 1);
+  sink.append(0, "page");
+  const auto output = sink.finish();
+  const auto outputFile =
+      file_exchange::ExchangeOutputFile::deserialize(output.locations.at(0));
+
+  auto queue = makeExchangeQueue();
+  FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+  const auto baselineBytes = pool_->usedBytes();
+  const auto baselineRootBytes = rootPool_->usedBytes();
+  bool payloadReadAttempted = false;
+  auto faultyFs = tests::utils::faultyFileSystem();
+  SCOPE_EXIT {
+    faultyFs->clearFileFaultInjections();
+  };
+  faultyFs->setFileInjectionHook([&](FaultFileOperation* op) {
+    if (op->type != FaultFileOperation::Type::kRead ||
+        op->path != outputFile.path) {
+      return;
+    }
+    const auto* read = static_cast<FaultFileReadOperation*>(op);
+    if (read->offset == sizeof(file_exchange::PageSize)) {
+      payloadReadAttempted = true;
+      EXPECT_GT(pool_->usedBytes(), baselineBytes);
+      throw std::runtime_error("Injected payload read failure");
+    }
+  });
+
+  EXPECT_THROW(
+      source.request(std::numeric_limits<uint32_t>::max(), {}).get(),
+      std::runtime_error);
+  EXPECT_TRUE(payloadReadAttempted);
+  EXPECT_EQ(queue->totalBytes(), 0);
+  EXPECT_EQ(pool_->usedBytes(), baselineBytes);
+  EXPECT_EQ(rootPool_->usedBytes(), baselineRootBytes);
 }
 
 TEST_F(FileExchangeTest, zeroByteRequestsOnlyReportNextPageSize) {
