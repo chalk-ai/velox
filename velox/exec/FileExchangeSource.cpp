@@ -18,6 +18,7 @@
 
 #include <mutex>
 
+#include <folly/Conv.h>
 #include <folly/hash/Checksum.h>
 #include <folly/io/IOBuf.h>
 #include "velox/common/base/Exceptions.h"
@@ -60,9 +61,12 @@ void FileExchangeSource::openFile() {
       filePath_);
 }
 
-std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage() {
+std::optional<uint64_t> FileExchangeSource::readPageSize() {
+  if (nextPageSize_.has_value()) {
+    return nextPageSize_;
+  }
   if (fileBytesRead_ == expectedFileSize_) {
-    return nullptr;
+    return std::nullopt;
   }
   VELOX_CHECK_GE(
       expectedFileSize_ - fileBytesRead_,
@@ -90,6 +94,12 @@ std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage() {
       expectedFileSize_ - fileBytesRead_,
       "Incomplete page payload in file: {}",
       filePath_);
+  nextPageSize_ = pageSize;
+  return pageSize;
+}
+
+std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage(
+    uint64_t pageSize) {
   auto buffer = folly::IOBuf::create(pageSize);
   const auto pageData =
       file_->pread(fileBytesRead_, pageSize, buffer->writableData());
@@ -101,6 +111,7 @@ std::unique_ptr<SerializedPageBase> FileExchangeSource::readPage() {
   fileChecksum_ =
       folly::crc32c(buffer->writableData(), pageSize, fileChecksum_);
   fileBytesRead_ += pageSize;
+  nextPageSize_.reset();
   buffer->append(pageSize);
   return std::make_unique<PrestoSerializedPage>(std::move(buffer));
 }
@@ -153,19 +164,33 @@ folly::SemiFuture<ExchangeSource::Response> FileExchangeSource::request(
   openFile();
   int64_t bytes{0};
   bool atEnd{false};
+  std::vector<int64_t> remainingBytes;
   while (bytes == 0 || bytes < maxBytes) {
-    auto page = readPage();
-    if (page == nullptr) {
+    const auto pageSize = readPageSize();
+    if (!pageSize.has_value()) {
       enqueueEnd();
       atEnd = true;
       break;
     }
+    if (maxBytes == 0) {
+      // A zero-sized frame cannot trigger a payload request from the client.
+      if (*pageSize == 0) {
+        nextPageSize_.reset();
+        continue;
+      }
+      remainingBytes.push_back(folly::to<int64_t>(*pageSize));
+      break;
+    }
+    auto page = readPage(*pageSize);
     bytes += page->size();
     enqueuePage(std::move(page));
   }
   requestPending_ = false;
   return folly::makeSemiFuture(
-      Response{.bytes = bytes, .atEnd = atEnd, .remainingBytes = {}});
+      Response{
+          .bytes = bytes,
+          .atEnd = atEnd,
+          .remainingBytes = std::move(remainingBytes)});
 }
 
 void FileExchangeSource::close() {

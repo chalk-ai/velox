@@ -19,6 +19,7 @@
 #include <folly/container/F14Map.h>
 #include <folly/dynamic.h>
 #include <atomic>
+#include <optional>
 #include <string>
 #include "velox/common/file/File.h"
 #include "velox/common/file/FileSystems.h"
@@ -75,8 +76,11 @@ class FileExchangeSource : public ExchangeSource {
   // Opens the paged input file on first request.
   void openFile();
 
-  // Reads the next page, or returns null at end of file.
-  std::unique_ptr<SerializedPageBase> readPage();
+  // Caches the next frame's size, or returns nullopt at EOF.
+  std::optional<uint64_t> readPageSize();
+
+  // Reads the payload after readPageSize() advances past the frame header.
+  std::unique_ptr<SerializedPageBase> readPage(uint64_t pageSize);
 
   // Enqueues a page and wakes waiting consumers.
   void enqueuePage(std::unique_ptr<SerializedPageBase> page);
@@ -95,6 +99,8 @@ class FileExchangeSource : public ExchangeSource {
   uint32_t expectedChecksum_{0};
   // Number of physical file bytes consumed so far.
   uint64_t fileBytesRead_{0};
+  // When set, fileBytesRead_ points at this frame's payload.
+  std::optional<uint64_t> nextPageSize_;
   // Incremental CRC32C of physical file bytes consumed so far.
   uint32_t fileChecksum_{~0U};
   // Filesystem that owns the input file implementation.
