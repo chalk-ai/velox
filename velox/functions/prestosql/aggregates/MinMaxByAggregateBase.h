@@ -911,14 +911,18 @@ class MinMaxByNAggregate : public exec::Aggregate {
     }
   }
 
+  // An intermediate state is ROW(n, comparisons ARRAY, values ARRAY). It need
+  // not come from this aggregate's own partial step: a state read back from
+  // storage or rebuilt by an expression can encode any of its children, or the
+  // elements of either array, as a dictionary or constant (Parquet returns
+  // string columns dictionary-encoded). Every level is therefore decoded rather
+  // than assumed flat.
   struct IntermediateResult {
-    const ArrayVector* valueArray;
-    // Used for complex types.
+    // Null when every row's array is null (e.g. a null constant child).
+    const ArrayVector* valueArray{nullptr};
+    const ArrayVector* comparisonArray{nullptr};
     DecodedVector values;
-    // Used for primitive types.
-    const FlatVector<V>* flatValues;
-    const ArrayVector* comparisonArray;
-    const FlatVector<C>* comparisons;
+    DecodedVector comparisons;
   };
 
   void addIntermediateResults(
@@ -929,25 +933,39 @@ class MinMaxByNAggregate : public exec::Aggregate {
 
     auto* accumulator = value(group);
 
-    const auto decodedIndex = decodedIntermediates_.index(index);
+    // Children are indexed by row positions of the base row vector; each child
+    // then maps that position through its own encoding.
+    const auto rowIndex = decodedIntermediates_.index(index);
 
-    accumulator->checkAndSetN(decodedN_, decodedIndex);
+    accumulator->checkAndSetN(decodedN_, rowIndex);
 
+    if (decodedValue_.isNullAt(rowIndex) ||
+        decodedComparison_.isNullAt(rowIndex)) {
+      return;
+    }
+    const auto valueIndex = decodedValue_.index(rowIndex);
+    const auto comparisonIndex = decodedComparison_.index(rowIndex);
     const auto* valueArray = result.valueArray;
-    const auto* values = result.flatValues;
     const auto* comparisonArray = result.comparisonArray;
-    const auto* comparisons = result.comparisons;
 
-    const auto numValues = valueArray->sizeAt(decodedIndex);
-    const auto valueOffset = valueArray->offsetAt(decodedIndex);
-    const auto comparisonOffset = comparisonArray->offsetAt(decodedIndex);
+    const auto numValues = valueArray->sizeAt(valueIndex);
+    VELOX_USER_CHECK_EQ(
+        numValues,
+        comparisonArray->sizeAt(comparisonIndex),
+        "max_by/min_by intermediate state has mismatched comparison and value array sizes");
+    const auto valueOffset = valueArray->offsetAt(valueIndex);
+    const auto comparisonOffset = comparisonArray->offsetAt(comparisonIndex);
     for (auto i = 0; i < numValues; ++i) {
-      const auto comparison = comparisons->valueAt(comparisonOffset + i);
+      if (result.comparisons.isNullAt(comparisonOffset + i)) {
+        continue;
+      }
+      const auto comparison =
+          result.comparisons.template valueAt<C>(comparisonOffset + i);
       if constexpr (std::is_same_v<V, ComplexType>) {
         accumulator->compareAndAdd(
             comparison, result.values, valueOffset + i, comparator_);
       } else {
-        const auto value = optionalValue(*values, valueOffset + i);
+        const auto value = optionalValue(result.values, valueOffset + i);
         accumulator->compareAndAdd(comparison, value, comparator_);
       }
     }
@@ -960,24 +978,27 @@ class MinMaxByNAggregate : public exec::Aggregate {
 
     auto baseRowVector =
         dynamic_cast<const RowVector*>(decodedIntermediates_.base());
+    VELOX_CHECK_NOT_NULL(
+        baseRowVector, "max_by/min_by intermediate state must be a row");
 
-    decodedN_.decode(*baseRowVector->childAt(0), rows);
-    decodedComparison_.decode(*baseRowVector->childAt(1), rows);
-    decodedValue_.decode(*baseRowVector->childAt(2), rows);
+    // `rows` addresses `arg`, but the children are read at base row positions,
+    // which a dictionary-encoded `arg` maps `rows` onto. Decode them over every
+    // base row so those positions are valid in each child's decoding.
+    const SelectivityVector baseRows(baseRowVector->size());
+    decodedN_.decode(*baseRowVector->childAt(0), baseRows);
+    decodedComparison_.decode(*baseRowVector->childAt(1), baseRows);
+    decodedValue_.decode(*baseRowVector->childAt(2), baseRows);
 
     IntermediateResult result{};
     result.valueArray = decodedValue_.base()->template as<ArrayVector>();
     result.comparisonArray =
         decodedComparison_.base()->template as<ArrayVector>();
-
-    if constexpr (std::is_same_v<V, ComplexType>) {
+    if (result.valueArray != nullptr) {
       result.values.decode(*result.valueArray->elements());
-    } else {
-      result.flatValues =
-          result.valueArray->elements()->template as<FlatVector<V>>();
     }
-    result.comparisons =
-        result.comparisonArray->elements()->template as<FlatVector<C>>();
+    if (result.comparisonArray != nullptr) {
+      result.comparisons.decode(*result.comparisonArray->elements());
+    }
 
     return result;
   }
