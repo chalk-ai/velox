@@ -15,6 +15,8 @@
  */
 
 #include "velox/dwio/common/IntDecoder.h"
+
+#include <folly/lang/Bits.h>
 #include "velox/common/base/SimdUtil.h"
 #include "velox/dwio/common/DirectDecoder.h"
 
@@ -45,7 +47,7 @@ IntDecoder<isSigned>::skipVarintsInBuffer(uint64_t items) {
   uint64_t toSkip = items;
   while (bufferEnd_ - bufferStart_ >= sizeof(uint64_t)) {
     uint64_t controlBits =
-        (~*reinterpret_cast<const uint64_t*>(bufferStart_) & kVarintMask);
+        (~folly::loadUnaligned<uint64_t>(bufferStart_) & kVarintMask);
     const auto endCount = __builtin_popcountll(controlBits);
     if (endCount >= toSkip) {
       // The range to skip ends within 'word'. Clear all but the
