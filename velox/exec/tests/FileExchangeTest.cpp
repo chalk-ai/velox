@@ -138,6 +138,61 @@ TEST_F(FileExchangeTest, multiplePagesShareOnePartitionFile) {
   EXPECT_EQ(pageData(*pages[1]), "second page");
 }
 
+TEST_F(FileExchangeTest, zeroByteRequestsOnlyReportNextPageSize) {
+  FileExchangeSink sink(rootDirectory_, "exchange", "task", 1);
+  sink.append(0, "one");
+  sink.append(0, "");
+  sink.append(0, "second");
+  sink.append(0, "");
+  const auto output = sink.finish();
+
+  auto queue = std::make_shared<ExchangeQueue>(1, 0);
+  {
+    std::lock_guard<std::mutex> lock(queue->mutex());
+    queue->addSourceLocked();
+  }
+  queue->noMoreSources();
+  FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+
+  for (const int64_t size : {3, 6}) {
+    const auto queuedBytes = queue->totalBytes();
+    for (int i = 0; i < 2; ++i) {
+      const auto probe = source.requestDataSizes({}).get();
+      EXPECT_EQ(probe.bytes, 0);
+      EXPECT_FALSE(probe.atEnd);
+      EXPECT_EQ(queue->totalBytes(), queuedBytes);
+      ASSERT_EQ(probe.remainingBytes, std::vector<int64_t>{size});
+    }
+    const auto response = source.request(size, {}).get();
+    EXPECT_EQ(response.bytes, size);
+    EXPECT_FALSE(response.atEnd);
+    EXPECT_EQ(queue->totalBytes(), queuedBytes + size);
+  }
+
+  const auto end = source.request(0, {}).get();
+  EXPECT_TRUE(end.atEnd);
+  EXPECT_EQ(end.bytes, 0);
+  EXPECT_TRUE(end.remainingBytes.empty());
+
+  bool atEnd = false;
+  ContinueFuture future;
+  auto stalePromise = ContinuePromise::makeEmpty();
+  std::vector<std::unique_ptr<SerializedPageBase>> pages;
+  {
+    std::lock_guard<std::mutex> lock(queue->mutex());
+    pages = queue->dequeueLocked(
+        0,
+        std::numeric_limits<uint32_t>::max(),
+        &atEnd,
+        &future,
+        &stalePromise);
+  }
+  EXPECT_TRUE(atEnd);
+  ASSERT_EQ(pages.size(), 2);
+  EXPECT_EQ(pageData(*pages[0]), "one");
+  EXPECT_EQ(pageData(*pages[1]), "second");
+}
+
 TEST_F(FileExchangeTest, exchangeOutputFileRoundTrip) {
   const file_exchange::ExchangeOutputFile expected{
       .path = R"(test://root/path?size=inside&note="quoted")",
@@ -308,17 +363,24 @@ TEST_F(FileExchangeTest, corruptedFileIsRejected) {
   file.put('P');
   file.close();
 
-  auto queue = std::make_shared<ExchangeQueue>(1, 0);
-  {
-    std::lock_guard<std::mutex> lock(queue->mutex());
-    queue->addSourceLocked();
-  }
-  queue->noMoreSources();
+  for (const bool probeAtEnd : {false, true}) {
+    auto queue = std::make_shared<ExchangeQueue>(1, 0);
+    {
+      std::lock_guard<std::mutex> lock(queue->mutex());
+      queue->addSourceLocked();
+    }
+    queue->noMoreSources();
 
-  FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
-  EXPECT_THROW(
-      source.request(std::numeric_limits<uint32_t>::max(), {}),
-      VeloxRuntimeError);
+    FileExchangeSource source(output.locations.at(0), 0, queue, pool_.get());
+    if (probeAtEnd) {
+      EXPECT_EQ(source.request(4, {}).get().bytes, 4);
+      EXPECT_THROW(source.request(0, {}), VeloxRuntimeError);
+    } else {
+      EXPECT_THROW(
+          source.request(std::numeric_limits<uint32_t>::max(), {}),
+          VeloxRuntimeError);
+    }
+  }
 }
 
 TEST_F(FileExchangeTest, incorrectFileSizeIsRejected) {
