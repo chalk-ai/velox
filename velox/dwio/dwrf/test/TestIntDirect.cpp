@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+#include <array>
+
 #include <folly/Random.h>
 #include "velox/common/base/Nulls.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -176,6 +179,31 @@ class DirectTest : public testing::Test {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 };
+
+template <bool isSigned>
+void checkUnalignedFixedWidth(uint32_t width, int64_t expected) {
+  alignas(int64_t) std::array<uint8_t, 1 + 2 * sizeof(int64_t)> bytes{};
+  std::fill_n(bytes.data() + 1 + width, width, 0xff);
+  bytes[1 + width] = 0xfe;
+  auto input = std::make_unique<SeekableArrayInputStream>(
+      bytes.data() + 1, bytes.size() - 1);
+  auto decoder = createDirectDecoder<isSigned>(
+      std::move(input), /*useVInts=*/false, width);
+  // Reading the first value fills the buffer. The second starts at an odd
+  // address.
+  std::array<int64_t, 2> values{};
+  decoder->next(values.data(), values.size(), nullptr);
+  EXPECT_EQ(values[0], 0);
+  EXPECT_EQ(values[1], expected);
+}
+
+TEST_F(DirectTest, unalignedFixedWidth) {
+  checkUnalignedFixedWidth<true>(2, -2);
+  checkUnalignedFixedWidth<false>(2, 0xfffe);
+  checkUnalignedFixedWidth<true>(4, -2);
+  checkUnalignedFixedWidth<false>(4, 0xfffffffe);
+  checkUnalignedFixedWidth<true>(8, -2);
+}
 
 TEST_F(DirectTest, fixedWidthShort) {
   testInts<int16_t, true, false>([]() -> int16_t {
