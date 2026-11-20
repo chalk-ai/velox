@@ -75,6 +75,7 @@ class S3Config {
     kEndpointRegion,
     kAccessKey,
     kSecretKey,
+    kSkipBucketCheck,
     kPathStyleAccess,
     kSSLEnabled,
     kUseInstanceCredentials,
@@ -107,6 +108,7 @@ class S3Config {
              std::make_pair("endpoint.region", std::nullopt)},
             {Keys::kAccessKey, std::make_pair("aws-access-key", std::nullopt)},
             {Keys::kSecretKey, std::make_pair("aws-secret-key", std::nullopt)},
+            {Keys::kSkipBucketCheck, std::make_pair("skip-bucket-check", "false")},
             {Keys::kPathStyleAccess,
              std::make_pair("path-style-access", "false")},
             {Keys::kSSLEnabled, std::make_pair("ssl.enabled", "true")},
@@ -185,6 +187,11 @@ class S3Config {
   /// Secret key to use
   std::optional<std::string> secretKey() const {
     return config_.find(Keys::kSecretKey)->second;
+  }
+
+  /// Skip bucket-wide metadata access for pre-existing catalog-managed buckets.
+  bool skipBucketCheck() const {
+    return folly::to<bool>(config_.find(Keys::kSkipBucketCheck)->second.value());
   }
 
   /// Virtual addressing is used for AWS S3 and is the default

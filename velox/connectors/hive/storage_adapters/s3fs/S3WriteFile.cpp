@@ -70,7 +70,7 @@ class S3WriteFile::Impl {
     // Create the bucket only when S3 confirms it does not exist.
     // Other HeadBucket failures usually mean region or permission issues and
     // should surface directly instead of being masked by a CreateBucket call.
-    {
+    if (!s3Config->skipBucketCheck()) {
       Aws::S3::Model::HeadBucketRequest request;
       request.SetBucket(awsString(bucket_));
       auto bucketMetadata = client_->HeadBucket(request);
