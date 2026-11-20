@@ -41,6 +41,7 @@ TEST(S3ConfigTest, defaultConfig) {
   ASSERT_EQ(s3Config.bucket(), "");
   ASSERT_EQ(s3Config.useIMDS(), true);
   ASSERT_EQ(s3Config.minPartSize(), 10485760);
+  ASSERT_EQ(s3Config.skipBucketCheck(), false);
 }
 
 TEST(S3ConfigTest, overrideConfig) {
@@ -59,13 +60,15 @@ TEST(S3ConfigTest, overrideConfig) {
       {S3Config::baseConfigKey(S3Config::Keys::kCredentialsProvider),
        "my-credentials-provider"},
       {S3Config::baseConfigKey(S3Config::Keys::kIMDSEnabled), "false"},
-      {S3Config::baseConfigKey(S3Config::Keys::kMultipartMinPartSize), "20MB"}};
+      {S3Config::baseConfigKey(S3Config::Keys::kMultipartMinPartSize), "20MB"},
+      {S3Config::baseConfigKey(S3Config::Keys::kSkipBucketCheck), "true"}};
   auto configBase =
       std::make_shared<config::ConfigBase>(std::move(configFromFile));
   auto s3Config = S3Config("bucket", configBase);
   ASSERT_EQ(s3Config.useVirtualAddressing(), false);
   ASSERT_EQ(s3Config.useSSL(), false);
   ASSERT_EQ(s3Config.useInstanceCredentials(), true);
+  ASSERT_EQ(s3Config.skipBucketCheck(), true);
   ASSERT_EQ(s3Config.endpoint(), "endpoint");
   ASSERT_EQ(s3Config.endpointRegion(), "region");
   ASSERT_EQ(s3Config.accessKey(), std::optional("access"));
