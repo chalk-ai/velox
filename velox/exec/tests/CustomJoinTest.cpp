@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "velox/exec/JoinBridge.h"
+#include "velox/exec/MemoryReclaimer.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -87,7 +88,15 @@ class CustomJoinBuild : public Operator {
             nullptr,
             operatorId,
             joinNode->id(),
-            "CustomJoinBuild") {}
+            "CustomJoinBuild"),
+        // Operators are constructed under the task lock.
+        joinBridge_(
+            std::dynamic_pointer_cast<CustomJoinBridge>(
+                operatorCtx_->task()->getCustomJoinBridgeLocked(
+                    driverCtx->splitGroupId,
+                    joinNode->id()))) {
+    VELOX_CHECK_NOT_NULL(joinBridge_);
+  }
 
   void addInput(RowVectorPtr input) override {
     auto inputSize = input->size();
@@ -132,11 +141,7 @@ class CustomJoinBuild : public Operator {
       promise.setValue();
     }
 
-    auto joinBridge = operatorCtx_->task()->getCustomJoinBridge(
-        operatorCtx_->driverCtx()->splitGroupId, planNodeId());
-    auto customJoinBridge =
-        std::dynamic_pointer_cast<CustomJoinBridge>(joinBridge);
-    customJoinBridge->setNumRows(std::make_optional(numRows_));
+    joinBridge_->setNumRows(std::make_optional(numRows_));
   }
 
   BlockingReason isBlocked(ContinueFuture* future) override {
@@ -153,6 +158,7 @@ class CustomJoinBuild : public Operator {
 
  private:
   int32_t numRows_ = 0;
+  const std::shared_ptr<CustomJoinBridge> joinBridge_;
 
   ContinueFuture future_{ContinueFuture::makeEmpty()};
 };
@@ -242,6 +248,10 @@ class CustomJoinProbe : public Operator {
   bool finished_{false};
 };
 
+// Priority of the custom join node's memory reclaimer, distinct from the
+// default.
+constexpr int32_t kCustomJoinReclaimerPriority = 7;
+
 class CustomJoinBridgeTranslator : public Operator::PlanNodeTranslator {
   std::unique_ptr<Operator>
   toOperator(DriverCtx* ctx, int32_t id, const core::PlanNodePtr& node) {
@@ -264,6 +274,15 @@ class CustomJoinBridgeTranslator : public Operator::PlanNodeTranslator {
       return [joinNode](int32_t operatorId, DriverCtx* ctx) {
         return std::make_unique<CustomJoinBuild>(operatorId, ctx, joinNode);
       };
+    }
+    return nullptr;
+  }
+
+  std::unique_ptr<memory::MemoryReclaimer> toNodeReclaimer(
+      const core::PlanNodePtr& node,
+      const std::shared_ptr<Task>& /* task */) override {
+    if (std::dynamic_pointer_cast<const CustomJoinNode>(node)) {
+      return exec::MemoryReclaimer::create(kCustomJoinReclaimerPriority);
     }
     return nullptr;
   }
@@ -392,4 +411,43 @@ TEST_F(CustomJoinTest, mixedGroupedExecution) {
           .countResults();
 
   ASSERT_EQ(numRows, 160);
+}
+
+TEST_F(CustomJoinTest, nodeReclaimer) {
+  auto leftBatch = makeSimpleRowVector(100);
+  auto rightBatch = makeSimpleRowVector(10);
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto rightNode =
+      PlanBuilder(planNodeIdGenerator).values({rightBatch}).planNode();
+  core::PlanNodeId joinNodeId;
+  core::PlanNodeId projectNodeId;
+  auto plan = PlanBuilder(planNodeIdGenerator)
+                  .values({leftBatch})
+                  .addNode([&](std::string id, core::PlanNodePtr input) {
+                    joinNodeId = id;
+                    return std::make_shared<CustomJoinNode>(
+                        id, std::move(input), std::move(rightNode));
+                  })
+                  .project({"c0"})
+                  .capturePlanNodeId(projectNodeId)
+                  .planNode();
+
+  std::shared_ptr<Task> task;
+  AssertQueryBuilder(plan).copyResults(pool(), task);
+
+  // The translator supplies the custom join node's reclaimer; other nodes keep
+  // the default.
+  std::optional<int32_t> joinPriority;
+  std::optional<int32_t> projectPriority;
+  task->pool()->visitChildren([&](memory::MemoryPool* child) {
+    if (child->name() == fmt::format("node.{}", joinNodeId)) {
+      joinPriority = child->reclaimer()->priority();
+    } else if (child->name() == fmt::format("node.{}", projectNodeId)) {
+      projectPriority = child->reclaimer()->priority();
+    }
+    return true;
+  });
+  ASSERT_EQ(joinPriority, kCustomJoinReclaimerPriority);
+  ASSERT_TRUE(projectPriority.has_value());
+  ASSERT_NE(projectPriority, kCustomJoinReclaimerPriority);
 }

@@ -1,0 +1,4 @@
+- Add `PlanNodeTranslator::toNodeReclaimer()`, which lets a custom plan node supply the memory reclaimer of its node memory pool, for example to set its reclaim priority
+- Add `Task::getCustomJoinBridgeLocked()`, so a custom join operator can register with its bridge from its constructor, which runs under the task lock
+- Make `Driver::shouldYield()` return true when the task has a pause pending, so long operator loops give up the thread for memory arbitration even without CPU time slicing
+- Run `velox/exec/tests/HashJoinTestExtra.cpp` as its own Bazel test target; it was compiled into a library and never run

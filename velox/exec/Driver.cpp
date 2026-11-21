@@ -519,6 +519,12 @@ CpuWallTiming Driver::processLazyIoStats(
 }
 
 bool Driver::shouldYield() const {
+  // A pending pause (e.g. memory arbitration) waits for every running driver to
+  // go off thread, so long operator loops must return even without time
+  // slicing.
+  if (task()->pauseRequested()) {
+    return true;
+  }
   if (cpuSliceMs_ == 0) {
     return false;
   }
