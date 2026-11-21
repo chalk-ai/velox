@@ -502,6 +502,25 @@ target_link_libraries(
   GTest::gtest_main
 )
 
+add_executable(
+  presto_materialized_partitioned_output_test
+  PrestoMaterializedPartitionedOutputTest.cpp
+  Main.cpp
+)
+add_test(
+  presto_materialized_partitioned_output_test
+  presto_materialized_partitioned_output_test
+)
+target_link_libraries(
+  presto_materialized_partitioned_output_test
+  velox_exec
+  velox_exec_test_lib
+  fmt::fmt
+  Folly::folly
+  GTest::gtest
+  GTest::gtest_main
+)
+
 add_executable(velox_fixed_point_test FixedPointTest.cpp)
 add_test(
   NAME velox_fixed_point_test

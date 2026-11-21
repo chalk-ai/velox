@@ -47,6 +47,7 @@ velox_add_test_headers(
   HiveConnectorTestBase.h
   IndexLookupJoinTestBase.h
   LocalExchangeSource.h
+  MaterializedOutputTestUtil.h
   MergeTestBase.h
   OperatorTestBase.h
   PlanBuilder.h
