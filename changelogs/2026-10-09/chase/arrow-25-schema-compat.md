@@ -1,0 +1,2 @@
+- Support Arrow 25's checked base64 decoder when restoring Parquet schema metadata and return invalid metadata errors.
+- Preserve compatibility with earlier Arrow versions and cover schema metadata round trips.
